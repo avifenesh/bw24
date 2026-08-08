@@ -37,6 +37,89 @@ pub struct PrimeSlabs {
     pub seg_t: usize,
 }
 
+// Split prime ranges cannot enter the full-range segment-graph arm, and every slab access
+// is serialized by its device mutex after binding that device's CUDA context on the thread.
+unsafe impl Send for PrimeSlabs {}
+
+fn empty_cache_layers<T>(n: usize) -> Vec<Option<T>> {
+    std::iter::repeat_with(|| None).take(n).collect()
+}
+
+/// Temporarily move a PP-2 cache's layer state into two independently-owned cache shells.
+/// The stage walkers then receive disjoint `&mut Cache` values and can run on separate host
+/// threads without aliasing. GPU buffers are moved, not copied; Drop restores every layer
+/// and publishes the last position completed by both stages.
+struct PrimeCacheStages<'a> {
+    parent: &'a mut Cache,
+    cut: usize,
+    stage0: Cache,
+    stage1: Cache,
+}
+
+impl<'a> PrimeCacheStages<'a> {
+    fn new(parent: &'a mut Cache, cut: usize) -> Self {
+        let n = parent.kv.len();
+        assert_eq!(parent.recur.len(), n, "cache layer vectors disagree");
+        assert!(cut <= n, "PP-2 cache cut {cut} exceeds {n} layers");
+        let mut kv0 = empty_cache_layers(n);
+        let mut kv1 = empty_cache_layers(n);
+        let mut recur0 = empty_cache_layers(n);
+        let mut recur1 = empty_cache_layers(n);
+        for i in 0..cut {
+            kv0[i] = parent.kv[i].take();
+            recur0[i] = parent.recur[i].take();
+        }
+        for i in cut..n {
+            kv1[i] = parent.kv[i].take();
+            recur1[i] = parent.recur[i].take();
+        }
+        let pos = parent.pos;
+        let max_ctx = parent.max_ctx;
+        Self {
+            parent,
+            cut,
+            stage0: Cache {
+                kv: kv0,
+                recur: recur0,
+                pos,
+                max_ctx,
+                last_logits_dev: None,
+                dflash_taps: None,
+            },
+            stage1: Cache {
+                kv: kv1,
+                recur: recur1,
+                pos,
+                max_ctx,
+                last_logits_dev: None,
+                dflash_taps: None,
+            },
+        }
+    }
+
+    fn parts(&mut self) -> (&mut Cache, &mut Cache) {
+        (&mut self.stage0, &mut self.stage1)
+    }
+}
+
+impl Drop for PrimeCacheStages<'_> {
+    fn drop(&mut self) {
+        let n = self.parent.kv.len();
+        for i in 0..n {
+            let source = if i < self.cut {
+                &mut self.stage0
+            } else {
+                &mut self.stage1
+            };
+            debug_assert!(self.parent.kv[i].is_none());
+            debug_assert!(self.parent.recur[i].is_none());
+            self.parent.kv[i] = source.kv[i].take();
+            self.parent.recur[i] = source.recur[i].take();
+        }
+        self.parent.pos = self.stage0.pos.min(self.stage1.pos);
+    }
+}
+
 
 /// task #18 (attn side): one sequence's pre-attention outputs (post-rope q/k, v, out-gate).
 pub(crate) struct AttnPre {
@@ -594,61 +677,101 @@ impl HybridModel {
 
         let mut hiddens = e.uninit(t * n_embd)?;
         let mut last: Option<(Vec<f32>, CudaSlice<f32>)> = None;
+        let mut stage_caches = PrimeCacheStages::new(cache, fence[1]);
+        let (cache0, cache1) = stage_caches.parts();
         let (first_start, first_end) = ranges[0];
         let mut slot = self.prime_pp2_stage0_enqueue(
             e,
             rt,
             &tokens[first_start..first_end],
-            cache,
+            cache0,
             seq_end,
             fence,
             initial_base + first_start,
             true,
         )?;
+        cache0.pos = initial_base + first_end;
 
         for (i, &(start, end)) in ranges.iter().enumerate() {
             let base = initial_base + start;
             debug_assert_eq!(
-                cache.pos, base,
+                cache1.pos, base,
                 "stage 1 must drain chunks in original position order"
             );
-            let x = self.prime_pp2_stage1_enqueue(
-                e,
-                rt,
-                slot,
-                end - start,
-                cache,
-                seq_end,
-                fence,
-                base,
-            )?;
-
-            // The scheduling move: enqueue the next stage-0 range before the current
-            // stage-1 epilogue's dtoh. Different boundary slots remove any dependency
-            // between these two ranges; a later reuse of this chunk's slot waits ev_rx.
-            let next_slot = if let Some(&(next_start, next_end)) = ranges.get(i + 1) {
-                let next = self.prime_pp2_stage0_enqueue(
+            let (out, next_slot) = if let Some(&(next_start, next_end)) = ranges.get(i + 1) {
+                let next_base = initial_base + next_start;
+                debug_assert_eq!(
+                    cache0.pos, next_base,
+                    "stage 0 must issue chunks in original position order"
+                );
+                let cache0_stage = &mut *cache0;
+                // Step's MoE router readback synchronizes once per layer. Two CUDA streams
+                // on one host thread therefore serialize even if the calls are ordered as
+                // a pipeline. Drive the disjoint stage caches from two scoped host threads:
+                // stage 1 consumes slot N while stage 0 produces slot N+1.
+                std::thread::scope(
+                    |scope| -> Result<_, Box<dyn std::error::Error>> {
+                        let stage0 = scope.spawn(move || -> Result<usize, String> {
+                            let next = self
+                                .prime_pp2_stage0_enqueue(
+                                    e,
+                                    rt,
+                                    &tokens[next_start..next_end],
+                                    cache0_stage,
+                                    seq_end,
+                                    fence,
+                                    next_base,
+                                    true,
+                                )
+                                .map_err(|err| err.to_string())?;
+                            cache0_stage.pos = initial_base + next_end;
+                            Ok(next)
+                        });
+                        let x = self.prime_pp2_stage1_enqueue(
+                            e,
+                            rt,
+                            slot,
+                            end - start,
+                            cache1,
+                            seq_end,
+                            fence,
+                            base,
+                            true,
+                        )?;
+                        let out = {
+                            rt.bind_stage(1)?;
+                            let _st1 = rt.enter(1);
+                            let e1 = rt.engine(1, e);
+                            self.prime_chunk_epilogue(e1, x, end - start, cache1)?
+                        };
+                        let next = stage0
+                            .join()
+                            .map_err(|_| "pipeprime stage-0 host walker panicked")?
+                            .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+                        Ok((out, Some(next)))
+                    },
+                )?
+            } else {
+                let x = self.prime_pp2_stage1_enqueue(
                     e,
                     rt,
-                    &tokens[next_start..next_end],
-                    cache,
+                    slot,
+                    end - start,
+                    cache1,
                     seq_end,
                     fence,
-                    initial_base + next_start,
+                    base,
                     true,
                 )?;
-                crate::pp::PRIME_PIPE_OVERLAPS
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Some(next)
-            } else {
-                None
+                let out = {
+                    rt.bind_stage(1)?;
+                    let _st1 = rt.enter(1);
+                    let e1 = rt.engine(1, e);
+                    self.prime_chunk_epilogue(e1, x, end - start, cache1)?
+                };
+                (out, None)
             };
 
-            let out = {
-                let _st1 = rt.enter(1);
-                let e1 = rt.engine(1, e);
-                self.prime_chunk_epilogue(e1, x, end - start, cache)?
-            };
             rt.publish_to(1, &caller_stream)?;
             e.copy_into(
                 &mut hiddens,
@@ -670,7 +793,8 @@ impl HybridModel {
             }
         }
 
-        debug_assert_eq!(cache.pos, initial_base + t);
+        debug_assert_eq!(cache0.pos, initial_base + t);
+        debug_assert_eq!(cache1.pos, initial_base + t);
         let (logits, h_seed) = last.unwrap();
         Ok((logits, h_seed, hiddens))
     }
@@ -1168,9 +1292,10 @@ impl HybridModel {
                 e, rt, tokens, cache, seq_end, fence, base, false,
             )?;
             let x = self.prime_pp2_stage1_enqueue(
-                e, rt, slot, t, cache, seq_end, fence, base,
+                e, rt, slot, t, cache, seq_end, fence, base, false,
             )?;
             let out = {
+                rt.bind_stage(1)?;
                 let _st1 = rt.enter(1);
                 let e1 = rt.engine(1, e);
                 self.prime_chunk_epilogue(e1, x, t, cache)?
@@ -1241,10 +1366,12 @@ impl HybridModel {
         let t = tokens.len();
         let n_embd = self.cfg.n_embd as usize;
         let pos: Vec<i32> = (base as i32..(base + t) as i32).collect();
+        rt.bind_stage(0)?;
         let _st0 = rt.enter(0);
         let e0 = rt.engine(0, e);
         let pos_d = e0.htod_i32(&pos)?;
         let x = self.embed(e0, tokens)?;
+        let _overlap = pipelined.then(crate::pp::enter_prime_pipe_stage);
         let x = self.prime_layers(
             e0, x, fence[0], fence[1], &pos_d, t, base, cache, seq_end,
         )?;
@@ -1265,13 +1392,16 @@ impl HybridModel {
         seq_end: usize,
         fence: &[usize],
         base: usize,
+        pipelined: bool,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let pos: Vec<i32> = (base as i32..(base + t) as i32).collect();
+        rt.bind_stage(1)?;
         let _st1 = rt.enter(1);
         let e1 = rt.engine(1, e);
         let pos_d = e1.htod_i32(&pos)?;
         let x = rt.rx(0, slot, t * n_embd)?;
+        let _overlap = pipelined.then(crate::pp::enter_prime_pipe_stage);
         self.prime_layers(
             e1, x, fence[1], fence[2], &pos_d, t, base, cache, seq_end,
         )

@@ -317,14 +317,36 @@ pub fn prime_split_chunks() -> usize {
     PRIME_SPLIT_CHUNKS.load(Ordering::Relaxed)
 }
 
-/// PIPELINE-LIVENESS COUNTER: bumped when stage 0 of chunk N+1 is enqueued before the
-/// stage-1 result of chunk N is drained. This proves the pipelined gate exercised the
-/// double-buffer schedule rather than comparing two serial split walks.
+/// PIPELINE-LIVENESS COUNTER: bumped only when a second PP-2 prime stage enters its layer
+/// walker while the other stage's walker is still active. Step's per-layer router readback
+/// synchronizes the host, so enqueue order alone is not liveness: a single host thread can
+/// call stage 0(N+1) before the stage-1 epilogue and still serialize all trunk computation.
 pub static PRIME_PIPE_OVERLAPS: AtomicUsize = AtomicUsize::new(0);
 
 /// Read the prime-pipeline overlap counter (gate-side).
 pub fn prime_pipe_overlaps() -> usize {
     PRIME_PIPE_OVERLAPS.load(Ordering::Relaxed)
+}
+
+static PRIME_PIPE_ACTIVE_STAGES: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) struct PrimePipeStageGuard;
+
+/// Mark one host-driven stage walker active. With PP-2, a transition 1 -> 2 proves the
+/// two device walkers overlap in wall time; exactly one transition is counted per pair.
+pub(crate) fn enter_prime_pipe_stage() -> PrimePipeStageGuard {
+    let active = PRIME_PIPE_ACTIVE_STAGES.fetch_add(1, Ordering::AcqRel);
+    if active > 0 {
+        PRIME_PIPE_OVERLAPS.fetch_add(1, Ordering::Relaxed);
+    }
+    PrimePipeStageGuard
+}
+
+impl Drop for PrimePipeStageGuard {
+    fn drop(&mut self) {
+        let active = PRIME_PIPE_ACTIVE_STAGES.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(active > 0, "prime pipeline active-stage counter underflow");
+    }
 }
 
 /// MEMRA_SPEC_PP=0: rollback/A-B seam for the SPEC VERIFY stage split (pp2-spec 2026-08-06).
@@ -699,6 +721,12 @@ impl PpNRt {
     /// lives on the primary device, else the stage's own (remote-context) engine.
     pub fn engine<'a>(&'a self, s: usize, primary: &'a Engine) -> &'a Engine {
         self.stages[s].engine.as_ref().unwrap_or(primary)
+    }
+
+    /// Bind this OS thread to stage `s`'s CUDA context before issuing work there.
+    pub fn bind_stage(&self, s: usize) -> Result<(), Box<dyn std::error::Error>> {
+        self.stages[s].ctx.bind_to_thread()?;
+        Ok(())
     }
 
     /// Enter stage `s`: until the guard drops, every engine op on this thread launches on
