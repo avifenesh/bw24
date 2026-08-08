@@ -1,0 +1,2 @@
+52c9cceb190055e0591a9a30c21f7200572eaf3ff1c59f6e9a1eda838a8f39de  /data/models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+b2cec2af426aa3d5e8bdd2bc9cee2b26278358e4efc59598d7f5ab3ec36bc045  /data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf

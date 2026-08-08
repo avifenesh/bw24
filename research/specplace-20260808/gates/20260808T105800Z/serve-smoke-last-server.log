@@ -1,0 +1,31 @@
+[server] starting; models config = [("smoke", "/data/models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", Some("/data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf"))]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (device=0, MEMRA_FAST=true)
+[spec-gate] policy placement=single-or-non-pp2 LOW=2 HIGH=4 source=placement-default spec-admission=on
+[worker] loading model "smoke" <- /data/models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[mtp-draft] external draft head: blk.32, source=output.weight, head_vocab=32768 (trimmed, d2t map)
+[worker] smoke: regime draft attached (/data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf)
+[worker]   loaded "smoke": 33 layers, eos=248046
+[worker] smoke: template caps tools=true think=true think_switch=true chat_ok=true effort_levels=false gemma_think=false ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] smoke: decode chunk cap 16 (exact-16 tier)
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["smoke"]
+[server] listening on http://127.0.0.1:8177
+[meter] admit id=cmpl-17e7cdd76e3699dcac1088f659b5976e tenant=default lane=interactive model="smoke"
+[spec-acc] ctx=48 burst=23/33 cum=23/33=0.697
+[spec-acc] ctx=83 burst=10/18 cum=33/51=0.647
+[meter] admit id=cmpl-1c9ae2234a6077fbe0d17898c0057f2d tenant=default lane=interactive model="smoke"
+[worker] spec-affinity: rewound to 48 of 97 prompt tokens (explicit; priming 49 suffix; model smoke)
+[spec-acc] ctx=49 burst=21/36 cum=21/36=0.583
+[spec-acc] ctx=83 burst=10/12 cum=31/48=0.646
+[meter] admit id=cmpl-f85e5f8365932e61e03f1b368c36a5cb tenant=default lane=interactive model="smoke"
+[worker] spec-affinity: rewound to 97 of 149 prompt tokens (explicit; priming 52 suffix; model smoke)
+[spec-acc] ctx=52 burst=22/30 cum=22/30=0.733
+[spec-acc] ctx=85 burst=10/21 cum=32/51=0.627
+[meter] admit id=cmpl-06f1689676e11fe9171acafdb1088bd6 tenant=default lane=interactive model="smoke"
+[worker] spec-affinity: rewound to 149 of 195 prompt tokens (explicit; priming 46 suffix; model smoke)
+[spec-acc] ctx=46 burst=24/30 cum=24/30=0.800
+[spec-acc] ctx=81 burst=8/15 cum=32/45=0.711
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

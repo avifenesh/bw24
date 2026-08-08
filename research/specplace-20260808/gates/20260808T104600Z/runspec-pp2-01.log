@@ -1,0 +1,34 @@
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[mtp-draft] loading external MTP draft: /data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf
+[mtp-draft] external draft head: blk.32, source=output.weight, head_vocab=32768 (trimmed, d2t map)
+loaded qwen35 (33 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   63 tok in 0.553s = 113.98 tok/s (gen-only; this run's prime 0.006s)
+  tokens: [268, 43159, 220, 18, 13, 15, 220, 95726, 98858, 97152, 112625, 98432, 10992, 271, 107680, 3709, 97237, 96094, 96876, 55, 268, 43159, 220, 18, 13, 15, 95726, 98858, 97152, 98432, 1710, 99924, 95930, 101920, 97434, 55, 268, 43159, 100751, 99518, 1710, 55, 268, 43159, 110345, 116594, 120932, 101694, 3709, 98135, 96056, 95932, 103962, 1710, 18, 13, 15, 99507, 97433, 98128, 99439, 97238, 97015, 101833]
+
+[generate_spec K=1] 64 tok in 0.627s = 100.44 tok/s (0.88x vs generate; this run's prime 0.005s)
+  acceptance: 15/48 = 31.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 64 tok in 0.611s = 103.09 tok/s (0.90x vs generate; this run's prime 0.005s)
+  acceptance: 20/86 = 23.3%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 64 tok in 0.690s = 91.35 tok/s (0.80x vs generate; this run's prime 0.005s)
+  acceptance: 22/123 = 17.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 64 tok in 0.772s = 81.60 tok/s (0.72x vs generate; this run's prime 0.005s)
+  acceptance: 23/160 = 14.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 64 tok in 0.842s = 74.85 tok/s (0.66x vs generate; this run's prime 0.005s)
+  acceptance: 23/200 = 11.5%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 64 tok in 0.886s = 71.13 tok/s (0.62x vs generate; this run's prime 0.005s)
+  acceptance: 23/240 = 9.6%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 64 tok in 0.953s = 66.14 tok/s (0.58x vs generate; this run's prime 0.005s)
+  acceptance: 23/280 = 8.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 64 tok in 1.025s = 61.49 tok/s (0.54x vs generate; this run's prime 0.005s)
+  acceptance: 23/320 = 7.2%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===

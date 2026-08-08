@@ -215,9 +215,10 @@ Multi-GPU boxes serve two ways: as a **replica fleet** (independent servers behi
 admission proxy — **1,477 tok/s** managed on 3×H100, chaos-tested), or, for a model too
 large for one card, as a **pipeline-parallel pair** (PP-2) — one model split across two
 GPUs, batched decode bit-identical to the unsplit walk and the boundary transfer costing
-0.5–1.5% at B=4/8/16. PP-2 serving runs the **plain** (non-speculative) path today:
-`MEMRA_SERVE_SPEC=0` is required, because spec-over-PP-2 is exact but trips a sticky fatal
-CUDA illegal-address under concurrency ([docs/SERVING.md](docs/SERVING.md)).
+0.5–1.5% at B=4/8/16. PP-2 serving defaults to the **plain** (non-speculative) path through
+the placement-aware spec gate: speculative decoding is correct and crash-gated, but plain
+batching wins every measured PP-2 c=1/2/4 throughput cell
+([docs/SERVING.md](docs/SERVING.md)).
 
 ## What's inside
 
@@ -270,11 +271,11 @@ re-measures published cells on engine-touching pushes ([CONTRIBUTING.md](CONTRIB
   mixed-depth sessions in `fa_decode_batch_seqs_v4`, plus B-dependent tier selection), not a
   regression from any recent lane; no gate covers the staggered-depth shape yet
   ([research/spec-gate-20260806/](research/spec-gate-20260806/), arm `REF_LOAD`).
-- Speculative decoding over PP-2 is exact (7/7 bit-identical arms) but **not shippable for
-  concurrent serving**: one placement is ~20x slow, the other trips a sticky
-  `CUDA_ERROR_ILLEGAL_ADDRESS` that kills the worker's CUDA context (100% of requests lost at
-  c=4). PP-2 serving therefore runs plain decode with `MEMRA_SERVE_SPEC=0`
-  ([research/pp2-spec-20260806/](research/pp2-spec-20260806/)).
+- Speculative decoding over PP-2 is exact and stable after the #87 reverse-publication fix,
+  but it loses to plain batched decode at every measured c=1/2/4 cell. The scheduler therefore
+  defaults sharded cross-device PP-2 to `LOW=0/HIGH=1` (no spec admission), while
+  `MEMRA_SPEC_GATE=0` keeps the always-spec rollback/crash-gate path live
+  ([research/specplace-20260808/](research/specplace-20260808/)).
 - The NVFP4 speculative serve path trails its bare-CLI twin (−8.66%, pre-fix measurement)
   — the spec tier's burst loop is a separate path from the solo fast path that closed the
   plain-serve c=1 gap (serve c=1 now runs the same m=1 fused trunk as the CLI, +5–8%
@@ -305,9 +306,9 @@ re-measures published cells on engine-touching pushes ([CONTRIBUTING.md](CONTRIB
   a GGUF or HF safetensors model.
 - No tensor parallelism. Multi-GPU boxes run either a replica fleet (one engine per GPU) or
   **pipeline-parallel** PP-2 for a model that does not fit one card — real and gated for
-  plain batched serving, opt-in via `MEMRA_PP_STAGES`/`MEMRA_PP_DEVICES`, and requiring
-  `MEMRA_SERVE_SPEC=0` (speculative serving over PP-2 is exact but not yet shippable under
-  concurrency).
+  batched and speculative correctness, opt-in via `MEMRA_PP_STAGES`/`MEMRA_PP_DEVICES`.
+  The placement-aware scheduler defaults PP-2 to plain decode; no extra disable flag is
+  required.
 - Moving research codebase; APIs and flags change without notice.
 
 ## Docs

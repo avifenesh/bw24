@@ -1,0 +1,2 @@
+f3be628b013d3fd7dd14f2057bb21a139de754e98c3836d21bcd9f58f63c7941  /home/ubuntu/specplace-target/release/memra-server
+c544a19b19a4002c2ca004075a9315c403f6dddd8013fed47299ce4085bb16f8  /home/ubuntu/specplace-target/release/run-spec

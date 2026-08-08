@@ -1,0 +1,255 @@
+=== specplace measurement 20260808T101200Z ===
+host=ip-172-31-11-170 commit=d2a52fe6bd3ecfb567c61e3b198750d124f4e616
+status:
+?? research/specplace-20260808/raw/
+models:
+/data/models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf 5657607424 bytes
+/data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf 936838816 bytes
+/data/models/step37/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf 46483327296 bytes
+/data/models/step37/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf 3707276416 bytes
+sha256 (artifact identity; computed before the GPU window):
+52c9cceb190055e0591a9a30c21f7200572eaf3ff1c59f6e9a1eda838a8f39de  /data/models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+b2cec2af426aa3d5e8bdd2bc9cee2b26278358e4efc59598d7f5ab3ec36bc045  /data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf
+b940497a9cec2f801f07e3a9783f2115fd8bf79cbd453225b4f73d86bcd11259  /data/models/step37/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+469a81667a6cd6d87a85d501d57155fd90cee5af7010fd289c5169881763fd57  /data/models/step37/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf
+=== release build ===
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.46
+   Compiling unicode-ident v1.0.24
+   Compiling libc v0.2.186
+   Compiling serde_core v1.0.228
+   Compiling serde v1.0.228
+   Compiling cfg-if v1.0.4
+   Compiling itoa v1.0.18
+   Compiling version_check v0.9.5
+   Compiling pin-project-lite v0.2.17
+   Compiling futures-core v0.3.32
+   Compiling once_cell v1.21.4
+   Compiling hashbrown v0.17.1
+   Compiling equivalent v1.0.2
+   Compiling zmij v1.0.21
+   Compiling smallvec v1.15.2
+   Compiling crossbeam-utils v0.8.22
+   Compiling bytes v1.12.0
+   Compiling syn v2.0.118
+   Compiling generic-array v0.14.7
+   Compiling getrandom v0.3.4
+   Compiling indexmap v2.14.0
+   Compiling zerocopy v0.8.55
+   Compiling errno v0.3.14
+   Compiling serde_json v1.0.150
+   Compiling crossbeam-epoch v0.9.20
+   Compiling http v1.4.2
+   Compiling signal-hook-registry v1.4.8
+   Compiling mio v1.2.1
+   Compiling socket2 v0.6.4
+   Compiling memmap2 v0.9.11
+   Compiling http-body v1.0.1
+   Compiling syn v3.0.3
+   Compiling ahash v0.8.12
+   Compiling memchr v2.8.2
+   Compiling crossbeam-deque v0.8.7
+   Compiling typenum v1.20.1
+   Compiling ref-cast v1.0.26
+   Compiling parking_lot_core v0.9.12
+   Compiling cudarc v0.19.8
+   Compiling anyhow v1.0.104
+   Compiling percent-encoding v2.3.2
+   Compiling httparse v1.10.1
+   Compiling memra-gguf v0.72.0 (/home/ubuntu/specplace-memra/crates/memra-gguf)
+   Compiling tracing-core v0.1.36
+   Compiling serde_derive v1.0.228
+   Compiling tokio-macros v2.7.0
+   Compiling tokio v1.52.3
+   Compiling ref-cast-impl v1.0.26
+   Compiling libloading v0.9.0
+   Compiling heck v0.5.0
+   Compiling slab v0.4.12
+   Compiling scopeguard v1.2.0
+   Compiling futures-task v0.3.32
+   Compiling log v0.4.33
+   Compiling rustversion v1.0.22
+   Compiling tower-service v0.3.3
+   Compiling rayon-core v1.13.0
+   Compiling tracing v0.1.44
+   Compiling futures-util v0.3.32
+   Compiling lock_api v0.4.14
+   Compiling strum_macros v0.28.0
+   Compiling bytemuck_derive v1.11.0
+   Compiling futures-channel v0.3.32
+   Compiling borrow-or-share v0.2.4
+   Compiling bytemuck v1.25.2
+   Compiling tower-layer v0.3.3
+   Compiling httpdate v1.0.3
+   Compiling sync_wrapper v1.0.2
+   Compiling atomic-waker v1.1.2
+   Compiling hyper v1.10.1
+   Compiling fluent-uri v0.3.2
+   Compiling strum v0.28.0
+   Compiling parking_lot v0.12.5
+   Compiling toml_datetime v0.6.11
+   Compiling serde_spanned v0.6.9
+   Compiling async-trait v0.1.89
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling form_urlencoded v1.2.2
+   Compiling http-body-util v0.1.3
+   Compiling winnow v0.7.15
+   Compiling ryu v1.0.23
+   Compiling either v1.17.0
+   Compiling toml_write v0.1.2
+   Compiling memra-engine v0.72.0 (/home/ubuntu/specplace-memra/crates/memra-engine)
+   Compiling regex-syntax v0.8.11
+   Compiling llguidance v1.7.6
+   Compiling mime v0.3.17
+   Compiling axum-core v0.4.5
+   Compiling toml_edit v0.22.27
+   Compiling derivre v0.3.12
+   Compiling rayon v1.12.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling digest v0.10.7
+   Compiling memra-runtime v0.72.0 (/home/ubuntu/specplace-memra/crates/memra-runtime)
+   Compiling memra-kv v0.72.0 (/home/ubuntu/specplace-memra/crates/memra-kv)
+   Compiling hyper-util v0.1.20
+   Compiling referencing v0.29.1
+   Compiling tower v0.5.3
+   Compiling toktrie v1.7.6
+   Compiling memra-tokenizer v0.72.0 (/home/ubuntu/specplace-memra/crates/memra-tokenizer)
+   Compiling async-stream-impl v0.3.6
+   Compiling serde_path_to_error v0.1.20
+   Compiling memra-validate v0.72.0 (/home/ubuntu/specplace-memra/crates/memra-validate)
+   Compiling matchit v0.7.3
+   Compiling memra-server v0.72.0 (/home/ubuntu/specplace-memra/crates/memra-server)
+   Compiling memra-sampling v0.72.0 (/home/ubuntu/specplace-memra/crates/memra-sampling)
+   Compiling cpufeatures v0.2.17
+   Compiling sha2 v0.10.9
+   Compiling axum v0.7.9
+   Compiling async-stream v0.3.6
+   Compiling toml v0.8.23
+   Compiling memra-lanes v0.72.0 (/home/ubuntu/specplace-memra/crates/memra-lanes)
+warning: memra-engine@0.72.0: nvcc auto-detected CUDA 13.2 at /usr/local/cuda-13.2/bin/nvcc (newest of 4; also saw 13.0 @ /usr/local/cuda-13.0/bin/nvcc, 12.9 @ /usr/local/cuda-12.9/bin/nvcc, 12.8 @ /usr/local/cuda-12.8/bin/nvcc)
+warning: memra-engine@0.72.0: MEMRA_CUDA_ARCH auto-detected 120a (compute_cap 12.0); set MEMRA_CUDA_ARCH to override
+    Finished `release` profile [optimized] target(s) in 4m 25s
+5f73240cffb3f993d18e30552d311b18c273cc8674b017a209364a0615ff4950  /home/ubuntu/specplace-target/release/memra-server
+GPU lock acquired 2026-08-08T10:18:40Z
+=== arm q9-sc-S-r1 ===
+command: env -u CUDA_VISIBLE_DEVICES -u MEMRA_PP_STAGES -u MEMRA_PP_DEVICES -u MEMRA_SERVE_SPEC -u MEMRA_SPEC_GATE -u MEMRA_SPEC_GATE_LOW -u MEMRA_SPEC_GATE_HIGH CUDA_VISIBLE_DEVICES=0 MEMRA_SPEC_GATE=0 MEMRA_MODELS=q9=/data/models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf+/data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf MEMRA_ADDR=127.0.0.1:8127 MEMRA_CTX=4096 MEMRA_SPEC_K=3 /home/ubuntu/specplace-target/release/memra-server
+--- q9-sc-S-r1 c=1 ---
+{"ts": "2026-08-08T10:18:46+0000", "label": "q9-sc-S-r1-c1", "base": "http://127.0.0.1:8127", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 1.0343907320020662, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 384, "prompt_tokens_total": 904, "agg_tok_s": 371.2330245426377, "req_per_s": 3.8670106723191426, "lat_p50_s": 0.258474608999677, "lat_p95_s": 0.2589498649977031, "lat_mean_s": 0.25848084574863606, "lat_max_s": 0.2589498649977031, "errors_sample": []}
+--- q9-sc-S-r1 c=2 ---
+{"ts": "2026-08-08T10:18:49+0000", "label": "q9-sc-S-r1-c2", "base": "http://127.0.0.1:8127", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 2.0729080840028473, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 768, "prompt_tokens_total": 1808, "agg_tok_s": 370.49399629768874, "req_per_s": 3.859312461434258, "lat_p50_s": 0.5181849429973227, "lat_p95_s": 0.6229207159994985, "lat_mean_s": 0.4989072703747297, "lat_max_s": 0.6229207159994985, "errors_sample": []}
+--- q9-sc-S-r1 c=4 ---
+{"ts": "2026-08-08T10:18:53+0000", "label": "q9-sc-S-r1-c4", "base": "http://127.0.0.1:8127", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 4.157592483999906, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1536, "prompt_tokens_total": 3616, "agg_tok_s": 369.44457782025245, "req_per_s": 3.848381018960963, "lat_p50_s": 0.9725211209988629, "lat_p95_s": 1.1835798060019442, "lat_mean_s": 0.9855013221872468, "lat_max_s": 1.3542153830021562, "errors_sample": []}
+arm evidence: q9-sc-S-r1 spec-acc lines=104
+=== arm q9-sc-N-r1 ===
+command: env -u CUDA_VISIBLE_DEVICES -u MEMRA_PP_STAGES -u MEMRA_PP_DEVICES -u MEMRA_SERVE_SPEC -u MEMRA_SPEC_GATE -u MEMRA_SPEC_GATE_LOW -u MEMRA_SPEC_GATE_HIGH CUDA_VISIBLE_DEVICES=0 MEMRA_SERVE_SPEC=0 MEMRA_MODELS=q9=/data/models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf+/data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf MEMRA_ADDR=127.0.0.1:8127 MEMRA_CTX=4096 MEMRA_SPEC_K=3 /home/ubuntu/specplace-target/release/memra-server
+--- q9-sc-N-r1 c=1 ---
+{"ts": "2026-08-08T10:19:04+0000", "label": "q9-sc-N-r1-c1", "base": "http://127.0.0.1:8127", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 1.715770615999645, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 384, "prompt_tokens_total": 904, "agg_tok_s": 223.80614076216318, "req_per_s": 2.3313139662725333, "lat_p50_s": 0.42909540199980256, "lat_p95_s": 0.42931308200058993, "lat_mean_s": 0.4288267234996965, "lat_max_s": 0.42931308200058993, "errors_sample": []}
+--- q9-sc-N-r1 c=2 ---
+{"ts": "2026-08-08T10:19:07+0000", "label": "q9-sc-N-r1-c2", "base": "http://127.0.0.1:8127", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 2.2182463190001727, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 768, "prompt_tokens_total": 1808, "agg_tok_s": 346.2194407454983, "req_per_s": 3.6064525077656073, "lat_p50_s": 0.5538239340021391, "lat_p95_s": 0.5580560310008877, "lat_mean_s": 0.5538433826259279, "lat_max_s": 0.5580560310008877, "errors_sample": []}
+--- q9-sc-N-r1 c=4 ---
+{"ts": "2026-08-08T10:19:09+0000", "label": "q9-sc-N-r1-c4", "base": "http://127.0.0.1:8127", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 2.509060011998372, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1536, "prompt_tokens_total": 3616, "agg_tok_s": 612.1814514817578, "req_per_s": 6.376890119601644, "lat_p50_s": 0.6261048740016122, "lat_p95_s": 0.6336740539991297, "lat_mean_s": 0.6266265866879621, "lat_max_s": 0.6340181449995725, "errors_sample": []}
+arm evidence: q9-sc-N-r1 spec-acc lines=0
+=== arm q9-sc-N-r2 ===
+command: env -u CUDA_VISIBLE_DEVICES -u MEMRA_PP_STAGES -u MEMRA_PP_DEVICES -u MEMRA_SERVE_SPEC -u MEMRA_SPEC_GATE -u MEMRA_SPEC_GATE_LOW -u MEMRA_SPEC_GATE_HIGH CUDA_VISIBLE_DEVICES=0 MEMRA_SERVE_SPEC=0 MEMRA_MODELS=q9=/data/models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf+/data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf MEMRA_ADDR=127.0.0.1:8127 MEMRA_CTX=4096 MEMRA_SPEC_K=3 /home/ubuntu/specplace-target/release/memra-server
+--- q9-sc-N-r2 c=1 ---
+{"ts": "2026-08-08T10:19:21+0000", "label": "q9-sc-N-r2-c1", "base": "http://127.0.0.1:8127", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 1.710504722999758, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 384, "prompt_tokens_total": 904, "agg_tok_s": 224.49514160157878, "req_per_s": 2.338491058349779, "lat_p50_s": 0.42770644900156185, "lat_p95_s": 0.4289795009972295, "lat_mean_s": 0.427512548998493, "lat_max_s": 0.4289795009972295, "errors_sample": []}
+--- q9-sc-N-r2 c=2 ---
+{"ts": "2026-08-08T10:19:23+0000", "label": "q9-sc-N-r2-c2", "base": "http://127.0.0.1:8127", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 2.2100199300002714, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 768, "prompt_tokens_total": 1808, "agg_tok_s": 347.50817835380593, "req_per_s": 3.619876857852145, "lat_p50_s": 0.5519543500013242, "lat_p95_s": 0.5547588259978511, "lat_mean_s": 0.551787491000141, "lat_max_s": 0.5547588259978511, "errors_sample": []}
+--- q9-sc-N-r2 c=4 ---
+{"ts": "2026-08-08T10:19:26+0000", "label": "q9-sc-N-r2-c4", "base": "http://127.0.0.1:8127", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 2.48905977600225, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1536, "prompt_tokens_total": 3616, "agg_tok_s": 617.1004870228602, "req_per_s": 6.428130073154795, "lat_p50_s": 0.6210943719997886, "lat_p95_s": 0.6255983440023556, "lat_mean_s": 0.6216491123129799, "lat_max_s": 0.6257526670015068, "errors_sample": []}
+arm evidence: q9-sc-N-r2 spec-acc lines=0
+=== arm q9-sc-S-r2 ===
+command: env -u CUDA_VISIBLE_DEVICES -u MEMRA_PP_STAGES -u MEMRA_PP_DEVICES -u MEMRA_SERVE_SPEC -u MEMRA_SPEC_GATE -u MEMRA_SPEC_GATE_LOW -u MEMRA_SPEC_GATE_HIGH CUDA_VISIBLE_DEVICES=0 MEMRA_SPEC_GATE=0 MEMRA_MODELS=q9=/data/models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf+/data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf MEMRA_ADDR=127.0.0.1:8127 MEMRA_CTX=4096 MEMRA_SPEC_K=3 /home/ubuntu/specplace-target/release/memra-server
+--- q9-sc-S-r2 c=1 ---
+{"ts": "2026-08-08T10:19:36+0000", "label": "q9-sc-S-r2-c1", "base": "http://127.0.0.1:8127", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 1.0246063149970723, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 384, "prompt_tokens_total": 904, "agg_tok_s": 374.77809220910103, "req_per_s": 3.903938460511469, "lat_p50_s": 0.25557170899992343, "lat_p95_s": 0.2583322069986025, "lat_mean_s": 0.25603847224920173, "lat_max_s": 0.2583322069986025, "errors_sample": []}
+--- q9-sc-S-r2 c=2 ---
+{"ts": "2026-08-08T10:19:38+0000", "label": "q9-sc-S-r2-c2", "base": "http://127.0.0.1:8127", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 2.0509072479981114, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 768, "prompt_tokens_total": 1808, "agg_tok_s": 374.46842159714635, "req_per_s": 3.9007127249702744, "lat_p50_s": 0.5121155699998781, "lat_p95_s": 0.6166527440000209, "lat_mean_s": 0.4935075608746047, "lat_max_s": 0.6166527440000209, "errors_sample": []}
+--- q9-sc-S-r2 c=4 ---
+{"ts": "2026-08-08T10:19:43+0000", "label": "q9-sc-S-r2-c4", "base": "http://127.0.0.1:8127", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 4.07131460799792, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1536, "prompt_tokens_total": 3616, "agg_tok_s": 377.2737181701938, "req_per_s": 3.9299345642728514, "lat_p50_s": 0.9498640019992308, "lat_p95_s": 1.1564870910005993, "lat_mean_s": 0.9649420024379651, "lat_max_s": 1.326539532001334, "errors_sample": []}
+arm evidence: q9-sc-S-r2 spec-acc lines=104
+=== arm q9-sc-S-r3 ===
+command: env -u CUDA_VISIBLE_DEVICES -u MEMRA_PP_STAGES -u MEMRA_PP_DEVICES -u MEMRA_SERVE_SPEC -u MEMRA_SPEC_GATE -u MEMRA_SPEC_GATE_LOW -u MEMRA_SPEC_GATE_HIGH CUDA_VISIBLE_DEVICES=0 MEMRA_SPEC_GATE=0 MEMRA_MODELS=q9=/data/models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf+/data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf MEMRA_ADDR=127.0.0.1:8127 MEMRA_CTX=4096 MEMRA_SPEC_K=3 /home/ubuntu/specplace-target/release/memra-server
+--- q9-sc-S-r3 c=1 ---
+{"ts": "2026-08-08T10:19:53+0000", "label": "q9-sc-S-r3-c1", "base": "http://127.0.0.1:8127", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 1.0214444619996357, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 384, "prompt_tokens_total": 904, "agg_tok_s": 375.93820739725834, "req_per_s": 3.916022993721441, "lat_p50_s": 0.2553915330026939, "lat_p95_s": 0.25752408300104435, "lat_mean_s": 0.25525425625073694, "lat_max_s": 0.25752408300104435, "errors_sample": []}
+--- q9-sc-S-r3 c=2 ---
+{"ts": "2026-08-08T10:19:55+0000", "label": "q9-sc-S-r3-c2", "base": "http://127.0.0.1:8127", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 2.0276240519997373, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 768, "prompt_tokens_total": 1808, "agg_tok_s": 378.76844045253983, "req_per_s": 3.9455045880472897, "lat_p50_s": 0.5059730590000981, "lat_p95_s": 0.6104674890011665, "lat_mean_s": 0.4878832010003862, "lat_max_s": 0.6104674890011665, "errors_sample": []}
+--- q9-sc-S-r3 c=4 ---
+{"ts": "2026-08-08T10:20:00+0000", "label": "q9-sc-S-r3-c4", "base": "http://127.0.0.1:8127", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 4.067353549999098, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1536, "prompt_tokens_total": 3616, "agg_tok_s": 377.6411322788354, "req_per_s": 3.9337617945712022, "lat_p50_s": 0.9484547289976035, "lat_p95_s": 1.1563112309995631, "lat_mean_s": 0.963922663437188, "lat_max_s": 1.3235914519973448, "errors_sample": []}
+arm evidence: q9-sc-S-r3 spec-acc lines=104
+=== arm q9-sc-N-r3 ===
+command: env -u CUDA_VISIBLE_DEVICES -u MEMRA_PP_STAGES -u MEMRA_PP_DEVICES -u MEMRA_SERVE_SPEC -u MEMRA_SPEC_GATE -u MEMRA_SPEC_GATE_LOW -u MEMRA_SPEC_GATE_HIGH CUDA_VISIBLE_DEVICES=0 MEMRA_SERVE_SPEC=0 MEMRA_MODELS=q9=/data/models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf+/data/models/draft-9b-owntrim-nvfp4head-q4blk.gguf MEMRA_ADDR=127.0.0.1:8127 MEMRA_CTX=4096 MEMRA_SPEC_K=3 /home/ubuntu/specplace-target/release/memra-server
+--- q9-sc-N-r3 c=1 ---
+{"ts": "2026-08-08T10:20:11+0000", "label": "q9-sc-N-r3-c1", "base": "http://127.0.0.1:8127", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 1.7095018309992156, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 384, "prompt_tokens_total": 904, "agg_tok_s": 224.62684335093655, "req_per_s": 2.3398629515722558, "lat_p50_s": 0.4271500950017071, "lat_p95_s": 0.42815477600015583, "lat_mean_s": 0.42726108499937254, "lat_max_s": 0.42815477600015583, "errors_sample": []}
+--- q9-sc-N-r3 c=2 ---
+{"ts": "2026-08-08T10:20:13+0000", "label": "q9-sc-N-r3-c2", "base": "http://127.0.0.1:8127", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 2.2055056850003893, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 768, "prompt_tokens_total": 1808, "agg_tok_s": 348.21946060858346, "req_per_s": 3.627286048006078, "lat_p50_s": 0.5518547950014181, "lat_p95_s": 0.5543422869995993, "lat_mean_s": 0.5506696118741274, "lat_max_s": 0.5543422869995993, "errors_sample": []}
+--- q9-sc-N-r3 c=4 ---
+{"ts": "2026-08-08T10:20:16+0000", "label": "q9-sc-N-r3-c4", "base": "http://127.0.0.1:8127", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 2.4858015480022004, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1536, "prompt_tokens_total": 3616, "agg_tok_s": 617.9093424551364, "req_per_s": 6.436555650574338, "lat_p50_s": 0.6211734160024207, "lat_p95_s": 0.6228168900015589, "lat_mean_s": 0.6208379817503555, "lat_max_s": 0.623029170998052, "errors_sample": []}
+arm evidence: q9-sc-N-r3 spec-acc lines=0
+=== arm step35-pp2-S-r1 ===
+command: env -u CUDA_VISIBLE_DEVICES -u MEMRA_PP_STAGES -u MEMRA_PP_DEVICES -u MEMRA_SERVE_SPEC -u MEMRA_SPEC_GATE -u MEMRA_SPEC_GATE_LOW -u MEMRA_SPEC_GATE_HIGH MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0\,1 MEMRA_SPEC_GATE=0 MEMRA_MODELS=step35=/data/models/step37/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf+/data/models/step37/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf MEMRA_ADDR=127.0.0.1:8127 MEMRA_CTX=4096 MEMRA_SPEC_K=3 /home/ubuntu/specplace-target/release/memra-server
+--- step35-pp2-S-r1 c=1 ---
+{"ts": "2026-08-08T10:21:12+0000", "label": "step35-pp2-S-r1-c1", "base": "http://127.0.0.1:8127", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 10.944568417002301, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 392, "prompt_tokens_total": 912, "agg_tok_s": 35.81685316992775, "req_per_s": 0.36547809357069133, "lat_p50_s": 2.7396057929981907, "lat_p95_s": 2.746050566998747, "lat_mean_s": 2.736002361750252, "lat_max_s": 2.746050566998747, "errors_sample": []}
+--- step35-pp2-S-r1 c=2 ---
+{"ts": "2026-08-08T10:21:35+0000", "label": "step35-pp2-S-r1-c2", "base": "http://127.0.0.1:8127", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 21.627735416001087, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 784, "prompt_tokens_total": 1824, "agg_tok_s": 36.249749912326216, "req_per_s": 0.36989540726863485, "lat_p50_s": 5.388978052000311, "lat_p95_s": 6.873292835000029, "lat_mean_s": 5.248724608874909, "lat_max_s": 6.873292835000029, "errors_sample": []}
+--- step35-pp2-S-r1 c=4 ---
+{"ts": "2026-08-08T10:22:19+0000", "label": "step35-pp2-S-r1-c4", "base": "http://127.0.0.1:8127", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 42.70267581800363, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1568, "prompt_tokens_total": 3648, "agg_tok_s": 36.719010459267864, "req_per_s": 0.37468378019661086, "lat_p50_s": 10.079084878998401, "lat_p95_s": 12.888655561000633, "lat_mean_s": 10.244927636812463, "lat_max_s": 14.961870458999329, "errors_sample": []}
+arm evidence: step35-pp2-S-r1 spec-acc lines=104
+=== arm step35-pp2-N-r1 ===
+command: env -u CUDA_VISIBLE_DEVICES -u MEMRA_PP_STAGES -u MEMRA_PP_DEVICES -u MEMRA_SERVE_SPEC -u MEMRA_SPEC_GATE -u MEMRA_SPEC_GATE_LOW -u MEMRA_SPEC_GATE_HIGH MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0\,1 MEMRA_SERVE_SPEC=0 MEMRA_MODELS=step35=/data/models/step37/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf+/data/models/step37/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf MEMRA_ADDR=127.0.0.1:8127 MEMRA_CTX=4096 MEMRA_SPEC_K=3 /home/ubuntu/specplace-target/release/memra-server
+--- step35-pp2-N-r1 c=1 ---
+{"ts": "2026-08-08T10:23:14+0000", "label": "step35-pp2-N-r1-c1", "base": "http://127.0.0.1:8127", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 4.482367365002574, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 384, "prompt_tokens_total": 912, "agg_tok_s": 85.66901566306123, "req_per_s": 0.8923855798235545, "lat_p50_s": 1.1202484059976996, "lat_p95_s": 1.121745930002362, "lat_mean_s": 1.1204529202495905, "lat_max_s": 1.121745930002362, "errors_sample": []}
+--- step35-pp2-N-r1 c=2 ---
+{"ts": "2026-08-08T10:23:22+0000", "label": "step35-pp2-N-r1-c2", "base": "http://127.0.0.1:8127", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 7.5564601510050124, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 768, "prompt_tokens_total": 1824, "agg_tok_s": 101.6348904980139, "req_per_s": 1.058696776020978, "lat_p50_s": 1.888353387999814, "lat_p95_s": 1.8919574899991858, "lat_mean_s": 1.887490066999817, "lat_max_s": 1.8919574899991858, "errors_sample": []}
+--- step35-pp2-N-r1 c=4 ---
+{"ts": "2026-08-08T10:23:35+0000", "label": "step35-pp2-N-r1-c4", "base": "http://127.0.0.1:8127", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 12.592091473998153, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1536, "prompt_tokens_total": 3648, "agg_tok_s": 121.98132479991428, "req_per_s": 1.2706387999991071, "lat_p50_s": 3.142557551000209, "lat_p95_s": 3.169939819999854, "lat_mean_s": 3.146167582999624, "lat_max_s": 3.169978453996009, "errors_sample": []}
+arm evidence: step35-pp2-N-r1 spec-acc lines=0
+=== arm step35-pp2-N-r2 ===
+command: env -u CUDA_VISIBLE_DEVICES -u MEMRA_PP_STAGES -u MEMRA_PP_DEVICES -u MEMRA_SERVE_SPEC -u MEMRA_SPEC_GATE -u MEMRA_SPEC_GATE_LOW -u MEMRA_SPEC_GATE_HIGH MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0\,1 MEMRA_SERVE_SPEC=0 MEMRA_MODELS=step35=/data/models/step37/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf+/data/models/step37/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf MEMRA_ADDR=127.0.0.1:8127 MEMRA_CTX=4096 MEMRA_SPEC_K=3 /home/ubuntu/specplace-target/release/memra-server
+--- step35-pp2-N-r2 c=1 ---
+{"ts": "2026-08-08T10:24:30+0000", "label": "step35-pp2-N-r2-c1", "base": "http://127.0.0.1:8127", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 4.483120857003087, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 384, "prompt_tokens_total": 912, "agg_tok_s": 85.6546170063993, "req_per_s": 0.8922355938166594, "lat_p50_s": 1.1212818849962787, "lat_p95_s": 1.1213169650000054, "lat_mean_s": 1.1206487639992702, "lat_max_s": 1.1213169650000054, "errors_sample": []}
+--- step35-pp2-N-r2 c=2 ---
+{"ts": "2026-08-08T10:24:38+0000", "label": "step35-pp2-N-r2-c2", "base": "http://127.0.0.1:8127", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 7.568990223000583, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 768, "prompt_tokens_total": 1824, "agg_tok_s": 101.46663919134261, "req_per_s": 1.0569441582431522, "lat_p50_s": 1.889988913993875, "lat_p95_s": 1.8999360569941928, "lat_mean_s": 1.8906112376243982, "lat_max_s": 1.8999360569941928, "errors_sample": []}
+--- step35-pp2-N-r2 c=4 ---
+{"ts": "2026-08-08T10:24:50+0000", "label": "step35-pp2-N-r2-c4", "base": "http://127.0.0.1:8127", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 12.641992661003314, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1536, "prompt_tokens_total": 3648, "agg_tok_s": 121.49983322946316, "req_per_s": 1.265623262806908, "lat_p50_s": 3.1568776369967964, "lat_p95_s": 3.1846567539978423, "lat_mean_s": 3.1586487772488, "lat_max_s": 3.1852193899976555, "errors_sample": []}
+arm evidence: step35-pp2-N-r2 spec-acc lines=0
+=== arm step35-pp2-S-r2 ===
+command: env -u CUDA_VISIBLE_DEVICES -u MEMRA_PP_STAGES -u MEMRA_PP_DEVICES -u MEMRA_SERVE_SPEC -u MEMRA_SPEC_GATE -u MEMRA_SPEC_GATE_LOW -u MEMRA_SPEC_GATE_HIGH MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0\,1 MEMRA_SPEC_GATE=0 MEMRA_MODELS=step35=/data/models/step37/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf+/data/models/step37/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf MEMRA_ADDR=127.0.0.1:8127 MEMRA_CTX=4096 MEMRA_SPEC_K=3 /home/ubuntu/specplace-target/release/memra-server
+--- step35-pp2-S-r2 c=1 ---
+{"ts": "2026-08-08T10:25:52+0000", "label": "step35-pp2-S-r2-c1", "base": "http://127.0.0.1:8127", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 10.927345694006362, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 392, "prompt_tokens_total": 912, "agg_tok_s": 35.87330454961369, "req_per_s": 0.36605412805728255, "lat_p50_s": 2.7335823710018303, "lat_p95_s": 2.7431045659977826, "lat_mean_s": 2.731709300498551, "lat_max_s": 2.7431045659977826, "errors_sample": []}
+--- step35-pp2-S-r2 c=2 ---
+{"ts": "2026-08-08T10:26:15+0000", "label": "step35-pp2-S-r2-c2", "base": "http://127.0.0.1:8127", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 21.62880548300018, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 784, "prompt_tokens_total": 1824, "agg_tok_s": 36.24795648637225, "req_per_s": 0.36987710700379844, "lat_p50_s": 5.396809557998495, "lat_p95_s": 6.857746841000335, "lat_mean_s": 5.2483609907503705, "lat_max_s": 6.857746841000335, "errors_sample": []}
+--- step35-pp2-S-r2 c=4 ---
+{"ts": "2026-08-08T10:26:59+0000", "label": "step35-pp2-S-r2-c4", "base": "http://127.0.0.1:8127", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 42.734038208996935, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1568, "prompt_tokens_total": 3648, "agg_tok_s": 36.69206248029899, "req_per_s": 0.3744088008193775, "lat_p50_s": 10.094297665993508, "lat_p95_s": 12.909401841003273, "lat_mean_s": 10.251835254562593, "lat_max_s": 14.9781138479957, "errors_sample": []}
+arm evidence: step35-pp2-S-r2 spec-acc lines=104
+=== arm step35-pp2-S-r3 ===
+command: env -u CUDA_VISIBLE_DEVICES -u MEMRA_PP_STAGES -u MEMRA_PP_DEVICES -u MEMRA_SERVE_SPEC -u MEMRA_SPEC_GATE -u MEMRA_SPEC_GATE_LOW -u MEMRA_SPEC_GATE_HIGH MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0\,1 MEMRA_SPEC_GATE=0 MEMRA_MODELS=step35=/data/models/step37/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf+/data/models/step37/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf MEMRA_ADDR=127.0.0.1:8127 MEMRA_CTX=4096 MEMRA_SPEC_K=3 /home/ubuntu/specplace-target/release/memra-server
+--- step35-pp2-S-r3 c=1 ---
+{"ts": "2026-08-08T10:28:00+0000", "label": "step35-pp2-S-r3-c1", "base": "http://127.0.0.1:8127", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 10.915909675000876, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 392, "prompt_tokens_total": 912, "agg_tok_s": 35.91088710616035, "req_per_s": 0.3664376235322485, "lat_p50_s": 2.7277567950004595, "lat_p95_s": 2.740323673999228, "lat_mean_s": 2.7288400142497267, "lat_max_s": 2.740323673999228, "errors_sample": []}
+--- step35-pp2-S-r3 c=2 ---
+{"ts": "2026-08-08T10:28:23+0000", "label": "step35-pp2-S-r3-c2", "base": "http://127.0.0.1:8127", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 21.613027826999314, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 784, "prompt_tokens_total": 1824, "agg_tok_s": 36.274417738944265, "req_per_s": 0.3701471197851456, "lat_p50_s": 5.399500792002073, "lat_p95_s": 6.854699319999781, "lat_mean_s": 5.2444609170006515, "lat_max_s": 6.854699319999781, "errors_sample": []}
+--- step35-pp2-S-r3 c=4 ---
+{"ts": "2026-08-08T10:29:07+0000", "label": "step35-pp2-S-r3-c4", "base": "http://127.0.0.1:8127", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 42.73612482800672, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1568, "prompt_tokens_total": 3648, "agg_tok_s": 36.690270966553, "req_per_s": 0.37439052006686735, "lat_p50_s": 10.095254241998191, "lat_p95_s": 12.891144954002812, "lat_mean_s": 10.251541568748962, "lat_max_s": 14.961753543997474, "errors_sample": []}
+arm evidence: step35-pp2-S-r3 spec-acc lines=104
+=== arm step35-pp2-N-r3 ===
+command: env -u CUDA_VISIBLE_DEVICES -u MEMRA_PP_STAGES -u MEMRA_PP_DEVICES -u MEMRA_SERVE_SPEC -u MEMRA_SPEC_GATE -u MEMRA_SPEC_GATE_LOW -u MEMRA_SPEC_GATE_HIGH MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0\,1 MEMRA_SERVE_SPEC=0 MEMRA_MODELS=step35=/data/models/step37/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf+/data/models/step37/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf MEMRA_ADDR=127.0.0.1:8127 MEMRA_CTX=4096 MEMRA_SPEC_K=3 /home/ubuntu/specplace-target/release/memra-server
+--- step35-pp2-N-r3 c=1 ---
+{"ts": "2026-08-08T10:30:02+0000", "label": "step35-pp2-N-r3-c1", "base": "http://127.0.0.1:8127", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 4.483022202999564, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 384, "prompt_tokens_total": 912, "agg_tok_s": 85.65650193368836, "req_per_s": 0.8922552284759204, "lat_p50_s": 1.1207117890007794, "lat_p95_s": 1.121690979001869, "lat_mean_s": 1.1206080567499157, "lat_max_s": 1.121690979001869, "errors_sample": []}
+--- step35-pp2-N-r3 c=2 ---
+{"ts": "2026-08-08T10:30:10+0000", "label": "step35-pp2-N-r3-c2", "base": "http://127.0.0.1:8127", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 7.55948389400146, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 768, "prompt_tokens_total": 1824, "agg_tok_s": 101.59423722159354, "req_per_s": 1.0582733043915995, "lat_p50_s": 1.8892354729978251, "lat_p95_s": 1.892790406003769, "lat_mean_s": 1.8882689370011576, "lat_max_s": 1.892790406003769, "errors_sample": []}
+--- step35-pp2-N-r3 c=4 ---
+{"ts": "2026-08-08T10:30:23+0000", "label": "step35-pp2-N-r3-c4", "base": "http://127.0.0.1:8127", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 12.624573599001451, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1536, "prompt_tokens_total": 3648, "agg_tok_s": 121.66747557489711, "req_per_s": 1.2673695372385116, "lat_p50_s": 3.1534306649991777, "lat_p95_s": 3.180800137000915, "lat_mean_s": 3.154260985374094, "lat_max_s": 3.1813556749984855, "errors_sample": []}
+arm evidence: step35-pp2-N-r3 spec-acc lines=0
+GPU lock released 2026-08-08T10:30:32Z
+| model | placement | c | spec ON median (min-max) | spec OFF median (min-max) | S/N | winner |
+|---|---|---:|---:|---:|---:|---|
+| q9 | sc | 1 | 374.8 (371.2-375.9), N=3 | 224.5 (223.8-224.6), N=3 | 1.67x | spec ON |
+| q9 | sc | 2 | 374.5 (370.5-378.8), N=3 | 347.5 (346.2-348.2), N=3 | 1.08x | spec ON |
+| q9 | sc | 4 | 377.3 (369.4-377.6), N=3 | 617.1 (612.2-617.9), N=3 | 0.61x | spec OFF |
+| step35 | pp2 | 1 | 35.9 (35.8-35.9), N=3 | 85.7 (85.7-85.7), N=3 | 0.42x | spec OFF |
+| step35 | pp2 | 2 | 36.2 (36.2-36.3), N=3 | 101.6 (101.5-101.6), N=3 | 0.36x | spec OFF |
+| step35 | pp2 | 4 | 36.7 (36.7-36.7), N=3 | 121.7 (121.5-122.0), N=3 | 0.30x | spec OFF |
+
+load errors + shed requests: 0
+raw load points: 36
+SPECPLACE_MEASURE_DONE
