@@ -1,0 +1,33 @@
+=== pipeprime TTFT 20260808T095039Z commit=61c8d2f21ee2941040e158cba91ab97e31f819e8
+prompt=/tmp/pipeprime-prompt-pp4096.txt bytes=25036 sha256=23c1d8384a16c7c0bcb7736b412d43e64c0b4d8e238703864e928565f824ae11
+geometry: MEMRA_PREFILL_TICK=1024, naked PP-2 auto chunk
+lock acquired 2026-08-08T09:50:39Z
+0, 31, 180 MHz, 0 MiB
+1, 31, 180 MHz, 0 MiB
+########## PIPE ##########
+pipe ready ~40s server_log=/tmp/pipeprime-final-ttft-rerun/ttft4k-server-pipe-20260808T095039Z.log
+  warmup-pipe req 0: ttft=11.422s
+warmup-pipe: N=1 ttft p50=11.422s p95=11.422s min=11.422 max=11.422
+  PIPE req 0: ttft=11.020s
+  PIPE req 1: ttft=11.003s
+  PIPE req 2: ttft=11.012s
+  PIPE req 3: ttft=10.997s
+  PIPE req 4: ttft=11.009s
+PIPE: N=5 ttft p50=11.009s p95=11.012s min=10.997 max=11.020
+0, 40, 180 MHz, 0 MiB
+1, 41, 210 MHz, 0 MiB
+########## SERIAL ##########
+serial ready ~40s server_log=/tmp/pipeprime-final-ttft-rerun/ttft4k-server-serial-20260808T095039Z.log
+  warmup-serial req 0: ttft=18.315s
+warmup-serial: N=1 ttft p50=18.315s p95=18.315s min=18.315 max=18.315
+  SERIAL req 0: ttft=17.979s
+  SERIAL req 1: ttft=17.946s
+  SERIAL req 2: ttft=17.932s
+  SERIAL req 3: ttft=17.985s
+  SERIAL req 4: ttft=17.918s
+SERIAL: N=5 ttft p50=17.946s p95=17.979s min=17.918 max=17.985
+0, 39, 180 MHz, 0 MiB
+1, 39, 277 MHz, 0 MiB
+lock released 2026-08-08T09:55:10Z
+=== ttft rc=0
+=== done 2026-08-08T09:55:10Z

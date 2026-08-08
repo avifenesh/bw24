@@ -439,3 +439,64 @@ Receipts:
 - `raw/pp512-raw-20260808T092952Z.log`
 - `raw/pp2048-raw-20260808T092952Z.log`
 - `raw/pp4096-raw-20260808T092952Z.log`
+
+## Increment 14 - final 4k serve TTFT
+
+The first attempted TTFT run exposed a measurement-surface error: the earlier release
+command rebuilt `memra-engine --bins`, but `memra-server` is a separate package. The
+stale server binary predated Lever B and reproduced the old unsplit ~38 s floor. That
+run is excluded from evidence. Box2 then rebuilt `memra-server` from final code candidate
+`61c8d2f2` and reran the protocol in a clean receipt directory.
+
+Streaming `/v1/chat/completions`, exact 4096-token prompt, one warmup plus N=5 per arm,
+spec OFF, batch OFF, `MEMRA_PREFILL_TICK=1024`, one GPU-lock hold:
+
+| arm | p50 TTFT | p95 | min-max |
+|---|---:|---:|---:|
+| PIPE, naked auto | **11.009 s** | 11.012 s | 10.997-11.020 s |
+| SERIAL, `MEMRA_PRIME_PIPE=0` | 17.946 s | 17.979 s | 17.918-17.985 s |
+| prior Lever-B naked baseline | 15.47 s | 15.52 s | 15.46-15.55 s |
+
+The pipeline is **1.630x** faster than the same-geometry serial schedule and reduces
+TTFT by **28.8%** relative to Lever B's prior naked serve baseline. The valid arm logs
+contain no CUDA fault, panic, fatal Xid, or request error. The hold started at 31/31 C
+and ended at 39/39 C with both GPUs back at 0 MiB.
+
+Receipts:
+
+- `raw/pipeprime-final-server-build-20260808T094900Z.log`
+- `raw/ttft4k-summary-20260808T095039Z.log`
+- `raw/ttft4k-server-pipe-20260808T095039Z.log`
+- `raw/ttft4k-server-serial-20260808T095039Z.log`
+
+## Final report
+
+### Flake-mechanism verdict
+
+The old deferred-pipeline allocator race is **dead under the current reverse-publication
+fences**: stage streams cannot free/reuse caller-visible allocations before queued caller
+reads complete. Boundary-slot reuse remains a distinct ordering surface and is covered by
+the existing `TX wait(ev_rx) -> RX copy -> record(ev_rx)` chain. Because stage 1 consumes
+a copied work buffer, no additional boundary edge is required. The 200-prime soak found
+zero divergence, liveness failure, or fault; this supports the mechanism verdict without
+claiming more statistical power than the sample provides.
+
+### Final gate table
+
+| Gate | Final verdict |
+|---|---|
+| release build, final engine/server binaries | PASS |
+| `ppsplit` auto/513 | bit-identical unsplit/serial/PIPE; true overlaps 7/9 |
+| `ppsplitc` | PASS; split remains live, overlap forced to zero |
+| `chunkinv35` / canary | PASS / teeth |
+| `tickinv35` / canary | PASS / teeth |
+| model-backed `kernel-check` | ALL GREEN |
+| PP-2 `run-gen` | argmax MATCH, 6776 |
+| PP-2 `run-spec` K=1..8 | 8/8 PASS at pinned acceptance |
+| pp4096 soak | 200/200 exact+live; 0 faults; at least 1,400 true overlaps |
+| prefill perf | 330.0 / 401.8 / 417.6 tok/s at pp512/2048/4096 |
+| 4k streaming TTFT | 11.009 s p50, N=5 |
+
+Code candidate measured on box2: `61c8d2f2`. Lane commits start at `d23c6017`; all
+subsequent evidence commits are receipts only, except the final fast-gate registration
+correction that makes `auto,513` the standing rows.
