@@ -44,7 +44,7 @@ week's numbers:
 - **Chunk-boundary invariance (vLLM #38561/#40372/#51113)** — ADOPTED AND EXCEEDED. The
   tick-seg + chunkfix lanes shipped bit-exact segmentation invariance incl. off-grid
   resume, with canary teeth. Drop from the queue; the residual is the extent-class item
-  (own lane, basket 3 note under 3.d).
+  (demoted to a measured engineering lane — see the basket-3 seed table, seed (d)).
 - **PP relay-starvation laws (TRT-LLM #16170)** — RESOLVED here: #87 closed 2026-08-08
   (reverse-publication fence). The checklist entry stands as PP-2 regression armor only.
 - **TMA OOB odd-M (FlashInfer #4210)** — verdicted N/A 2026-08-05 (memra never stages;
