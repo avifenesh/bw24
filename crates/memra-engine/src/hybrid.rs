@@ -178,7 +178,7 @@ impl ResidentPlan {
 /// `mla` is the Arch gate: `Some` only for glm-dsa (cfg.mla) — every layer of an MLA model,
 /// INCLUDING its NextN/MTP block (dense MLA, no indexer), takes the Mla arm.
 ///
-/// `sep_gate` = `ModelConfig::attn_gate_separate()`: load step35's separate head-wise
+/// `sep_gate` = `ModelConfig::attn_gate_separate_at(il)`: load step35's separate head-wise
 /// `attn_gate.weight` onto the full-attn arm. It is passed in rather than read off a cfg so the
 /// MTP/draft call sites (which build a synthetic cfg) opt in explicitly.
 fn load_mixer_kind(
@@ -817,16 +817,24 @@ pub struct Step35MtpGeom {
 }
 
 impl Step35MtpGeom {
-    /// Resolve block `il`'s geometry from the `Step35Config` of the file that OWNS that block.
-    pub fn resolve(s: &memra_gguf::config::Step35Config, il: u32) -> Self {
+    /// Resolve block `il` from the geometry table of the file that OWNS that block.
+    pub fn resolve(cfg: &ModelConfig, il: u32) -> Self {
+        let s = cfg.step35.as_ref().expect("step35 MTP geometry needs step35 config");
+        let geometry = cfg.layer_geometry(il)
+            .unwrap_or_else(|| panic!("step35 MTP block {il} has no geometry-table row"));
+        assert_eq!(
+            geometry.attention_gate,
+            memra_gguf::config::AttentionGateKind::SeparateHead,
+            "step35 MTP block {il} lost its separate attention gate"
+        );
         Step35MtpGeom {
             il,
-            n_head: s.n_head(il) as usize,
-            n_head_kv: s.n_head_kv(il) as usize,
-            n_rot: s.n_rot(il) as usize,
-            rope_base: s.rope_base(il),
-            swa: s.is_swa(il),
-            window: s.sliding_window as usize,
+            n_head: geometry.n_head as usize,
+            n_head_kv: geometry.n_head_kv as usize,
+            n_rot: geometry.n_rot as usize,
+            rope_base: geometry.rope_base,
+            swa: geometry.window.is_some(),
+            window: geometry.window.unwrap_or(s.sliding_window) as usize,
             clamp_shexp: s.clamp_shexp(il),
         }
     }
@@ -906,8 +914,8 @@ impl MtpHead {
         // `Step35MtpGeom`'s note) and verify it against the block's real tensor shapes. The dims
         // that must still agree with the trunk are the INTERFACE ones (n_embd, head_dim, KV width).
         let step35 = match (main_cfg.step35.as_ref(), dcfg.step35.as_ref()) {
-            (Some(_), Some(s)) => {
-                let g = Step35MtpGeom::resolve(s, n);
+            (Some(_), Some(_)) => {
+                let g = Step35MtpGeom::resolve(&dcfg, n);
                 // ne is inner-fastest: ne[0] = in_features, ne[1] = out_features for a [in, out] 2D.
                 let out_f = |t: &str| -> Option<usize> {
                     src.find(&p(t)).and_then(|v| v.ne.get(1).copied()).map(|x| x as usize)
@@ -1100,7 +1108,7 @@ impl MtpHead {
                 .or(load_opt(e, &src, &p("ffn_norm.weight"))?)
                 .expect("draft NextN block needs post_attention_norm or ffn_norm"),
             mixer: load_mixer_kind(e, &src, n, LayerKind::FullAttention, dcfg.mla.as_ref(),
-                                   dcfg.attn_gate_separate())?,
+                                   dcfg.attn_gate_separate_at(n))?,
             ffn: load_ffn(e, &src, &dcfg, n, None, &mut resident)?,
             shared_head_norm: head_norm,
             shared_head_head: Some(head),
@@ -1293,7 +1301,7 @@ impl HybridModel {
                         })
                     } else {
                         load_mixer_kind(e, src, il, cfg.layer_kind(il), cfg.mla.as_ref(),
-                                        cfg.attn_gate_separate())?
+                                        cfg.attn_gate_separate_at(il))?
                     }
                 },
                 ffn: load_ffn(e, src, &cfg, il,
@@ -1380,7 +1388,7 @@ impl HybridModel {
                         .or(load_opt(e, src, &p("ffn_norm.weight"))?)
                         .expect("MTP block needs post_attention_norm or ffn_norm"),
                     mixer: load_mixer_kind(e, src, n, LayerKind::FullAttention, cfg.mla.as_ref(),
-                                           cfg.attn_gate_separate())?,
+                                           cfg.attn_gate_separate_at(n))?,
                     ffn: load_ffn(e, src, &cfg, n,
                                   spill.as_mut().map(|c| (gguf.unwrap(), c)), &mut resident)?,
                     shared_head_norm: load_opt(e, src, &p("nextn.shared_head_norm.weight"))?,
@@ -1397,7 +1405,7 @@ impl HybridModel {
                     d2t: None,
                     geom: None,
                     // EMBEDDED MTP block: same file, so its own arrays cover index `n`.
-                    step35: cfg.step35.as_ref().map(|s| Step35MtpGeom::resolve(s, n)),
+                    step35: cfg.step35.as_ref().map(|_| Step35MtpGeom::resolve(&cfg, n)),
                 }),
                 false => None, // nextn>0 but no embedded eh_proj (external draft GGUF) -> no head
             }

@@ -100,6 +100,141 @@ pub enum LayerKind {
     LinearAttention, // gated-deltanet / SSM with fixed recurrent state
 }
 
+/// How an attention layer gates its output before the output projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttentionGateKind {
+    None,
+    /// Qwen3.5 packs a per-dimension sigmoid gate beside Q in `attn_q.weight`.
+    FusedQ,
+    /// Step35 projects one sigmoid scalar per head through `attn_gate.weight`.
+    SeparateHead,
+}
+
+/// Complete attention geometry for one architecture-defined layer class.
+///
+/// The table is intentionally small: it holds values that execution arms otherwise reconstruct
+/// independently. Architecture-specific math, tensor names, clamps, and routing stay in their
+/// existing configs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LayerGeometry {
+    pub mixer: LayerKind,
+    pub n_head: u32,
+    pub n_head_kv: u32,
+    pub head_dim_k: u32,
+    pub head_dim_v: u32,
+    pub n_rot: u32,
+    pub rope_base: f32,
+    pub window: Option<u32>,
+    pub rope_factors: bool,
+    pub attention_gate: AttentionGateKind,
+}
+
+impl LayerGeometry {
+    pub fn attention_scale(self) -> f32 {
+        1.0 / (self.head_dim_k as f32).sqrt()
+    }
+}
+
+/// Declarative per-architecture geometry: a compact class table plus one class id per layer.
+///
+/// Qwen3.5 and Step35 are the first migrated architectures. Other architectures keep their
+/// existing scalar/per-arch config paths until they are deliberately migrated.
+#[derive(Debug, Clone)]
+pub struct ArchGeometryTable {
+    classes: Vec<LayerGeometry>,
+    layer_classes: Vec<u16>,
+}
+
+impl ArchGeometryTable {
+    fn qwen35(
+        n_layer: u32,
+        nextn: u32,
+        full_attention_interval: u32,
+        n_head: u32,
+        n_head_kv: u32,
+        head_dim_k: u32,
+        head_dim_v: u32,
+        n_rot: u32,
+        rope_base: f32,
+    ) -> Self {
+        let linear = LayerGeometry {
+            mixer: LayerKind::LinearAttention,
+            n_head,
+            n_head_kv,
+            head_dim_k,
+            head_dim_v,
+            n_rot,
+            rope_base,
+            window: None,
+            rope_factors: false,
+            attention_gate: AttentionGateKind::None,
+        };
+        let full = LayerGeometry {
+            mixer: LayerKind::FullAttention,
+            attention_gate: AttentionGateKind::FusedQ,
+            ..linear
+        };
+        let n_trunk = n_layer.saturating_sub(nextn);
+        let layer_classes = (0..n_layer)
+            .map(|il| {
+                let full_layer = il >= n_trunk
+                    || full_attention_interval == 0
+                    || (il + 1) % full_attention_interval == 0;
+                if full_layer { 1 } else { 0 }
+            })
+            .collect();
+        Self { classes: vec![linear, full], layer_classes }
+    }
+
+    fn step35(
+        n_layer: u32,
+        head_dim_k: u32,
+        head_dim_v: u32,
+        step35: &Step35Config,
+    ) -> Self {
+        let mut classes = Vec::new();
+        let mut layer_classes = Vec::with_capacity(n_layer as usize);
+        for il in 0..n_layer {
+            let swa = step35.is_swa(il);
+            let geometry = LayerGeometry {
+                mixer: LayerKind::FullAttention,
+                n_head: step35.n_head(il),
+                n_head_kv: step35.n_head_kv(il),
+                head_dim_k,
+                head_dim_v,
+                n_rot: step35.n_rot(il),
+                rope_base: step35.rope_base(il),
+                window: swa.then_some(step35.sliding_window),
+                rope_factors: !swa,
+                attention_gate: AttentionGateKind::SeparateHead,
+            };
+            let class = match classes.iter().position(|candidate| *candidate == geometry) {
+                Some(class) => class,
+                None => {
+                    classes.push(geometry);
+                    classes.len() - 1
+                }
+            };
+            assert!(class <= u16::MAX as usize, "too many architecture geometry classes");
+            layer_classes.push(class as u16);
+        }
+        Self { classes, layer_classes }
+    }
+
+    pub fn classes(&self) -> &[LayerGeometry] {
+        &self.classes
+    }
+
+    pub fn layer_classes(&self) -> &[u16] {
+        &self.layer_classes
+    }
+
+    pub fn layer(&self, il: u32) -> Option<LayerGeometry> {
+        let class = *self.layer_classes.get(il as usize)? as usize;
+        self.classes.get(class).copied()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SsmConfig {
     pub conv_kernel: u32,
@@ -356,6 +491,8 @@ pub struct ModelConfig {
     pub mla: Option<MlaConfig>,
     // Step-3.5/3.7-Flash extras — `step35` only (None for every other arch)
     pub step35: Option<Step35Config>,
+    // Declarative per-layer geometry for migrated architectures.
+    pub geometry: Option<ArchGeometryTable>,
     // multi-token-predict / NextN
     pub nextn_predict_layers: u32,
     pub n_layer_total: u32,             // includes appended MTP layers
@@ -579,6 +716,41 @@ impl ModelConfig {
             })
         } else { None };
 
+        let n_head = u("attention.head_count").unwrap_or_else(|| {
+            step35.as_ref()
+                .and_then(|s| s.head_count.iter().copied().max())
+                .expect("head_count")
+        });
+        let n_head_kv = u("attention.head_count_kv")
+            .or_else(|| step35.as_ref().and_then(|s| s.head_count_kv.iter().copied().max()))
+            .unwrap_or_else(|| u("attention.head_count")
+                .or_else(|| step35.as_ref()
+                    .and_then(|s| s.head_count.iter().copied().max()))
+                .expect("head_count_kv fallback"));
+        let rope_freq_base = f("rope.freq_base").unwrap_or(10000.0);
+        let rope_dim_count = u("rope.dimension_count").unwrap_or(head_dim_k);
+        let full_attention_interval = u("full_attention_interval").unwrap_or(0);
+        let geometry = match &arch {
+            Arch::Qwen35 | Arch::Qwen35Moe => Some(ArchGeometryTable::qwen35(
+                n_layer,
+                nextn,
+                full_attention_interval,
+                n_head,
+                n_head_kv,
+                head_dim_k,
+                head_dim_v,
+                rope_dim_count,
+                rope_freq_base,
+            )),
+            Arch::Step35 => Some(ArchGeometryTable::step35(
+                n_layer,
+                head_dim_k,
+                head_dim_v,
+                step35.as_ref().expect("step35 geometry needs step35 config"),
+            )),
+            _ => None,
+        };
+
         ModelConfig {
             arch,
             name: g.metadata.get("general.name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
@@ -589,17 +761,8 @@ impl ModelConfig {
             // panic). For step35 the global scalar is the MAX over layers: it sizes shared
             // scratch/workspace buffers, while every per-layer shape comes from
             // `step35.n_head(il)`. Max (96, not the 64 of a full layer) so no buffer under-sizes.
-            n_head: u("attention.head_count").unwrap_or_else(|| {
-                step35.as_ref()
-                    .and_then(|s| s.head_count.iter().copied().max())
-                    .expect("head_count")
-            }),
-            n_head_kv: u("attention.head_count_kv")
-                .or_else(|| step35.as_ref().and_then(|s| s.head_count_kv.iter().copied().max()))
-                .unwrap_or_else(|| u("attention.head_count")
-                    .or_else(|| step35.as_ref()
-                        .and_then(|s| s.head_count.iter().copied().max()))
-                    .expect("head_count_kv fallback")),
+            n_head,
+            n_head_kv,
             head_dim_k,
             head_dim_v,
             n_ff: u("feed_forward_length").unwrap_or(0),
@@ -609,10 +772,10 @@ impl ModelConfig {
             }),
             context_length: u("context_length").unwrap_or(0),
             rms_eps: f("attention.layer_norm_rms_epsilon").unwrap_or(1e-6),
-            rope_freq_base: f("rope.freq_base").unwrap_or(10000.0),
-            rope_dim_count: u("rope.dimension_count").unwrap_or(head_dim_k),
+            rope_freq_base,
+            rope_dim_count,
             rope_sections,
-            full_attention_interval: u("full_attention_interval").unwrap_or(0),
+            full_attention_interval,
             ssm,
             moe,
             m3: None,   // GGUF M3 metadata keys are a later arc (ST import first)
@@ -620,6 +783,7 @@ impl ModelConfig {
             gemma4,
             mla,
             step35,
+            geometry,
             nextn_predict_layers: nextn,
             n_layer_total: n_layer + nextn,
         }
@@ -703,13 +867,29 @@ impl ModelConfig {
         // NextN/MTP depth: 35B-MoE HF uses `num_nextn_predict_layers`; qwen3.6-27B (dense hybrid,
         // NVIDIA + local text ckpts) uses `mtp_num_hidden_layers`. Same meaning (head depth = 1).
         let nextn = c.num_nextn_predict_layers.or(c.mtp_num_hidden_layers).unwrap_or(0);
+        let n_layer = c.num_hidden_layers + nextn;
+        let full_attention_interval = c.full_attention_interval.unwrap_or(0);
+        let geometry = match &arch {
+            Arch::Qwen35 | Arch::Qwen35Moe => Some(ArchGeometryTable::qwen35(
+                n_layer,
+                nextn,
+                full_attention_interval,
+                n_head,
+                n_head_kv,
+                head_dim_k,
+                head_dim_v,
+                c.rotary_dim.unwrap_or(head_dim_k),
+                c.rope_theta,
+            )),
+            _ => None,
+        };
 
         ModelConfig {
             arch,
             name: c.name.clone().unwrap_or_default(),
             // GGUF `block_count` INCLUDES the MTP/NextN block(s) (hybrid.rs n_trunk = n_layer -
             // nextn); HF `num_hidden_layers` EXCLUDES them. Add nextn so both sources agree.
-            n_layer: c.num_hidden_layers + nextn,
+            n_layer,
             n_embd: c.hidden_size,
             n_head,
             n_head_kv,
@@ -723,7 +903,7 @@ impl ModelConfig {
             // partial RoPE: M3 rotates only rotary_dim (64) of head_dim (128).
             rope_dim_count: c.rotary_dim.unwrap_or(head_dim_k),
             rope_sections: Vec::new(),
-            full_attention_interval: c.full_attention_interval.unwrap_or(0),
+            full_attention_interval,
             ssm,
             moe,
             m3,
@@ -732,6 +912,7 @@ impl ModelConfig {
             mla: None,      // GGUF-first arch (glm-dsa): HF/safetensors import is a later arc
             step35: None,   // GGUF-first arch: the official prequantized GGUF is the artifact
                             // (phase-1 §3.1 — no safetensors conversion in the bring-up path)
+            geometry,
             // NextN/MTP depth: 35B-MoE HF uses `num_nextn_predict_layers`; the 27B (dense hybrid)
             // uses `mtp_num_hidden_layers` (NVIDIA + local text ckpts) — same meaning, both = 1.
             nextn_predict_layers: c.num_nextn_predict_layers.or(c.mtp_num_hidden_layers).unwrap_or(0),
@@ -751,6 +932,9 @@ impl ModelConfig {
     /// (il+1) % full_attention_interval == 0, else linear-attention (matches llama.cpp qwen35).
     /// Non-hybrid models are always full-attention.
     pub fn layer_kind(&self, il: u32) -> LayerKind {
+        if let Some(geometry) = self.layer_geometry(il) {
+            return geometry.mixer;
+        }
         if self.full_attention_interval == 0 {
             return LayerKind::FullAttention;
         }
@@ -776,6 +960,10 @@ impl ModelConfig {
     /// head_dim) and its wq out is exactly n_head*head_dim — see `attn_gate_separate()`. Running
     /// the fused split on it would read 2x out of bounds, which is why this deny-list must name it.
     pub fn attn_out_gate(&self) -> bool {
+        if let Some(table) = self.geometry.as_ref() {
+            return table.classes().iter()
+                .any(|geometry| geometry.attention_gate == AttentionGateKind::FusedQ);
+        }
         self.m3.is_none() && self.hy3.is_none() && self.gemma4.is_none() && self.mla.is_none()
             && self.step35.is_none()
     }
@@ -785,7 +973,52 @@ impl ModelConfig {
     /// before wo (upstream `step35.cpp:267-285`: `attn_out * sigmoid(g_proj(attn_norm_out))`).
     /// Distinct from `attn_out_gate()` (fused-in-wq, per-DIM) — the two are mutually exclusive.
     /// Note the gate input is the POST-attn_norm hidden state (`cur`), not the raw residual.
-    pub fn attn_gate_separate(&self) -> bool { self.step35.is_some() }
+    pub fn attn_gate_separate(&self) -> bool {
+        if let Some(table) = self.geometry.as_ref() {
+            return table.classes().iter()
+                .any(|geometry| geometry.attention_gate == AttentionGateKind::SeparateHead);
+        }
+        self.step35.is_some()
+    }
+
+    /// Geometry row for a migrated architecture. `None` means the caller must use the existing
+    /// architecture path; an out-of-range layer is never fabricated from another row.
+    pub fn layer_geometry(&self, il: u32) -> Option<LayerGeometry> {
+        self.geometry.as_ref()?.layer(il)
+    }
+
+    /// Resolve geometry for a full-attention execution arm. Migrated architectures read their
+    /// declarative row; legacy architectures receive the exact scalar geometry they used before.
+    pub fn full_attention_geometry_at(&self, il: u32) -> LayerGeometry {
+        self.layer_geometry(il).unwrap_or(LayerGeometry {
+            mixer: LayerKind::FullAttention,
+            n_head: self.n_head,
+            n_head_kv: self.n_head_kv,
+            head_dim_k: self.head_dim_k,
+            head_dim_v: self.head_dim_v,
+            n_rot: self.rope_dim_count,
+            rope_base: self.rope_freq_base,
+            window: None,
+            rope_factors: false,
+            attention_gate: if self.attn_out_gate() {
+                AttentionGateKind::FusedQ
+            } else {
+                AttentionGateKind::None
+            },
+        })
+    }
+
+    pub fn attn_out_gate_at(&self, il: u32) -> bool {
+        self.layer_geometry(il)
+            .map(|geometry| geometry.attention_gate == AttentionGateKind::FusedQ)
+            .unwrap_or_else(|| self.attn_out_gate())
+    }
+
+    pub fn attn_gate_separate_at(&self, il: u32) -> bool {
+        self.layer_geometry(il)
+            .map(|geometry| geometry.attention_gate == AttentionGateKind::SeparateHead)
+            .unwrap_or_else(|| self.attn_gate_separate())
+    }
 
     /// DeepSeek-V3-class sigmoid routing knobs, arch-agnostic: `Some((scaling_factor, route_norm))`
     /// when the router scores with sigmoid (+ optional selection bias via `exp_probs_b`), `None`
@@ -816,6 +1049,9 @@ impl ModelConfig {
     /// `attention.head_count` is an array (64 on full-attn layers, 96 on SWA). Sites that build
     /// wq/wo/attn_gate shapes or size per-head loops MUST use this, not the `n_head` field.
     pub fn n_head_at(&self, il: u32) -> u32 {
+        if let Some(geometry) = self.layer_geometry(il) {
+            return geometry.n_head;
+        }
         match self.step35.as_ref() {
             Some(s) => s.n_head(il),
             None => self.n_head,
@@ -825,6 +1061,9 @@ impl ModelConfig {
     /// Per-layer KV-head count. gemma4 carries a per-layer array; step35's is uniform-8 but is
     /// serialized as an array. Every other arch is the global scalar.
     pub fn n_head_kv_at(&self, il: u32) -> u32 {
+        if let Some(geometry) = self.layer_geometry(il) {
+            return geometry.n_head_kv;
+        }
         if let Some(g) = self.gemma4.as_ref() {
             if let Some(&n) = g.head_count_kv.get(il as usize) { return n; }
         }
@@ -835,6 +1074,9 @@ impl ModelConfig {
     /// True when layer `il` uses sliding-window attention. gemma4 and step35 carry an explicit
     /// per-layer pattern; every other arch is unwindowed (returns false).
     pub fn is_swa_at(&self, il: u32) -> bool {
+        if let Some(geometry) = self.layer_geometry(il) {
+            return geometry.window.is_some();
+        }
         if let Some(g) = self.gemma4.as_ref() {
             return g.swa_pattern.get(il as usize).copied().unwrap_or(false);
         }
@@ -1345,6 +1587,47 @@ mod hf_tests {
         // periodic full-attn classification still works
         assert_eq!(mc.layer_kind(3), LayerKind::FullAttention); // (3+1)%4==0
         assert_eq!(mc.layer_kind(0), LayerKind::LinearAttention);
+        let table = mc.geometry.as_ref().expect("qwen35 has a geometry table");
+        assert_eq!(table.classes().len(), 2);
+        assert_eq!(table.layer_classes().len(), 32);
+        let linear = mc.layer_geometry(0).unwrap();
+        assert_eq!(linear.mixer, LayerKind::LinearAttention);
+        assert_eq!(linear.attention_gate, AttentionGateKind::None);
+        let full = mc.layer_geometry(3).unwrap();
+        assert_eq!(full.mixer, LayerKind::FullAttention);
+        assert_eq!(full.n_head, 32);
+        assert_eq!(full.n_head_kv, 8);
+        assert_eq!(full.head_dim_k, 256);
+        assert_eq!(full.n_rot, 256);
+        assert_eq!(full.rope_base, 5_000_000.0);
+        assert_eq!(full.window, None);
+        assert!(!full.rope_factors);
+        assert_eq!(full.attention_gate, AttentionGateKind::FusedQ);
+    }
+
+    #[test]
+    fn qwen35_mtp_layer_is_explicit_full_attention_geometry() {
+        let json = r#"{
+          "model_type": "qwen3_5",
+          "num_hidden_layers": 32,
+          "num_nextn_predict_layers": 1,
+          "hidden_size": 4096,
+          "num_attention_heads": 32,
+          "num_key_value_heads": 8,
+          "head_dim": 128,
+          "intermediate_size": 12288,
+          "vocab_size": 151936,
+          "max_position_embeddings": 262144,
+          "full_attention_interval": 4
+        }"#;
+        let mc = ModelConfig::from_hf(&HfConfig::parse(json));
+        assert_eq!(mc.n_layer, 33);
+        assert_eq!(mc.layer_kind(31), LayerKind::FullAttention);
+        assert_eq!(mc.layer_kind(32), LayerKind::FullAttention);
+        assert_eq!(
+            mc.layer_geometry(32).unwrap().attention_gate,
+            AttentionGateKind::FusedQ
+        );
     }
 
     #[test]

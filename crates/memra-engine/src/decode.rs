@@ -1920,11 +1920,12 @@ impl HybridModel {
                         view the dc kernels cannot express) — use the eager decode".into());
         }
         let cfg = &self.cfg;
-        let n_head = cfg.n_head as usize;
-        let n_head_kv = cfg.n_head_kv as usize;
-        let head_dim = cfg.head_dim_k as usize;
+        let geometry = cfg.full_attention_geometry_at(il as u32);
+        let n_head = geometry.n_head as usize;
+        let n_head_kv = geometry.n_head_kv as usize;
+        let head_dim = geometry.head_dim_k as usize;
         let eps = cfg.rms_eps;
-        let scale = 1.0 / (head_dim as f32).sqrt();
+        let scale = geometry.attention_scale();
 
         let n_embd = cfg.n_embd as usize;
         // Q8 TRUNK-FUSION (2026-07-05): wq+wk+wv share input h — on the 35B every full-attn
@@ -1964,7 +1965,8 @@ impl HybridModel {
                 )
             };
         // M3/Hy3 have no attention output gate — wq out is exactly q; skip the split.
-        let gated = self.cfg.attn_out_gate();
+        let gated = geometry.attention_gate
+            == memra_gguf::config::AttentionGateKind::FusedQ;
         let (mut q, gate) = if gated {
             let mut q = e.uninit(n_head * head_dim)?;
             let mut gate = e.uninit(n_head * head_dim)?;
@@ -1987,7 +1989,7 @@ impl HybridModel {
             eps,
         )?;
         k = kn;
-        let rope_dims = cfg.rope_dim_count as usize;
+        let rope_dims = geometry.n_rot as usize;
         // rope pos from the resident device counter (no per-step host upload).
         e.rope_neox(
             &mut q,
@@ -1996,7 +1998,7 @@ impl HybridModel {
             rope_dims,
             n_head,
             1,
-            cfg.rope_freq_base,
+            geometry.rope_base,
             1.0,
         )?;
         e.rope_neox(
@@ -2006,7 +2008,7 @@ impl HybridModel {
             rope_dims,
             n_head_kv,
             1,
-            cfg.rope_freq_base,
+            geometry.rope_base,
             1.0,
         )?;
 
@@ -2650,11 +2652,12 @@ impl HybridModel {
             return self.step35_decode_attn(e, fa, il, h, pre_q, pos_d, cache);
         }
         let cfg = &self.cfg;
-        let n_head = cfg.n_head as usize;
-        let n_head_kv = cfg.n_head_kv as usize;
-        let head_dim = cfg.head_dim_k as usize;
+        let geometry = cfg.full_attention_geometry_at(il as u32);
+        let n_head = geometry.n_head as usize;
+        let n_head_kv = geometry.n_head_kv as usize;
+        let head_dim = geometry.head_dim_k as usize;
         let eps = cfg.rms_eps;
-        let scale = 1.0 / (head_dim as f32).sqrt();
+        let scale = geometry.attention_scale();
 
         // LATENCY-HIDING (MEMRA_KV_PREFETCH=1): warm this layer's KV stream into L2 while the
         // q/k/v projections run ahead of the fa (fa is latency-bound; its lines land warm).
@@ -2705,7 +2708,8 @@ impl HybridModel {
             };
         // q|gate fused: [2*head_dim per head]. Split on-device (no dtoh/host-loop/htod).
         // M3/Hy3 have no attention output gate — wq out is exactly q; skip the split.
-        let gated = self.cfg.attn_out_gate();
+        let gated = geometry.attention_gate
+            == memra_gguf::config::AttentionGateKind::FusedQ;
         let (mut q, gate) = if gated {
             let mut q = e.uninit(n_head * head_dim)?;
             let mut gate = e.uninit(n_head * head_dim)?;
@@ -2729,7 +2733,7 @@ impl HybridModel {
             eps,
         )?;
         k = kn;
-        let rope_dims = cfg.rope_dim_count as usize;
+        let rope_dims = geometry.n_rot as usize;
         e.rope_neox(
             &mut q,
             pos_d,
@@ -2737,7 +2741,7 @@ impl HybridModel {
             rope_dims,
             n_head,
             1,
-            cfg.rope_freq_base,
+            geometry.rope_base,
             1.0,
         )?;
         e.rope_neox(
@@ -2747,7 +2751,7 @@ impl HybridModel {
             rope_dims,
             n_head_kv,
             1,
-            cfg.rope_freq_base,
+            geometry.rope_base,
             1.0,
         )?;
 
@@ -2842,12 +2846,13 @@ impl HybridModel {
                         partial rope and the SWA offset view need a step35 twin".into());
         }
         let cfg = &self.cfg;
-        let n_head = cfg.n_head as usize;
-        let n_head_kv = cfg.n_head_kv as usize;
-        let head_dim = cfg.head_dim_k as usize;
+        let geometry = cfg.full_attention_geometry_at(il as u32);
+        let n_head = geometry.n_head as usize;
+        let n_head_kv = geometry.n_head_kv as usize;
+        let head_dim = geometry.head_dim_k as usize;
         let n_embd = cfg.n_embd as usize;
         let eps = cfg.rms_eps;
-        let scale = 1.0 / (head_dim as f32).sqrt();
+        let scale = geometry.attention_scale();
         let q_row = n_head * head_dim;
         let kv_row = n_head_kv * head_dim;
 
@@ -2873,7 +2878,8 @@ impl HybridModel {
         };
 
         // --- elementwise: batched by treating the m streams as extra rows/tokens ---
-        let gated = cfg.attn_out_gate();
+        let gated = geometry.attention_gate
+            == memra_gguf::config::AttentionGateKind::FusedQ;
         let (mut q, gate) = if gated {
             let mut q = e.uninit(m * q_row)?;
             let mut gate = e.uninit(m * q_row)?;
@@ -2888,9 +2894,18 @@ impl HybridModel {
         let mut kn = e.uninit(m * kv_row)?;
         e.rms_norm(&k, fa.k_norm.float_data(), &mut kn, head_dim, n_head_kv * m, eps)?;
         k = kn;
-        let rope_dims = cfg.rope_dim_count as usize;
-        e.rope_neox(&mut q, pos_cat, head_dim, rope_dims, n_head, m, cfg.rope_freq_base, 1.0)?;
-        e.rope_neox(&mut k, pos_cat, head_dim, rope_dims, n_head_kv, m, cfg.rope_freq_base, 1.0)?;
+        let rope_dims = geometry.n_rot as usize;
+        e.rope_neox(&mut q, pos_cat, head_dim, rope_dims, n_head, m, geometry.rope_base, 1.0)?;
+        e.rope_neox(
+            &mut k,
+            pos_cat,
+            head_dim,
+            rope_dims,
+            n_head_kv,
+            m,
+            geometry.rope_base,
+            1.0,
+        )?;
 
         // --- KV-bound: each stream appends to and attends over its own cache ---
         let mut attn_cat = e.uninit(m * q_row)?;

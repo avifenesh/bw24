@@ -972,11 +972,13 @@ impl HybridModel {
         geom: Option<&crate::hybrid::DraftGeom>,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
-        let n_head = geom.map(|g| g.n_head).unwrap_or(cfg.n_head as usize);
-        let n_head_kv = geom.map(|g| g.n_head_kv).unwrap_or(cfg.n_head_kv as usize);
-        let head_dim = cfg.head_dim_k as usize;
+        let mtp_il = cfg.n_layer.saturating_sub(cfg.nextn_predict_layers);
+        let geometry = cfg.full_attention_geometry_at(mtp_il);
+        let n_head = geom.map(|g| g.n_head).unwrap_or(geometry.n_head as usize);
+        let n_head_kv = geom.map(|g| g.n_head_kv).unwrap_or(geometry.n_head_kv as usize);
+        let head_dim = geometry.head_dim_k as usize;
         let eps = cfg.rms_eps;
-        let scale = 1.0 / (head_dim as f32).sqrt();
+        let scale = geometry.attention_scale();
         let n_embd = geom.map(|g| g.d_inner).unwrap_or(cfg.n_embd as usize);
         let bucket_max = scratch.cap; // < 96 guaranteed by the graph_draft eligibility gate
 
@@ -996,7 +998,8 @@ impl HybridModel {
                 )
             };
         // M3/Hy3 have no attention output gate — wq out is exactly q; skip the split.
-        let gated = self.cfg.attn_out_gate();
+        let gated = geometry.attention_gate
+            == memra_gguf::config::AttentionGateKind::FusedQ;
         let (mut q, gate) = if gated {
             let mut q = e.zeros(n_head * head_dim)?;
             let mut gate = e.zeros(n_head * head_dim)?;
@@ -1019,7 +1022,7 @@ impl HybridModel {
             eps,
         )?;
         k = kn;
-        let rope_dims = cfg.rope_dim_count as usize;
+        let rope_dims = geometry.n_rot as usize;
         e.rope_neox(
             &mut q,
             pos_d,
@@ -1027,7 +1030,7 @@ impl HybridModel {
             rope_dims,
             n_head,
             1,
-            cfg.rope_freq_base,
+            geometry.rope_base,
             1.0,
         )?;
         e.rope_neox(
@@ -1037,7 +1040,7 @@ impl HybridModel {
             rope_dims,
             n_head_kv,
             1,
-            cfg.rope_freq_base,
+            geometry.rope_base,
             1.0,
         )?;
 
@@ -1151,8 +1154,13 @@ impl HybridModel {
             .as_ref()
             .map(|g| g.n_head_kv)
             .or(mtp.step35.as_ref().map(|s| s.n_head_kv))
-            .unwrap_or(cfg.n_head_kv as usize);
-        let head_dim = cfg.head_dim_k as usize;
+            .unwrap_or_else(|| {
+                let mtp_il = cfg.n_layer.saturating_sub(cfg.nextn_predict_layers);
+                cfg.full_attention_geometry_at(mtp_il).n_head_kv as usize
+            });
+        let mtp_il = cfg.n_layer.saturating_sub(cfg.nextn_predict_layers);
+        let geometry = cfg.full_attention_geometry_at(mtp_il);
+        let head_dim = geometry.head_dim_k as usize;
         let mut k = e.matmul(&fa.wk, &a_norm, t)?;
         let v = e.matmul(&fa.wv, &a_norm, t)?;
         let mut kn = e.zeros(t * n_head_kv * head_dim)?;
@@ -1178,7 +1186,7 @@ impl HybridModel {
                     self.step35_aux.as_ref().and_then(|a| a.rope_freqs.as_ref())
                 },
             ),
-            None => (cfg.rope_dim_count as usize, cfg.rope_freq_base, None),
+            None => (geometry.n_rot as usize, geometry.rope_base, None),
         };
         match ff {
             Some(f) => e.rope_neox_ff(&mut k, &pos_d, head_dim, rope_dims, n_head_kv, t,
@@ -2703,11 +2711,12 @@ impl HybridModel {
             return self.step35_verify(e, fa, h, h_q8, t, cache, il);
         }
         let cfg = &self.cfg;
-        let n_head = cfg.n_head as usize;
-        let n_head_kv = cfg.n_head_kv as usize;
-        let head_dim = cfg.head_dim_k as usize;
+        let geometry = cfg.full_attention_geometry_at(il as u32);
+        let n_head = geometry.n_head as usize;
+        let n_head_kv = geometry.n_head_kv as usize;
+        let head_dim = geometry.head_dim_k as usize;
         let eps = cfg.rms_eps;
-        let scale = 1.0 / (head_dim as f32).sqrt();
+        let scale = geometry.attention_scale();
         let n_embd = cfg.n_embd as usize;
 
         // DECODE-EXACT Q/K/V projections: matmul_decode_exact forces the MMVQ (warp-per-row) path
@@ -2764,7 +2773,8 @@ impl HybridModel {
             }
         };
         // M3/Hy3 have no attention output gate — wq out is exactly q; skip the split.
-        let gated = self.cfg.attn_out_gate();
+        let gated = geometry.attention_gate
+            == memra_gguf::config::AttentionGateKind::FusedQ;
         let (mut q, gate) = if gated {
             let mut q = vbuf(e, t * n_head * head_dim)?; // fully written by q_gate_split
             let mut gate = vbuf(e, t * n_head * head_dim)?; // fully written by q_gate_split
@@ -2794,7 +2804,7 @@ impl HybridModel {
             eps,
         )?;
         k = kn;
-        let rope_dims = cfg.rope_dim_count as usize;
+        let rope_dims = geometry.n_rot as usize;
         e.rope_neox(
             &mut q,
             pos_d,
@@ -2802,7 +2812,7 @@ impl HybridModel {
             rope_dims,
             n_head,
             t,
-            cfg.rope_freq_base,
+            geometry.rope_base,
             1.0,
         )?;
         e.rope_neox(
@@ -2812,7 +2822,7 @@ impl HybridModel {
             rope_dims,
             n_head_kv,
             t,
-            cfg.rope_freq_base,
+            geometry.rope_base,
             1.0,
         )?;
 
