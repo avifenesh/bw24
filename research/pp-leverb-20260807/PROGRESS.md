@@ -347,6 +347,41 @@ differently and the unsplit walk's peer-read tax is per-chunk-constant. The unsp
 reproduces Lever A's 32.04 s receipt to within noise (same-binary control). The 4k TTFT
 arc across the two lanes: **38.2 s (floor) → 32.0 s (Lever A) → 15.5 s (Lever B)**.
 
+### inc3b — the second binding law + the STOP-bar shapes (`raw/inc3b-battery-20260808T*.log`)
+
+- **T1 tickinv35 naked over the split: PASS** — serve's per-tick prime loop (budgets
+  0/1024/513/512/256/64 + off-grid resume splits 64/256/512) is bit-identical through the
+  walker; the seq_end law composes with the stage split.
+- **T1c tickinv35 canary: CANARY UNEXPECTEDLY MATCHED** — the third occurrence of the
+  vacuous-canary class on this arch (GAP 1, Lever-A battery-2 G2c, now this). Mechanism
+  hypothesis (pre-registered before the check run): the canary seam
+  (`MEMRA_PRIME_CALLLOCAL=1`) moves only the `seq_end` predicate, and under Lever A's FA
+  default the windowed/unwindowed kernels agree BITWISE on every view the predicate can
+  differ on (a call with local `seq_end <= win` covers only positions < win, so its views
+  have no maskable key — the same identity that made battery-2's predicate-only seam
+  inert). The tickinv canary was calibrated 2026-08-07 02:20Z — BEFORE Lever A's FA
+  default landed (~14:00Z): a verdict calibrated on the old kernel class, exactly the
+  re-sweep law from the H100 lane. Check running: canary + naked on the FLOOR arm
+  (`MEMRA_STEP35_SWA_FA=0`), where the predicate selects between genuinely different
+  numeric classes. `raw/tickinvc-floor-*.log`.
+- **G7 pp512/pp2048 split-vs-unsplit N=5 interleaved** (STOP-bar check — no small-prompt
+  regression allowed):
+
+| shape | split (5 reps) | unsplit (5 reps) | ratio |
+|---|---|---|---|
+| pp512 (T=461) | 256.2, 248.1, 248.3, 248.4, 248.3 (med **248.3**) | 87.6, 87.3, 87.3, 87.5, 87.3 (med **87.3**) | **2.84x** |
+| pp2048 (T=1833) | 267.5, 263.2, 263.3, 263.1, 263.2 (med **263.2**) | 126.1, 125.9, 126.0, 125.7, 125.9 (med **125.9**) | **2.09x** |
+
+No shape regresses; the split wins MORE at small T (the unsplit walk's peer-read tax is
+per-chunk-constant while compute shrinks). STOP bar clear.
+
+### Local 5090 receipts (default-flip gate discipline)
+
+kernel-check q9 NVFP4: **ALL GREEN**; run-gen q9: **MATCH** (argmax 4844, 139.7 tok/s
+gen) — the slab arm cannot fire on softmax-router archs (they take pairs/dev before the
+sequential body), and single-card behavior is unchanged. `ppsplit` SKIPs on one GPU by
+design (box battery is the authority).
+
 ### What remains (the honest cut line)
 
 - **Chunk pipelining (step 6)** — stage-0 chunk N+1 under stage-1 chunk N, the SGLang
