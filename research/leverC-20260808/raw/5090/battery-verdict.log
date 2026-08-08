@@ -1,0 +1,34 @@
+=== Lever C local RTX 5090 final verdict ===
+measurement_commit=3a491bcfcafc66e6283b02a244ab0944fdfdca4a
+rig=NVIDIA GeForce RTX 5090 Laptop GPU
+coordination=/tmp/gpu5090.lock
+resident_compute_process=Hermes embedder, 394 MiB
+
+release_build=PASS
+kernel_check=PASS ALL_GREEN
+run_gen_kat=PASS MATCH/MATCH grouped_dispatch=resident-q8-rows
+run_gen_gemma26b=PASS MATCH/MATCH
+run_gen_q35=PASS MATCH/MATCH grouped_dispatch=resident-q8-rows
+chunkinv_qwen=PASS
+chunkinv_canary=PASS
+
+memory_rollback_peak_mib=19606
+memory_rollback_headroom_mib=4857
+memory_grouped_peak_mib=19542
+memory_grouped_headroom_mib=4921
+memory_ooms=0
+memory_gate=PASS
+
+throughput_model=KAT-Coder
+throughput_shape=pp2048
+throughput_protocol=N=5 per arm, adjacent interleaved pairs, alternating order, one flock hold, nice -n 10
+throughput_rollback_median_tok_s=4027.1
+throughput_grouped_median_tok_s=992.7
+throughput_grouped_delta_pct=-75.3
+throughput_grouped_pairwise_wins=0/5
+throughput_gate=FAIL
+
+proof_rig_verdict=FAIL
+shipping_decision=MEMRA_MOE_GROUPED remains default-off; explicit =1 preserves the research arm
+post_edit_release_build=PASS
+naked_default_probe=PASS MATCH/MATCH grouped_lines=0 oom_lines=0

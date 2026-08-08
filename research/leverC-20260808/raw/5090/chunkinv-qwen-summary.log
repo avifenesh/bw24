@@ -1,0 +1,31 @@
+=== Lever C local 5090 qwen chunk-invariance battery ===
+started_utc=2026-08-08T13:39:47Z
+commit=3a491bcfcafc66e6283b02a244ab0944fdfdca4a
+model=/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf size=5657607424
+lock_acquired_utc=2026-08-08T13:39:47Z
+0, NVIDIA GeForce RTX 5090 Laptop GPU, 58, 0 %, 430 MiB, 24463 MiB, 180 MHz, P8
+7600, /home/avifenesh/projects/hermes-agent/.venv/bin/python, 394 MiB
+--- chunkinv default ---
+chunk-invariance-gate: label=qwen-grain assert=invariant seam=MEMRA_PRIME_F32CHUNK0 legacy-seam=off got=invariant canary=0 chunks=2048,64,32 model=Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+chunk-invariance-gate: PASS (raw log research/leverC-20260808/raw/5090/chunkinv-qwen-probe.log)
+chunkinv assertion=PASS
+--- chunkinv canary ---
+chunk-invariance-gate: label=qwen-grain assert=invariant seam=MEMRA_PRIME_F32CHUNK0 legacy-seam=on got=variant canary=1 chunks=2048,64,32 model=Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+         64 | DIFFER |            64 | 5.269e-1 | - | identical
+         32 | DIFFER |            32 | 6.375e-1 | - | step 18
+    chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+         64 | DIFFER |            64 | 3.909e-1 | - | step 47
+         32 | DIFFER |            32 | 5.041e-1 | - | step 16
+    chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+chunk-invariance-gate: PASS (canary broke the assertion as required — gate has teeth; log research/leverC-20260808/raw/5090/chunkinv-qwen-canary-probe.log)
+chunkinv_canary assertion=PASS
+0, 69, 96 %, 430 MiB, 24463 MiB, 2115 MHz, P0
+lock_released_utc=2026-08-08T13:39:58Z
+battery_rc=0
+finished_utc=2026-08-08T13:39:58Z

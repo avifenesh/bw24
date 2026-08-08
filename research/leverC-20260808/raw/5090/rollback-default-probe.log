@@ -1,0 +1,224 @@
+=== Lever C naked-default rollback probe ===
+started_utc=2026-08-08T13:49:59Z
+source_commit=3a491bcfcafc66e6283b02a244ab0944fdfdca4a
+dirty_diff_sha256=a0c5c9400c41f5e467fdc721a54ae631e00ffad20af424d6dd3382f282c6943c
+model=/data/ai-ml/hf-models/kat-coder-v25-dev-gguf/Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf size=18806446496
+prompt=tools/fast-gate/prompts/probe.txt prompt_sha256=3dbf34d3aa9f94fe5f03e04acabc20406535c57b01bb2de1f8c4568615b6f596
+protocol=flock hold; env -u MEMRA_MOE_GROUPED; MEMRA_MOE_STATS=1; MEMRA_NGEN=1; nice -n 10
+lock_acquired_utc=2026-08-08T13:49:59Z
+0, NVIDIA GeForce RTX 5090 Laptop GPU, 53, 0 %, 430 MiB, 24463 MiB, 187 MHz, P8
+7600, /home/avifenesh/projects/hermes-agent/.venv/bin/python, 394 MiB
+[moe] resident-experts decision (dev0): experts 17.11GB + trunk 1.68GB vs free 23.92GB (expert budget 20.24GB) -> RESIDENT
+loaded qwen35moe (40 trunk layers; optional MTP skipped)
+prompt text: "The storage-to-compute pipeline moves expert weights from NVMe through pinned host buffers over PCIe into device memory, where quantized matvec kernels consume them. Each stage is measured together with the others, because a faster kernel can hide a data-movement regression. Describe, step by step, how a mixture-of-experts decoder selects and executes its experts for a single token, and explain which stage dominates latency when the expert bank exceeds device memory.\n"
+prompt tokens: [760, 5638, 4534, 11147, 8232, 14855, 10480, 6009, 13914, 494, 23683, 7575, 1472, 46120, 3357, 26502, 888, 87567, 1083, 3545, 4779, 11, 1332, 9966, 1452, 5344, 3947, 61369, 23304, 1070, 13, 8618, 6228, 369, 16384, 3658, 440, 279, 3672, 11, 1521, 264, 10281, 9705, 628, 9959, 264, 795, 1395, 14043, 29551, 13, 58737, 11, 2923, 539, 2923, 11, 1204, 264, 20340, 8404, 17830, 15089, 23776, 47493, 321, 49703, 1141, 11312, 364, 264, 3074, 3817, 11, 321, 10033, 864, 6228, 80018, 37972, 948, 279, 6009, 5883, 34105, 3545, 4779, 13, 198]
+moe-stats il=0 t=90 assignments=720 active=179/256 entropy=6.996b (max 8.000b) mean_tok_per_active=4.02 max_tok_per_expert=34
+moe-stats il=1 t=90 assignments=720 active=172/256 entropy=6.983b (max 8.000b) mean_tok_per_active=4.19 max_tok_per_expert=43
+moe-stats il=2 t=90 assignments=720 active=185/256 entropy=7.050b (max 8.000b) mean_tok_per_active=3.89 max_tok_per_expert=30
+moe-stats il=3 t=90 assignments=720 active=144/256 entropy=6.199b (max 8.000b) mean_tok_per_active=5.00 max_tok_per_expert=47
+moe-stats il=4 t=90 assignments=720 active=105/256 entropy=5.889b (max 8.000b) mean_tok_per_active=6.86 max_tok_per_expert=59
+moe-stats il=5 t=90 assignments=720 active=116/256 entropy=5.900b (max 8.000b) mean_tok_per_active=6.21 max_tok_per_expert=62
+moe-stats il=6 t=90 assignments=720 active=105/256 entropy=5.849b (max 8.000b) mean_tok_per_active=6.86 max_tok_per_expert=62
+moe-stats il=7 t=90 assignments=720 active=88/256 entropy=5.350b (max 8.000b) mean_tok_per_active=8.18 max_tok_per_expert=73
+moe-stats il=8 t=90 assignments=720 active=97/256 entropy=5.385b (max 8.000b) mean_tok_per_active=7.42 max_tok_per_expert=65
+moe-stats il=9 t=90 assignments=720 active=81/256 entropy=5.000b (max 8.000b) mean_tok_per_active=8.89 max_tok_per_expert=76
+moe-stats il=10 t=90 assignments=720 active=98/256 entropy=5.852b (max 8.000b) mean_tok_per_active=7.35 max_tok_per_expert=62
+moe-stats il=11 t=90 assignments=720 active=105/256 entropy=6.129b (max 8.000b) mean_tok_per_active=6.86 max_tok_per_expert=36
+moe-stats il=12 t=90 assignments=720 active=107/256 entropy=5.810b (max 8.000b) mean_tok_per_active=6.73 max_tok_per_expert=72
+moe-stats il=13 t=90 assignments=720 active=94/256 entropy=5.625b (max 8.000b) mean_tok_per_active=7.66 max_tok_per_expert=69
+moe-stats il=14 t=90 assignments=720 active=88/256 entropy=5.373b (max 8.000b) mean_tok_per_active=8.18 max_tok_per_expert=59
+moe-stats il=15 t=90 assignments=720 active=93/256 entropy=5.452b (max 8.000b) mean_tok_per_active=7.74 max_tok_per_expert=74
+moe-stats il=16 t=90 assignments=720 active=97/256 entropy=5.760b (max 8.000b) mean_tok_per_active=7.42 max_tok_per_expert=64
+moe-stats il=17 t=90 assignments=720 active=109/256 entropy=5.961b (max 8.000b) mean_tok_per_active=6.61 max_tok_per_expert=57
+moe-stats il=18 t=90 assignments=720 active=96/256 entropy=5.746b (max 8.000b) mean_tok_per_active=7.50 max_tok_per_expert=44
+moe-stats il=19 t=90 assignments=720 active=95/256 entropy=5.743b (max 8.000b) mean_tok_per_active=7.58 max_tok_per_expert=59
+moe-stats il=20 t=90 assignments=720 active=83/256 entropy=5.192b (max 8.000b) mean_tok_per_active=8.67 max_tok_per_expert=73
+moe-stats il=21 t=90 assignments=720 active=89/256 entropy=5.342b (max 8.000b) mean_tok_per_active=8.09 max_tok_per_expert=81
+moe-stats il=22 t=90 assignments=720 active=98/256 entropy=5.750b (max 8.000b) mean_tok_per_active=7.35 max_tok_per_expert=68
+moe-stats il=23 t=90 assignments=720 active=123/256 entropy=6.360b (max 8.000b) mean_tok_per_active=5.85 max_tok_per_expert=29
+moe-stats il=24 t=90 assignments=720 active=102/256 entropy=5.697b (max 8.000b) mean_tok_per_active=7.06 max_tok_per_expert=71
+moe-stats il=25 t=90 assignments=720 active=103/256 entropy=5.668b (max 8.000b) mean_tok_per_active=6.99 max_tok_per_expert=76
+moe-stats il=26 t=90 assignments=720 active=109/256 entropy=5.891b (max 8.000b) mean_tok_per_active=6.61 max_tok_per_expert=50
+moe-stats il=27 t=90 assignments=720 active=99/256 entropy=5.587b (max 8.000b) mean_tok_per_active=7.27 max_tok_per_expert=75
+moe-stats il=28 t=90 assignments=720 active=106/256 entropy=5.954b (max 8.000b) mean_tok_per_active=6.79 max_tok_per_expert=88
+moe-stats il=29 t=90 assignments=720 active=116/256 entropy=6.158b (max 8.000b) mean_tok_per_active=6.21 max_tok_per_expert=59
+moe-stats il=30 t=90 assignments=720 active=106/256 entropy=5.943b (max 8.000b) mean_tok_per_active=6.79 max_tok_per_expert=46
+moe-stats il=31 t=90 assignments=720 active=100/256 entropy=5.837b (max 8.000b) mean_tok_per_active=7.20 max_tok_per_expert=45
+moe-stats il=32 t=90 assignments=720 active=108/256 entropy=6.208b (max 8.000b) mean_tok_per_active=6.67 max_tok_per_expert=33
+moe-stats il=33 t=90 assignments=720 active=101/256 entropy=5.949b (max 8.000b) mean_tok_per_active=7.13 max_tok_per_expert=66
+moe-stats il=34 t=90 assignments=720 active=107/256 entropy=6.233b (max 8.000b) mean_tok_per_active=6.73 max_tok_per_expert=28
+moe-stats il=35 t=90 assignments=720 active=102/256 entropy=5.472b (max 8.000b) mean_tok_per_active=7.06 max_tok_per_expert=72
+moe-stats il=36 t=90 assignments=720 active=99/256 entropy=5.707b (max 8.000b) mean_tok_per_active=7.27 max_tok_per_expert=71
+moe-stats il=37 t=90 assignments=720 active=98/256 entropy=5.566b (max 8.000b) mean_tok_per_active=7.35 max_tok_per_expert=82
+moe-stats il=38 t=90 assignments=720 active=86/256 entropy=5.355b (max 8.000b) mean_tok_per_active=8.37 max_tok_per_expert=74
+moe-stats il=39 t=90 assignments=720 active=107/256 entropy=5.742b (max 8.000b) mean_tok_per_active=6.73 max_tok_per_expert=64
+prefill argmax=32  decode argmax=32  logit maxdiff=9.671e-1  MATCH
+moe-stats il=0 t=90 assignments=720 active=179/256 entropy=6.996b (max 8.000b) mean_tok_per_active=4.02 max_tok_per_expert=34
+moe-stats il=1 t=90 assignments=720 active=172/256 entropy=6.983b (max 8.000b) mean_tok_per_active=4.19 max_tok_per_expert=43
+moe-stats il=2 t=90 assignments=720 active=186/256 entropy=7.060b (max 8.000b) mean_tok_per_active=3.87 max_tok_per_expert=30
+moe-stats il=3 t=90 assignments=720 active=144/256 entropy=6.202b (max 8.000b) mean_tok_per_active=5.00 max_tok_per_expert=47
+moe-stats il=4 t=90 assignments=720 active=105/256 entropy=5.892b (max 8.000b) mean_tok_per_active=6.86 max_tok_per_expert=59
+moe-stats il=5 t=90 assignments=720 active=115/256 entropy=5.908b (max 8.000b) mean_tok_per_active=6.26 max_tok_per_expert=62
+moe-stats il=6 t=90 assignments=720 active=105/256 entropy=5.850b (max 8.000b) mean_tok_per_active=6.86 max_tok_per_expert=62
+moe-stats il=7 t=90 assignments=720 active=85/256 entropy=5.320b (max 8.000b) mean_tok_per_active=8.47 max_tok_per_expert=72
+moe-stats il=8 t=90 assignments=720 active=97/256 entropy=5.392b (max 8.000b) mean_tok_per_active=7.42 max_tok_per_expert=65
+moe-stats il=9 t=90 assignments=720 active=80/256 entropy=5.007b (max 8.000b) mean_tok_per_active=9.00 max_tok_per_expert=77
+moe-stats il=10 t=90 assignments=720 active=99/256 entropy=5.864b (max 8.000b) mean_tok_per_active=7.27 max_tok_per_expert=61
+moe-stats il=11 t=90 assignments=720 active=106/256 entropy=6.136b (max 8.000b) mean_tok_per_active=6.79 max_tok_per_expert=36
+moe-stats il=12 t=90 assignments=720 active=108/256 entropy=5.825b (max 8.000b) mean_tok_per_active=6.67 max_tok_per_expert=72
+moe-stats il=13 t=90 assignments=720 active=95/256 entropy=5.638b (max 8.000b) mean_tok_per_active=7.58 max_tok_per_expert=68
+moe-stats il=14 t=90 assignments=720 active=92/256 entropy=5.415b (max 8.000b) mean_tok_per_active=7.83 max_tok_per_expert=57
+moe-stats il=15 t=90 assignments=720 active=96/256 entropy=5.490b (max 8.000b) mean_tok_per_active=7.50 max_tok_per_expert=73
+moe-stats il=16 t=90 assignments=720 active=99/256 entropy=5.746b (max 8.000b) mean_tok_per_active=7.27 max_tok_per_expert=64
+moe-stats il=17 t=90 assignments=720 active=109/256 entropy=5.966b (max 8.000b) mean_tok_per_active=6.61 max_tok_per_expert=57
+moe-stats il=18 t=90 assignments=720 active=99/256 entropy=5.780b (max 8.000b) mean_tok_per_active=7.27 max_tok_per_expert=47
+moe-stats il=19 t=90 assignments=720 active=97/256 entropy=5.767b (max 8.000b) mean_tok_per_active=7.42 max_tok_per_expert=59
+moe-stats il=20 t=90 assignments=720 active=84/256 entropy=5.206b (max 8.000b) mean_tok_per_active=8.57 max_tok_per_expert=73
+moe-stats il=21 t=90 assignments=720 active=89/256 entropy=5.320b (max 8.000b) mean_tok_per_active=8.09 max_tok_per_expert=81
+moe-stats il=22 t=90 assignments=720 active=98/256 entropy=5.748b (max 8.000b) mean_tok_per_active=7.35 max_tok_per_expert=68
+moe-stats il=23 t=90 assignments=720 active=123/256 entropy=6.365b (max 8.000b) mean_tok_per_active=5.85 max_tok_per_expert=29
+moe-stats il=24 t=90 assignments=720 active=99/256 entropy=5.673b (max 8.000b) mean_tok_per_active=7.27 max_tok_per_expert=69
+moe-stats il=25 t=90 assignments=720 active=105/256 entropy=5.669b (max 8.000b) mean_tok_per_active=6.86 max_tok_per_expert=77
+moe-stats il=26 t=90 assignments=720 active=106/256 entropy=5.851b (max 8.000b) mean_tok_per_active=6.79 max_tok_per_expert=52
+moe-stats il=27 t=90 assignments=720 active=99/256 entropy=5.587b (max 8.000b) mean_tok_per_active=7.27 max_tok_per_expert=75
+moe-stats il=28 t=90 assignments=720 active=109/256 entropy=5.968b (max 8.000b) mean_tok_per_active=6.61 max_tok_per_expert=88
+moe-stats il=29 t=90 assignments=720 active=116/256 entropy=6.142b (max 8.000b) mean_tok_per_active=6.21 max_tok_per_expert=61
+moe-stats il=30 t=90 assignments=720 active=107/256 entropy=5.928b (max 8.000b) mean_tok_per_active=6.73 max_tok_per_expert=48
+moe-stats il=31 t=90 assignments=720 active=101/256 entropy=5.854b (max 8.000b) mean_tok_per_active=7.13 max_tok_per_expert=46
+moe-stats il=32 t=90 assignments=720 active=108/256 entropy=6.225b (max 8.000b) mean_tok_per_active=6.67 max_tok_per_expert=33
+moe-stats il=33 t=90 assignments=720 active=103/256 entropy=5.960b (max 8.000b) mean_tok_per_active=6.99 max_tok_per_expert=66
+moe-stats il=34 t=90 assignments=720 active=104/256 entropy=6.218b (max 8.000b) mean_tok_per_active=6.92 max_tok_per_expert=28
+moe-stats il=35 t=90 assignments=720 active=101/256 entropy=5.469b (max 8.000b) mean_tok_per_active=7.13 max_tok_per_expert=73
+moe-stats il=36 t=90 assignments=720 active=98/256 entropy=5.735b (max 8.000b) mean_tok_per_active=7.35 max_tok_per_expert=69
+moe-stats il=37 t=90 assignments=720 active=101/256 entropy=5.586b (max 8.000b) mean_tok_per_active=7.13 max_tok_per_expert=82
+moe-stats il=38 t=90 assignments=720 active=87/256 entropy=5.379b (max 8.000b) mean_tok_per_active=8.28 max_tok_per_expert=74
+moe-stats il=39 t=90 assignments=720 active=107/256 entropy=5.734b (max 8.000b) mean_tok_per_active=6.73 max_tok_per_expert=63
+batched-prime argmax=32  tokenwise argmax=32  logit maxdiff=1.279e0  MATCH
+moe-stats il=0 t=90 assignments=720 active=179/256 entropy=6.996b (max 8.000b) mean_tok_per_active=4.02 max_tok_per_expert=34
+moe-stats il=1 t=90 assignments=720 active=172/256 entropy=6.983b (max 8.000b) mean_tok_per_active=4.19 max_tok_per_expert=43
+moe-stats il=2 t=90 assignments=720 active=185/256 entropy=7.050b (max 8.000b) mean_tok_per_active=3.89 max_tok_per_expert=30
+moe-stats il=3 t=90 assignments=720 active=144/256 entropy=6.199b (max 8.000b) mean_tok_per_active=5.00 max_tok_per_expert=47
+moe-stats il=4 t=90 assignments=720 active=105/256 entropy=5.889b (max 8.000b) mean_tok_per_active=6.86 max_tok_per_expert=59
+moe-stats il=5 t=90 assignments=720 active=116/256 entropy=5.900b (max 8.000b) mean_tok_per_active=6.21 max_tok_per_expert=62
+moe-stats il=6 t=90 assignments=720 active=105/256 entropy=5.849b (max 8.000b) mean_tok_per_active=6.86 max_tok_per_expert=62
+moe-stats il=7 t=90 assignments=720 active=88/256 entropy=5.350b (max 8.000b) mean_tok_per_active=8.18 max_tok_per_expert=73
+moe-stats il=8 t=90 assignments=720 active=97/256 entropy=5.385b (max 8.000b) mean_tok_per_active=7.42 max_tok_per_expert=65
+moe-stats il=9 t=90 assignments=720 active=81/256 entropy=5.000b (max 8.000b) mean_tok_per_active=8.89 max_tok_per_expert=76
+moe-stats il=10 t=90 assignments=720 active=98/256 entropy=5.852b (max 8.000b) mean_tok_per_active=7.35 max_tok_per_expert=62
+moe-stats il=11 t=90 assignments=720 active=105/256 entropy=6.129b (max 8.000b) mean_tok_per_active=6.86 max_tok_per_expert=36
+moe-stats il=12 t=90 assignments=720 active=107/256 entropy=5.810b (max 8.000b) mean_tok_per_active=6.73 max_tok_per_expert=72
+moe-stats il=13 t=90 assignments=720 active=94/256 entropy=5.625b (max 8.000b) mean_tok_per_active=7.66 max_tok_per_expert=69
+moe-stats il=14 t=90 assignments=720 active=88/256 entropy=5.373b (max 8.000b) mean_tok_per_active=8.18 max_tok_per_expert=59
+moe-stats il=15 t=90 assignments=720 active=93/256 entropy=5.452b (max 8.000b) mean_tok_per_active=7.74 max_tok_per_expert=74
+moe-stats il=16 t=90 assignments=720 active=97/256 entropy=5.760b (max 8.000b) mean_tok_per_active=7.42 max_tok_per_expert=64
+moe-stats il=17 t=90 assignments=720 active=109/256 entropy=5.961b (max 8.000b) mean_tok_per_active=6.61 max_tok_per_expert=57
+moe-stats il=18 t=90 assignments=720 active=96/256 entropy=5.746b (max 8.000b) mean_tok_per_active=7.50 max_tok_per_expert=44
+moe-stats il=19 t=90 assignments=720 active=95/256 entropy=5.743b (max 8.000b) mean_tok_per_active=7.58 max_tok_per_expert=59
+moe-stats il=20 t=90 assignments=720 active=83/256 entropy=5.192b (max 8.000b) mean_tok_per_active=8.67 max_tok_per_expert=73
+moe-stats il=21 t=90 assignments=720 active=89/256 entropy=5.342b (max 8.000b) mean_tok_per_active=8.09 max_tok_per_expert=81
+moe-stats il=22 t=90 assignments=720 active=98/256 entropy=5.750b (max 8.000b) mean_tok_per_active=7.35 max_tok_per_expert=68
+moe-stats il=23 t=90 assignments=720 active=123/256 entropy=6.360b (max 8.000b) mean_tok_per_active=5.85 max_tok_per_expert=29
+moe-stats il=24 t=90 assignments=720 active=102/256 entropy=5.697b (max 8.000b) mean_tok_per_active=7.06 max_tok_per_expert=71
+moe-stats il=25 t=90 assignments=720 active=103/256 entropy=5.668b (max 8.000b) mean_tok_per_active=6.99 max_tok_per_expert=76
+moe-stats il=26 t=90 assignments=720 active=109/256 entropy=5.891b (max 8.000b) mean_tok_per_active=6.61 max_tok_per_expert=50
+moe-stats il=27 t=90 assignments=720 active=99/256 entropy=5.587b (max 8.000b) mean_tok_per_active=7.27 max_tok_per_expert=75
+moe-stats il=28 t=90 assignments=720 active=106/256 entropy=5.954b (max 8.000b) mean_tok_per_active=6.79 max_tok_per_expert=88
+moe-stats il=29 t=90 assignments=720 active=116/256 entropy=6.158b (max 8.000b) mean_tok_per_active=6.21 max_tok_per_expert=59
+moe-stats il=30 t=90 assignments=720 active=106/256 entropy=5.943b (max 8.000b) mean_tok_per_active=6.79 max_tok_per_expert=46
+moe-stats il=31 t=90 assignments=720 active=100/256 entropy=5.837b (max 8.000b) mean_tok_per_active=7.20 max_tok_per_expert=45
+moe-stats il=32 t=90 assignments=720 active=108/256 entropy=6.208b (max 8.000b) mean_tok_per_active=6.67 max_tok_per_expert=33
+moe-stats il=33 t=90 assignments=720 active=101/256 entropy=5.949b (max 8.000b) mean_tok_per_active=7.13 max_tok_per_expert=66
+moe-stats il=34 t=90 assignments=720 active=107/256 entropy=6.233b (max 8.000b) mean_tok_per_active=6.73 max_tok_per_expert=28
+moe-stats il=35 t=90 assignments=720 active=102/256 entropy=5.472b (max 8.000b) mean_tok_per_active=7.06 max_tok_per_expert=72
+moe-stats il=36 t=90 assignments=720 active=99/256 entropy=5.707b (max 8.000b) mean_tok_per_active=7.27 max_tok_per_expert=71
+moe-stats il=37 t=90 assignments=720 active=98/256 entropy=5.566b (max 8.000b) mean_tok_per_active=7.35 max_tok_per_expert=82
+moe-stats il=38 t=90 assignments=720 active=86/256 entropy=5.355b (max 8.000b) mean_tok_per_active=8.37 max_tok_per_expert=74
+moe-stats il=39 t=90 assignments=720 active=107/256 entropy=5.742b (max 8.000b) mean_tok_per_active=6.73 max_tok_per_expert=64
+moe-stats il=0 t=90 assignments=720 active=179/256 entropy=6.996b (max 8.000b) mean_tok_per_active=4.02 max_tok_per_expert=34
+moe-stats il=1 t=90 assignments=720 active=172/256 entropy=6.983b (max 8.000b) mean_tok_per_active=4.19 max_tok_per_expert=43
+moe-stats il=2 t=90 assignments=720 active=185/256 entropy=7.050b (max 8.000b) mean_tok_per_active=3.89 max_tok_per_expert=30
+moe-stats il=3 t=90 assignments=720 active=144/256 entropy=6.199b (max 8.000b) mean_tok_per_active=5.00 max_tok_per_expert=47
+moe-stats il=4 t=90 assignments=720 active=105/256 entropy=5.889b (max 8.000b) mean_tok_per_active=6.86 max_tok_per_expert=59
+moe-stats il=5 t=90 assignments=720 active=116/256 entropy=5.900b (max 8.000b) mean_tok_per_active=6.21 max_tok_per_expert=62
+moe-stats il=6 t=90 assignments=720 active=105/256 entropy=5.849b (max 8.000b) mean_tok_per_active=6.86 max_tok_per_expert=62
+moe-stats il=7 t=90 assignments=720 active=88/256 entropy=5.350b (max 8.000b) mean_tok_per_active=8.18 max_tok_per_expert=73
+moe-stats il=8 t=90 assignments=720 active=97/256 entropy=5.385b (max 8.000b) mean_tok_per_active=7.42 max_tok_per_expert=65
+moe-stats il=9 t=90 assignments=720 active=81/256 entropy=5.000b (max 8.000b) mean_tok_per_active=8.89 max_tok_per_expert=76
+moe-stats il=10 t=90 assignments=720 active=98/256 entropy=5.852b (max 8.000b) mean_tok_per_active=7.35 max_tok_per_expert=62
+moe-stats il=11 t=90 assignments=720 active=105/256 entropy=6.129b (max 8.000b) mean_tok_per_active=6.86 max_tok_per_expert=36
+moe-stats il=12 t=90 assignments=720 active=107/256 entropy=5.810b (max 8.000b) mean_tok_per_active=6.73 max_tok_per_expert=72
+moe-stats il=13 t=90 assignments=720 active=94/256 entropy=5.625b (max 8.000b) mean_tok_per_active=7.66 max_tok_per_expert=69
+moe-stats il=14 t=90 assignments=720 active=88/256 entropy=5.373b (max 8.000b) mean_tok_per_active=8.18 max_tok_per_expert=59
+moe-stats il=15 t=90 assignments=720 active=93/256 entropy=5.452b (max 8.000b) mean_tok_per_active=7.74 max_tok_per_expert=74
+moe-stats il=16 t=90 assignments=720 active=97/256 entropy=5.760b (max 8.000b) mean_tok_per_active=7.42 max_tok_per_expert=64
+moe-stats il=17 t=90 assignments=720 active=109/256 entropy=5.961b (max 8.000b) mean_tok_per_active=6.61 max_tok_per_expert=57
+moe-stats il=18 t=90 assignments=720 active=96/256 entropy=5.746b (max 8.000b) mean_tok_per_active=7.50 max_tok_per_expert=44
+moe-stats il=19 t=90 assignments=720 active=95/256 entropy=5.743b (max 8.000b) mean_tok_per_active=7.58 max_tok_per_expert=59
+moe-stats il=20 t=90 assignments=720 active=83/256 entropy=5.192b (max 8.000b) mean_tok_per_active=8.67 max_tok_per_expert=73
+moe-stats il=21 t=90 assignments=720 active=89/256 entropy=5.342b (max 8.000b) mean_tok_per_active=8.09 max_tok_per_expert=81
+moe-stats il=22 t=90 assignments=720 active=98/256 entropy=5.750b (max 8.000b) mean_tok_per_active=7.35 max_tok_per_expert=68
+moe-stats il=23 t=90 assignments=720 active=123/256 entropy=6.360b (max 8.000b) mean_tok_per_active=5.85 max_tok_per_expert=29
+moe-stats il=24 t=90 assignments=720 active=102/256 entropy=5.697b (max 8.000b) mean_tok_per_active=7.06 max_tok_per_expert=71
+moe-stats il=25 t=90 assignments=720 active=103/256 entropy=5.668b (max 8.000b) mean_tok_per_active=6.99 max_tok_per_expert=76
+moe-stats il=26 t=90 assignments=720 active=109/256 entropy=5.891b (max 8.000b) mean_tok_per_active=6.61 max_tok_per_expert=50
+moe-stats il=27 t=90 assignments=720 active=99/256 entropy=5.587b (max 8.000b) mean_tok_per_active=7.27 max_tok_per_expert=75
+moe-stats il=28 t=90 assignments=720 active=106/256 entropy=5.954b (max 8.000b) mean_tok_per_active=6.79 max_tok_per_expert=88
+moe-stats il=29 t=90 assignments=720 active=116/256 entropy=6.158b (max 8.000b) mean_tok_per_active=6.21 max_tok_per_expert=59
+moe-stats il=30 t=90 assignments=720 active=106/256 entropy=5.943b (max 8.000b) mean_tok_per_active=6.79 max_tok_per_expert=46
+moe-stats il=31 t=90 assignments=720 active=100/256 entropy=5.837b (max 8.000b) mean_tok_per_active=7.20 max_tok_per_expert=45
+moe-stats il=32 t=90 assignments=720 active=108/256 entropy=6.208b (max 8.000b) mean_tok_per_active=6.67 max_tok_per_expert=33
+moe-stats il=33 t=90 assignments=720 active=101/256 entropy=5.949b (max 8.000b) mean_tok_per_active=7.13 max_tok_per_expert=66
+moe-stats il=34 t=90 assignments=720 active=107/256 entropy=6.233b (max 8.000b) mean_tok_per_active=6.73 max_tok_per_expert=28
+moe-stats il=35 t=90 assignments=720 active=102/256 entropy=5.472b (max 8.000b) mean_tok_per_active=7.06 max_tok_per_expert=72
+moe-stats il=36 t=90 assignments=720 active=99/256 entropy=5.707b (max 8.000b) mean_tok_per_active=7.27 max_tok_per_expert=71
+moe-stats il=37 t=90 assignments=720 active=98/256 entropy=5.566b (max 8.000b) mean_tok_per_active=7.35 max_tok_per_expert=82
+moe-stats il=38 t=90 assignments=720 active=86/256 entropy=5.355b (max 8.000b) mean_tok_per_active=8.37 max_tok_per_expert=74
+moe-stats il=39 t=90 assignments=720 active=107/256 entropy=5.742b (max 8.000b) mean_tok_per_active=6.73 max_tok_per_expert=64
+prefill 90 tok in 0.1953s = 460.7 tok/s (pp90)
+moe-stats il=0 t=90 assignments=720 active=179/256 entropy=6.996b (max 8.000b) mean_tok_per_active=4.02 max_tok_per_expert=34
+moe-stats il=1 t=90 assignments=720 active=172/256 entropy=6.983b (max 8.000b) mean_tok_per_active=4.19 max_tok_per_expert=43
+moe-stats il=2 t=90 assignments=720 active=186/256 entropy=7.060b (max 8.000b) mean_tok_per_active=3.87 max_tok_per_expert=30
+moe-stats il=3 t=90 assignments=720 active=144/256 entropy=6.202b (max 8.000b) mean_tok_per_active=5.00 max_tok_per_expert=47
+moe-stats il=4 t=90 assignments=720 active=105/256 entropy=5.892b (max 8.000b) mean_tok_per_active=6.86 max_tok_per_expert=59
+moe-stats il=5 t=90 assignments=720 active=115/256 entropy=5.908b (max 8.000b) mean_tok_per_active=6.26 max_tok_per_expert=62
+moe-stats il=6 t=90 assignments=720 active=105/256 entropy=5.850b (max 8.000b) mean_tok_per_active=6.86 max_tok_per_expert=62
+moe-stats il=7 t=90 assignments=720 active=85/256 entropy=5.320b (max 8.000b) mean_tok_per_active=8.47 max_tok_per_expert=72
+moe-stats il=8 t=90 assignments=720 active=97/256 entropy=5.392b (max 8.000b) mean_tok_per_active=7.42 max_tok_per_expert=65
+moe-stats il=9 t=90 assignments=720 active=80/256 entropy=5.007b (max 8.000b) mean_tok_per_active=9.00 max_tok_per_expert=77
+moe-stats il=10 t=90 assignments=720 active=99/256 entropy=5.864b (max 8.000b) mean_tok_per_active=7.27 max_tok_per_expert=61
+moe-stats il=11 t=90 assignments=720 active=106/256 entropy=6.136b (max 8.000b) mean_tok_per_active=6.79 max_tok_per_expert=36
+moe-stats il=12 t=90 assignments=720 active=108/256 entropy=5.825b (max 8.000b) mean_tok_per_active=6.67 max_tok_per_expert=72
+moe-stats il=13 t=90 assignments=720 active=95/256 entropy=5.638b (max 8.000b) mean_tok_per_active=7.58 max_tok_per_expert=68
+moe-stats il=14 t=90 assignments=720 active=92/256 entropy=5.415b (max 8.000b) mean_tok_per_active=7.83 max_tok_per_expert=57
+moe-stats il=15 t=90 assignments=720 active=96/256 entropy=5.490b (max 8.000b) mean_tok_per_active=7.50 max_tok_per_expert=73
+moe-stats il=16 t=90 assignments=720 active=99/256 entropy=5.746b (max 8.000b) mean_tok_per_active=7.27 max_tok_per_expert=64
+moe-stats il=17 t=90 assignments=720 active=109/256 entropy=5.966b (max 8.000b) mean_tok_per_active=6.61 max_tok_per_expert=57
+moe-stats il=18 t=90 assignments=720 active=99/256 entropy=5.780b (max 8.000b) mean_tok_per_active=7.27 max_tok_per_expert=47
+moe-stats il=19 t=90 assignments=720 active=97/256 entropy=5.767b (max 8.000b) mean_tok_per_active=7.42 max_tok_per_expert=59
+moe-stats il=20 t=90 assignments=720 active=84/256 entropy=5.206b (max 8.000b) mean_tok_per_active=8.57 max_tok_per_expert=73
+moe-stats il=21 t=90 assignments=720 active=89/256 entropy=5.320b (max 8.000b) mean_tok_per_active=8.09 max_tok_per_expert=81
+moe-stats il=22 t=90 assignments=720 active=98/256 entropy=5.748b (max 8.000b) mean_tok_per_active=7.35 max_tok_per_expert=68
+moe-stats il=23 t=90 assignments=720 active=123/256 entropy=6.365b (max 8.000b) mean_tok_per_active=5.85 max_tok_per_expert=29
+moe-stats il=24 t=90 assignments=720 active=99/256 entropy=5.673b (max 8.000b) mean_tok_per_active=7.27 max_tok_per_expert=69
+moe-stats il=25 t=90 assignments=720 active=105/256 entropy=5.669b (max 8.000b) mean_tok_per_active=6.86 max_tok_per_expert=77
+moe-stats il=26 t=90 assignments=720 active=106/256 entropy=5.851b (max 8.000b) mean_tok_per_active=6.79 max_tok_per_expert=52
+moe-stats il=27 t=90 assignments=720 active=99/256 entropy=5.587b (max 8.000b) mean_tok_per_active=7.27 max_tok_per_expert=75
+moe-stats il=28 t=90 assignments=720 active=109/256 entropy=5.968b (max 8.000b) mean_tok_per_active=6.61 max_tok_per_expert=88
+moe-stats il=29 t=90 assignments=720 active=116/256 entropy=6.142b (max 8.000b) mean_tok_per_active=6.21 max_tok_per_expert=61
+moe-stats il=30 t=90 assignments=720 active=107/256 entropy=5.928b (max 8.000b) mean_tok_per_active=6.73 max_tok_per_expert=48
+moe-stats il=31 t=90 assignments=720 active=101/256 entropy=5.854b (max 8.000b) mean_tok_per_active=7.13 max_tok_per_expert=46
+moe-stats il=32 t=90 assignments=720 active=108/256 entropy=6.225b (max 8.000b) mean_tok_per_active=6.67 max_tok_per_expert=33
+moe-stats il=33 t=90 assignments=720 active=103/256 entropy=5.960b (max 8.000b) mean_tok_per_active=6.99 max_tok_per_expert=66
+moe-stats il=34 t=90 assignments=720 active=104/256 entropy=6.218b (max 8.000b) mean_tok_per_active=6.92 max_tok_per_expert=28
+moe-stats il=35 t=90 assignments=720 active=101/256 entropy=5.469b (max 8.000b) mean_tok_per_active=7.13 max_tok_per_expert=73
+moe-stats il=36 t=90 assignments=720 active=98/256 entropy=5.735b (max 8.000b) mean_tok_per_active=7.35 max_tok_per_expert=69
+moe-stats il=37 t=90 assignments=720 active=101/256 entropy=5.586b (max 8.000b) mean_tok_per_active=7.13 max_tok_per_expert=82
+moe-stats il=38 t=90 assignments=720 active=87/256 entropy=5.379b (max 8.000b) mean_tok_per_active=8.28 max_tok_per_expert=74
+moe-stats il=39 t=90 assignments=720 active=107/256 entropy=5.734b (max 8.000b) mean_tok_per_active=6.73 max_tok_per_expert=63
+generated 1 tokens in 0.009s = 108.86 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.196s) [stop: MaxNew]
+tokens: [32]
+OUTPUT TEXT: "A"
+--- generated text ---
+A
+probe_process_rc=0
+finished_utc=2026-08-08T13:50:11Z

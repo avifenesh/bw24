@@ -1,0 +1,4 @@
+[moe] resident-experts decision (dev0): experts 17.11GB + trunk 1.68GB vs free 23.92GB (expert budget 20.24GB) -> RESIDENT
+loaded qwen35moe (40 layers)
+ppprime rep 0: 2048 tok in 2.0628s = 992.8 tok/s
+ppprime MEDIAN: 2048 tok in 2.0628s = 992.8 tok/s (budget=0 chunk=4096(default) calllocal=0)

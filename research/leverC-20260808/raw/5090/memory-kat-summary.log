@@ -1,0 +1,21 @@
+=== Lever C local 5090 grouped-vs-rollback memory gate ===
+started_utc=2026-08-08T13:41:02Z
+commit=3a491bcfcafc66e6283b02a244ab0944fdfdca4a
+model=/data/ai-ml/hf-models/kat-coder-v25-dev-gguf/Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf size=18806446496
+selection=largest requested local fitting model; prior run recorded resident experts 17.11GB + trunk 1.68GB
+prompt=/home/avifenesh/projects/wt-cx-leverC/research/depth-decode-20260802/depth-2048-kat.txt prompt_sha256=dc91551b1e83414616ebb8d65ee88d1af1fc8792dadffe0208b732d094adfc0d
+sampling=nvidia-smi 100ms; peak includes load plus warmup+timed prime; baseline resident embedder retained
+lock_acquired_utc=2026-08-08T13:41:02Z
+0, NVIDIA GeForce RTX 5090 Laptop GPU, 58, 0 %, 430 MiB, 24463 MiB, 180 MHz, P8
+7600, /home/avifenesh/projects/hermes-agent/.venv/bin/python, 394 MiB
+rollback rc=0 peak_mib=19606 total_mib=24463 headroom_mib=4857 oom_lines=0 grouped_lines=0
+ppprime MEDIAN: 2048 tok in 0.5089s = 4024.7 tok/s (budget=0 chunk=4096(default) calllocal=0)
+rollback memory_assertion=PASS
+0, 59, 35 %, 430 MiB, 24463 MiB, 1590 MHz, P0
+grouped rc=0 peak_mib=19542 total_mib=24463 headroom_mib=4921 oom_lines=0 grouped_lines=80
+ppprime MEDIAN: 2048 tok in 2.0593s = 994.5 tok/s (budget=0 chunk=4096(default) calllocal=0)
+grouped memory_assertion=PASS
+0, 61, 0 %, 430 MiB, 24463 MiB, 1597 MHz, P0
+lock_released_utc=2026-08-08T13:41:31Z
+battery_rc=0
+finished_utc=2026-08-08T13:41:31Z

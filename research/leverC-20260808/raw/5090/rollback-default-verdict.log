@@ -1,0 +1,8 @@
+=== Lever C naked-default rollback verdict ===
+raw=research/leverC-20260808/raw/5090/rollback-default-probe.log
+process_rc=0
+prefill_match_lines=1
+batched_match_lines=1
+moe_grouped_lines=0
+oom_lines=0
+default_path_assertion=PASS
