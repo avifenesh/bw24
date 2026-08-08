@@ -35,18 +35,16 @@ thermal() {
     echo "lock acquired $(date -u +%FT%TZ)"
     thermal
     for cell in \
-      "pp512:$P512:256" \
-      "pp2048:$P2048:1024" \
-      "pp4096:$PROMPT4096:2048"
+      "pp512:$P512" \
+      "pp2048:$P2048" \
+      "pp4096:$PROMPT4096"
     do
       name=${cell%%:*}
-      rest=${cell#*:}
-      prompt=${rest%:*}
-      chunk=${rest##*:}
+      prompt=${cell#*:}
       log="$RAW/$name-raw-$TS.log"
-      echo "########## $name chunk=$chunk ##########"
+      echo "########## $name naked auto geometry ##########"
       thermal
-      env MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1 MEMRA_PRIME_CHUNK="$chunk" \
+      env MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1 \
         timeout 3600 ./target/release/concat-prime-probe "$MODEL" pppipeperf \
         --prompt-a "@$prompt" --reps 5 --warmup 1 >"$log" 2>&1
       cell_rc=$?

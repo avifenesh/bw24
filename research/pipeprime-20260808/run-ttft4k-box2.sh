@@ -81,7 +81,7 @@ boot() {
   SERVER_LOG="$RAW/ttft4k-server-$label-$TS.log"
   env MEMRA_MODELS="step35=${MODEL}+${DRAFT}" MEMRA_SERVE_SPEC=0 MEMRA_SERVE_BATCH=0 \
     MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1 MEMRA_PREFILL_TICK=1024 \
-    MEMRA_PRIME_CHUNK=512 MEMRA_ADDR="127.0.0.1:$PORT" MEMRA_TAG="$label" "$@" \
+    MEMRA_ADDR="127.0.0.1:$PORT" MEMRA_TAG="$label" "$@" \
     ./target/release/memra-server >"$SERVER_LOG" 2>&1 &
   SRV=$!
   for i in $(seq 1 120); do
@@ -111,7 +111,7 @@ stop_server() {
 {
   echo "=== pipeprime TTFT $TS commit=$(git rev-parse HEAD)"
   echo "prompt=$PROMPT bytes=$(wc -c <"$PROMPT") sha256=$(sha256sum "$PROMPT" | awk '{print $1}')"
-  echo "geometry: MEMRA_PREFILL_TICK=1024 MEMRA_PRIME_CHUNK=512"
+  echo "geometry: MEMRA_PREFILL_TICK=1024, naked PP-2 auto chunk"
   (
     flock -w 14400 9 || {
       echo "LOCK TIMEOUT"

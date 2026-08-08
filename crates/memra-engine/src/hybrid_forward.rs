@@ -352,6 +352,29 @@ fn cpu_expert_profile_admit_enabled() -> bool {
 /// decode loop wins anyway (the batched path's GEMM dispatch needs m>=16, and the stateful conv
 /// kernel needs T >= d_conv-1). Callers: generate / generate_spec.
 pub const PRIME_MIN_T: usize = 16;
+const PRIME_PIPE_MICROBATCHES: usize = 8;
+const PRIME_PIPE_MIN_CHUNK: usize = 128;
+
+/// Effective internal prime chunk. An explicit MEMRA_PRIME_CHUNK is authoritative.
+/// Naked PP-2 primes use the measured pipeline geometry: up to eight microchunks, never
+/// below 128 tokens, while the legacy 4096-token cap remains the long-context bound.
+pub fn prime_chunk_tokens(t: usize, n_layers: usize) -> usize {
+    if let Ok(value) = std::env::var("MEMRA_PRIME_CHUNK") {
+        return value.parse().unwrap_or(4096);
+    }
+    let chunk = 4096usize;
+    let pp2 = crate::pp::prime_pp_on()
+        && !crate::pp::pp2_streams_off()
+        && crate::pp::pp_cuts(n_layers).is_some_and(|cuts| cuts.len() == 3);
+    if pp2 && t >= 2 * PRIME_PIPE_MIN_CHUNK {
+        chunk.min(
+            t.div_ceil(PRIME_PIPE_MICROBATCHES)
+                .max(PRIME_PIPE_MIN_CHUNK),
+        )
+    } else {
+        chunk
+    }
+}
 
 impl HybridModel {
     /// CHUNK-INVARIANCE BISECT SEAM (lane/chunk-invariance): `MEMRA_PRIME_TRACE=<path>`
@@ -544,8 +567,7 @@ impl HybridModel {
             // gemma4 v0: monolithic fresh-prompt prime (chunked/continuation arms later).
             return self.gemma4_prime(e, tokens, cache);
         }
-        let chunk: usize = std::env::var("MEMRA_PRIME_CHUNK").ok()
-            .and_then(|v| v.parse().ok()).unwrap_or(4096);
+        let chunk = prime_chunk_tokens(t, self.layers.len());
         // CHUNK-ORDER INVARIANCE (lane/chunk-invariance, 2026-08-05; vLLM #38561 shape).
         // MEMRA_PRIME_CHUNK is documented as a memory-transient knob, but it also decides
         // the prefill's ARITHMETIC, so two rigs with different values produced different

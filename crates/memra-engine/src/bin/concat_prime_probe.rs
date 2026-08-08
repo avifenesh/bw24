@@ -1309,9 +1309,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let ids = cx.tok.encode(&pa, true);
             let t = ids.len();
             let min_t = memra_engine::hybrid_forward::PRIME_MIN_T;
-            let chunk_s =
-                std::env::var("MEMRA_PRIME_CHUNK").unwrap_or_else(|_| "4096".into());
-            let chunk: usize = chunk_s.parse().expect("MEMRA_PRIME_CHUNK must be an integer");
+            let chunk =
+                memra_engine::hybrid_forward::prime_chunk_tokens(t, cx.model.layers.len());
             let expected = if chunk == 0 || t <= chunk {
                 1
             } else {
