@@ -1,0 +1,28 @@
+=== v072 DRIVER D placement A/B 20260808T002336Z commit=6afc4f65 v072 train (restructure/public-split)
+lock acquired 2026-08-08T00:23:36Z
+0, 0 MiB, 180 MHz, 26
+1, 0 MiB, 180 MHz, 27
+[worker] Engine ready (device=1, MEMRA_FAST=true)
+{"ts": "2026-08-08T00:24:27+0000", "label": "dev10-spec-r1", "base": "http://127.0.0.1:8123", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 45.259047649014974, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 792, "prompt_tokens_total": 1808, "agg_tok_s": 17.499263487424205, "req_per_s": 0.17676023724670914, "lat_p50_s": 11.318902003986295, "lat_p95_s": 13.64098016297794, "lat_mean_s": 10.899818301742926, "lat_max_s": 13.64098016297794, "errors_sample": []}
+[worker] Engine ready (device=0, MEMRA_FAST=true)
+{"ts": "2026-08-08T00:25:20+0000", "label": "dev01-spec-r1", "base": "http://127.0.0.1:8123", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 45.353992624004604, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 792, "prompt_tokens_total": 1808, "agg_tok_s": 17.46263017163381, "req_per_s": 0.17639020375387685, "lat_p50_s": 11.328960598999402, "lat_p95_s": 13.703029781987425, "lat_mean_s": 10.923015024491178, "lat_max_s": 13.703029781987425, "errors_sample": []}
+[worker] Engine ready (device=1, MEMRA_FAST=true)
+{"ts": "2026-08-08T00:26:13+0000", "label": "dev10-spec-r2", "base": "http://127.0.0.1:8123", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 45.28164180699969, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 792, "prompt_tokens_total": 1808, "agg_tok_s": 17.490531888743746, "req_per_s": 0.17667203928023986, "lat_p50_s": 11.318719664996024, "lat_p95_s": 13.673660739004845, "lat_mean_s": 10.906557472499117, "lat_max_s": 13.673660739004845, "errors_sample": []}
+[worker] Engine ready (device=0, MEMRA_FAST=true)
+{"ts": "2026-08-08T00:27:07+0000", "label": "dev01-spec-r2", "base": "http://127.0.0.1:8123", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 45.35029737101286, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 792, "prompt_tokens_total": 1808, "agg_tok_s": 17.4640530693903, "req_per_s": 0.1764045764584879, "lat_p50_s": 11.325081144022988, "lat_p95_s": 13.689491886005271, "lat_mean_s": 10.92228204350613, "lat_max_s": 13.689491886005271, "errors_sample": []}
+[worker] Engine ready (device=1, MEMRA_FAST=true)
+{"ts": "2026-08-08T00:27:23+0000", "label": "dev10-defaults", "base": "http://127.0.0.1:8123", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 8.244911570975091, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1536, "prompt_tokens_total": 3616, "agg_tok_s": 186.29672213917314, "req_per_s": 1.9405908556163867, "lat_p50_s": 0.6361702540016267, "lat_p95_s": 6.363734196987934, "lat_mean_s": 2.036554696627718, "lat_max_s": 6.364097845013021, "errors_sample": []}
+[worker] Engine ready (device=0, MEMRA_FAST=true)
+{"ts": "2026-08-08T00:27:32+0000", "label": "doorshut-smoke", "base": "http://127.0.0.1:8123", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 2.8063228840183, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1536, "prompt_tokens_total": 3616, "agg_tok_s": 547.3354505097582, "req_per_s": 5.70141094280998, "lat_p50_s": 0.6296236439957283, "lat_p95_s": 0.9447511479957029, "lat_mean_s": 0.6772271080008068, "lat_max_s": 0.9448864359874278, "errors_sample": []}
+--- summary ---
+dev10-spec-r1 c 2 ok 8 err 0 agg 17.5 p50 11.32
+dev01-spec-r1 c 2 ok 8 err 0 agg 17.5 p50 11.33
+dev10-spec-r2 c 2 ok 8 err 0 agg 17.5 p50 11.32
+dev01-spec-r2 c 2 ok 8 err 0 agg 17.5 p50 11.33
+dev10-defaults c 4 ok 16 err 0 agg 186.3 p50 0.64
+doorshut-smoke c 4 ok 16 err 0 agg 547.3 p50 0.63
+0, 0 MiB
+1, 0 MiB
+lock released 2026-08-08T00:27:36Z
+=== driverD rc=0
+=== done 2026-08-08T00:27:36Z

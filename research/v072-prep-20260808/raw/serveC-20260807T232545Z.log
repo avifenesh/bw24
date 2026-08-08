@@ -1,0 +1,147 @@
+=== v072 battery DRIVER C 20260807T232545Z commit=6afc4f65 v072 train (restructure/public-split)
+lock acquired 2026-08-07T23:49:10Z
+0, 0 MiB
+1, 0 MiB
+
+########## C1: ppspec bit-identity dev01 (fence must not move bytes) ##########
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+loaded qwen35 (32 layers); steps=16 batch=4
+ppspec mode: verify stage-split exactness battery over 32 layers; stages=2 fence=[0, 16, 32] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+ppspec mode: T=[2, 5, 9] rounds=16 reps=3 (split arm)
+-- T=2: reference recorded (16 rounds x 2 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=2 rep0]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=2 rep1]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=2 rep2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+-- T=5: reference recorded (16 rounds x 5 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=5 rep0]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=5 rep1]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=5 rep2]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=5]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+-- T=9: reference recorded (16 rounds x 9 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=9 rep0]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=9 rep1]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=9 rep2]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=9]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec mode verdict: 0 failing arm(s); stages=2 fence=[0, 16, 32] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+ALL GREEN: spec-verify PP-2 stage-split exactness battery
+=== C1 rc=0
+
+########## C2: ppspec bit-identity dev10 ##########
+[pp] cross-device transport: stage0=dev1 stage1=dev0 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+loaded qwen35 (32 layers); steps=16 batch=4
+ppspec mode: verify stage-split exactness battery over 32 layers; stages=2 fence=[0, 16, 32] devices=1,0 splits=default(even) shard=per-stage streams=per-stage
+ppspec mode: T=[2, 5, 9] rounds=16 reps=3 (split arm)
+-- T=2: reference recorded (16 rounds x 2 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=2 rep0]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=2 rep1]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=2 rep2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=2 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=2]: 7946240 f32 logits BIT-IDENTICAL (0 differing bits)
+-- T=5: reference recorded (16 rounds x 5 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=5 rep0]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=5 rep1]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=5 rep2]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=5]: 19865600 f32 logits BIT-IDENTICAL (0 differing bits)
+-- T=9: reference recorded (16 rounds x 9 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=9 rep0]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep0]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=9 rep1]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep1]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=9 rep2]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=9 rep2]: 65536 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=9]: 35758080 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec mode verdict: 0 failing arm(s); stages=2 fence=[0, 16, 32] devices=1,0 splits=default(even) shard=per-stage streams=per-stage
+ALL GREEN: spec-verify PP-2 stage-split exactness battery
+=== C2 rc=0
+
+########## C3: THE #87 CRASH GATE — spec serve over PP-2, c=4 x 100 + c=8 x 104 ##########
+{"ts": "2026-08-07T23:50:39+0000", "label": "v072-c2", "base": "http://127.0.0.1:8123", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 45.1215042440017, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 792, "prompt_tokens_total": 1808, "agg_tok_s": 17.552606307563114, "req_per_s": 0.1772990536117486, "lat_p50_s": 11.281792715992196, "lat_p95_s": 13.606081425998127, "lat_mean_s": 10.868023427499793, "lat_max_s": 13.606081425998127, "errors_sample": []}
+=== c2 warmup rc=0
+{"ts": "2026-08-08T00:00:04+0000", "label": "v072-c4x100", "base": "http://127.0.0.1:8123", "concurrency": 4, "requests": 100, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 564.429565598999, "n_ok": 100, "n_shed": 0, "n_err": 0, "completion_tokens_total": 9900, "prompt_tokens_total": 22600, "agg_tok_s": 17.539832431516334, "req_per_s": 0.17717002456077105, "lat_p50_s": 20.938279413006967, "lat_p95_s": 25.90600944698963, "lat_mean_s": 22.39527578782989, "lat_max_s": 29.466251912002917, "errors_sample": []}
+=== c4x100 rc=0
+{"ts": "2026-08-08T00:09:51+0000", "label": "v072-c8x104", "base": "http://127.0.0.1:8123", "concurrency": 8, "requests": 104, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 587.2316833619989, "n_ok": 104, "n_shed": 0, "n_err": 0, "completion_tokens_total": 10296, "prompt_tokens_total": 23504, "agg_tok_s": 17.533113916901915, "req_per_s": 0.177102160776787, "lat_p50_s": 43.53243346900854, "lat_p95_s": 55.1301022980042, "lat_mean_s": 44.42426414293284, "lat_max_s": 61.442069708005874, "errors_sample": []}
+=== c8x104 rc=0
+CRASH-GATE server log clean (no sentinel/illegal/panic/CUDA_ERROR)
+--- crash points summary ---
+v072-c2 ok 8 err 0 agg 17.6
+v072-c4x100 ok 100 err 0 agg 17.5
+v072-c8x104 ok 104 err 0 agg 17.5
+
+########## C4: serve-smoke FULL battery (q9+draft, incl gemma4 arm) ##########
+== serve-smoke: plain serving ==
+  ok: /models lists the model
+  ok: chat non-stream (text + usage + finish_reason)
+  ok: chat stream (SSE chunks + [DONE])
+  ok: /v1/completions
+  ok: greedy determinism (2 runs identical)
+  ok: 3 concurrent chats
+  ok: long generation (>=100 tok)
+== serve-smoke: cache-metering exactness ==
+  ok: A-req1 cached_tokens == 0
+  ok: A-req1 prompt_tokens == 272
+  ok: A-req2 cached_tokens == 0
+  ok: A-req2 prompt_tokens == 272
+  ok: A-req3 cached_tokens == 256
+  ok: A-req3 prompt_tokens == 272
+  ok: A-req4 cached_tokens == 256
+  ok: A-req4 prompt_tokens == 272
+  ok: A-req5 cached_tokens == 256
+  ok: A-req5 prompt_tokens == 272
+  ok: B-req1 cached_tokens == 0 (cross-salt blindness)
+  ok: prompt_tokens_in == 1632
+  ok: cached_tokens_in == 768
+  ok: computed_tokens_in == prompt - cached
+  ok: cache_hit_token_ratio matches arithmetic
+  ok: prefix_cache_hits == N-2
+  ok: prefix_cache_misses == 3
+  ok: prefix_cache_inserts == 3 (A seed + A split + B seed)
+  ok: prefix_cache_hit_tokens == 768
+  ok: lcp_histogram: 6 probes total
+  ok: lcp_histogram: 2 cold probes in bucket [0]
+  ok: lcp_histogram: 4 probes in K's bucket (edge 256)
+  ok: tick-seg [64,512) window carries the shared-prefix probes
+  ok: tenants[meter-A] split exact
+  ok: tenants[meter-B] split exact (0 cached)
+  ok: economics revenue_multiplier == 1.8889 (factor 1.0)
+cache-meter-gate: 0 failed
+  ok: cache-metering accounting exact (per-request + /metrics + economics)
+== serve-smoke: spec serving (draft attached) ==
+  ok: spec == plain greedy text (serving exactness)
+== serve-smoke: sampled truncation matrix (spec server) ==
+  (immune baseline: untruncated t0.8 seed=7, bangs=0)
+  ok: trunc top_k=40 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc top_p=0.95 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc min_p=0.05 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc llama-default k40+p0.95+m0.05 (reproducible, bangs=0 <= baseline 0)
+== serve-smoke: session-affinity resume exactness ==
+  ok: affinity resume is deterministic across servers (4 rewritten turns)
+  ok: replay arm resumed too (3 rewind(s))
+  ok: affinity fired (3 rewind(s) on a rewritten history)
+  ok: no failed rewinds
+== serve-smoke: gemma4 arm (default scheduler; the worker-panic regression) ==
+  ok: gemma4 1-request on DEFAULT scheduler (clean content, stop at turn end)
+  ok: gemma4 thinking-on: thought/content separated, tags stay syntax
+  ok: gemma4 server alive after both requests
+  ok: gemma4 arm: zero panics in the server log
+serve-smoke: 0 failed
+=== C4 serve-smoke rc=0
+0, 0 MiB
+1, 0 MiB
+lock released 2026-08-08T00:10:18Z
+=== driverC rc=0
+=== done 2026-08-08T00:10:18Z

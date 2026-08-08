@@ -1,0 +1,55 @@
+=== v072 DRIVER E spec+PP-2 localization 20260808T003124Z commit=6afc4f65 v072 train (restructure/public-split)
+lock acquired 2026-08-08T00:31:24Z
+0, 0 MiB, 180 MHz
+1, 0 MiB, 180 MHz
+
+########## E1: engine run-spec q9 dev10 PP-2 (lane gate shape: DC=0 NGEN=64) ##########
+[pp] cross-device transport: stage0=dev1 stage1=dev0 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+loaded qwen35 (33 layers, nextn=1)
+prompt tokens: [55]
+
+[generate]   63 tok in 0.548s = 115.02 tok/s (gen-only; this run's prime 0.006s)
+  tokens: [268, 43159, 220, 18, 13, 15, 220, 95726, 98858, 97152, 112625, 98432, 10992, 271, 107680, 3709, 97237, 96094, 96876, 55, 268, 43159, 220, 18, 13, 15, 95726, 98858, 97152, 98432, 1710, 99924, 95930, 101920, 97434, 55, 268, 43159, 100751, 99518, 1710, 55, 268, 43159, 110345, 116594, 120932, 101694, 3709, 98135, 96056, 95932, 103962, 1710, 18, 13, 15, 99507, 97433, 98128, 99439, 97238, 97015, 101833]
+
+[generate_spec K=1] 64 tok in 0.383s = 164.68 tok/s (1.43x vs generate; this run's prime 0.005s)
+  acceptance: 27/36 = 75.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 64 tok in 0.440s = 143.10 tok/s (1.24x vs generate; this run's prime 0.005s)
+  acceptance: 33/62 = 53.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 64 tok in 0.538s = 116.99 tok/s (1.02x vs generate; this run's prime 0.005s)
+  acceptance: 36/84 = 42.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 64 tok in 0.625s = 100.84 tok/s (0.88x vs generate; this run's prime 0.005s)
+  acceptance: 36/112 = 32.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 64 tok in 0.682s = 92.40 tok/s (0.80x vs generate; this run's prime 0.005s)
+  acceptance: 36/140 = 25.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 64 tok in 0.786s = 80.15 tok/s (0.70x vs generate; this run's prime 0.005s)
+  acceptance: 36/168 = 21.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 64 tok in 0.849s = 74.17 tok/s (0.64x vs generate; this run's prime 0.005s)
+  acceptance: 36/196 = 18.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 64 tok in 0.913s = 69.03 tok/s (0.60x vs generate; this run's prime 0.005s)
+  acceptance: 36/224 = 16.1%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+E1 exit=0
+
+########## E2: serve naked defaults PP-2 dev10, c=1 x 6 (the #89 gate admits spec here) ##########
+[worker] Engine ready (device=1, MEMRA_FAST=true)
+{"ts": "2026-08-08T00:32:09+0000", "label": "defaults-c1", "base": "http://127.0.0.1:8123", "concurrency": 1, "requests": 6, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 33.90940024700831, "n_ok": 6, "n_shed": 0, "n_err": 0, "completion_tokens_total": 594, "prompt_tokens_total": 1356, "agg_tok_s": 17.517266471040173, "req_per_s": 0.17694208556606236, "lat_p50_s": 5.65142474102322, "lat_p95_s": 5.656827122991672, "lat_mean_s": 5.651481235996471, "lat_max_s": 5.656827122991672, "errors_sample": []}
+
+########## E3: serve spec-off PP-2 dev10, c=1 x 6 (denominator) ##########
+[worker] Engine ready (device=1, MEMRA_FAST=true)
+{"ts": "2026-08-08T00:32:19+0000", "label": "specoff-c1", "base": "http://127.0.0.1:8123", "concurrency": 1, "requests": 6, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 2.580846875003772, "n_ok": 6, "n_shed": 0, "n_err": 0, "completion_tokens_total": 576, "prompt_tokens_total": 1356, "agg_tok_s": 223.18255514448458, "req_per_s": 2.324818282755048, "lat_p50_s": 0.42983345099492, "lat_p95_s": 0.43069969001226127, "lat_mean_s": 0.4300615890000093, "lat_max_s": 0.43069969001226127, "errors_sample": []}
+--- summary ---
+defaults-c1 c 1 ok 6 err 0 agg 17.5 p50 5.65
+specoff-c1 c 1 ok 6 err 0 agg 223.2 p50 0.43
+0, 0 MiB
+1, 0 MiB
+lock released 2026-08-08T00:32:23Z
+=== driverE rc=0
+=== done 2026-08-08T00:32:23Z
