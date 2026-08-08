@@ -231,3 +231,48 @@ The two `kernel-check` Qwen3.6-only sections were explicitly skipped because
 that unrelated model was absent on box1; all available checks passed. Raw
 build and gate logs are preserved under `raw/box1/build/` and
 `raw/box1/gates/`.
+
+## Increment 5 - interleaved performance verdict
+
+The performance hold ran on box1 from `2026-08-08T14:18:30Z` through
+`2026-08-08T14:23:22Z` under one exclusive GPU lock. The GPUs were idle and
+cold at acquisition (32-33 C, 0 MiB), and the final snapshot was 41-44 C with
+the benchmark allocation released. Each shape used one warmup followed by
+N=5 fixed/dynamic pairs with alternating arm order inside one sharded model
+load. Every measured arm retained the full expected overlap count.
+
+| prompt | realized T | fixed median | dynamic median | median wall reduction | paired wins |
+|---|---:|---:|---:|---:|---:|
+| pp512 | 461 | 339.0 tok/s, 1.3600 s | 343.8 tok/s, 1.3408 s | 19.2 ms, +1.4% throughput | 4/5 |
+| pp2048 | 1833 | 410.7 tok/s, 4.4629 s | 411.8 tok/s, 4.4510 s | 11.9 ms, +0.3% throughput | 5/5 |
+| pp4096 | 4096 | 427.5 tok/s, 9.5804 s | 427.7 tok/s, 9.5769 s | 3.5 ms, effectively flat | 4/5 |
+
+The bubble model predicts direction but overstates the available long-prompt
+gain. Using first-plus-last chunk tokens only as a size proxy for exposed edge
+work:
+
+| realized T | fixed edge tokens | dynamic edge tokens | proxy reduction | dynamic peak middle chunk |
+|---:|---:|---:|---:|---:|
+| 461 | 128 + 77 = 205 | 64 + 124 = 188 | 8.3% | 141, +10.2% versus fixed cap |
+| 1833 | 230 + 223 = 453 | 115 + 225 = 340 | 24.9% | 269, +17.0% |
+| 4096 | 512 + 512 = 1024 | 256 + 503 = 759 | 25.9% | 602, +17.6% |
+
+This is not a direct stage-time measurement. It explains the observed limit:
+shortening the exposed edges requires larger middle chunks at fixed chunk
+count, and the enlarged critical interior plus non-pipeline work absorbs most
+of the modeled savings. At pp512 the legacy remainder had already made the
+fixed drain short, so the dynamic schedule primarily buys faster fill and
+gives some drain work back.
+
+Verdict: retain the dynamic auto schedule and the fixed rollback seam. It is
+bit-identical, live, and nonnegative across the registered prompt classes,
+with a repeatable short-prompt gain. Do not claim a material pp4096 win or a
+closure of the pipeline-versus-grouped gap: the long-prompt result is flat at
+this N. A follow-on scheduler study should record per-stage, per-chunk timing
+and solve against the measured critical path rather than further tuning a
+token-count proxy.
+
+These are pipeline-only scheduler results from this lane. They do not compose
+or compare directly with the separately measured grouped-prefill result.
+Exact prompts, hashes, per-repetition output, and the combined summary are
+preserved under `raw/box1/perf/`.

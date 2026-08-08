@@ -1,0 +1,101 @@
+=== dynamic microchunk perf 20260808T140918Z commit=10c6493008e4725acae364f8aa88fcd9e955821c
+model=/home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+protocol=N=5 in-process interleaved fixed/dynamic, one warmup, one GPU-lock hold
+prompt=/tmp/microchunk-perf-20260808T140918Z/prompt-pp512-20260808T140918Z.txt bytes=2800 sha256=f3a1cb67f9beb3fc398c0cde1f22e9459ef63cfc4595576c2981e38398f6af4b
+prompt=/tmp/microchunk-perf-20260808T140918Z/prompt-pp2048-20260808T140918Z.txt bytes=11200 sha256=14e61d63268d5ea3d62b4ac5db1b4a110e4f4743ba2efa1030ff79371b08f5a2
+prompt=/tmp/microchunk-perf-20260808T140918Z/prompt-pp4096-20260808T140918Z.txt bytes=25036 sha256=23c1d8384a16c7c0bcb7736b412d43e64c0b4d8e238703864e928565f824ae11
+lock acquired 2026-08-08T14:18:30Z
+snapshot 2026-08-08T14:18:30Z
+0, 32, 180 MHz, 0 MiB
+1, 33, 180 MHz, 0 MiB
+########## pp512 ##########
+raw=/tmp/microchunk-perf-20260808T140918Z/pp512-raw-20260808T140918Z.log
+snapshot 2026-08-08T14:18:30Z
+0, 32, 180 MHz, 0 MiB
+1, 33, 180 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppschedperf: T=461 fixed=[128, 128, 128, 77] dynamic=[64, 141, 132, 124] chunks=4 reps=5 warmup=1 devices=0,1
+  warmup 1 arm=FIXED: 461 tok in 1.4270s = 323.1 tok/s split=4 overlaps=3
+  warmup 1 arm=DYNAMIC: 461 tok in 1.3720s = 336.0 tok/s split=4 overlaps=3
+  rep 1 arm=FIXED: 461 tok in 1.3922s = 331.1 tok/s split=4 overlaps=3
+  rep 1 arm=DYNAMIC: 461 tok in 1.3601s = 338.9 tok/s split=4 overlaps=3
+  rep 2 arm=DYNAMIC: 461 tok in 1.3623s = 338.4 tok/s split=4 overlaps=3
+  rep 2 arm=FIXED: 461 tok in 1.3616s = 338.6 tok/s split=4 overlaps=3
+  rep 3 arm=FIXED: 461 tok in 1.3600s = 339.0 tok/s split=4 overlaps=3
+  rep 3 arm=DYNAMIC: 461 tok in 1.3408s = 343.8 tok/s split=4 overlaps=3
+  rep 4 arm=DYNAMIC: 461 tok in 1.3391s = 344.3 tok/s split=4 overlaps=3
+  rep 4 arm=FIXED: 461 tok in 1.3567s = 339.8 tok/s split=4 overlaps=3
+  rep 5 arm=FIXED: 461 tok in 1.3521s = 341.0 tok/s split=4 overlaps=3
+  rep 5 arm=DYNAMIC: 461 tok in 1.3337s = 345.7 tok/s split=4 overlaps=3
+ppschedperf MEDIAN: FIXED 339.0 tok/s (1.3600s) | DYNAMIC 343.8 tok/s (1.3408s) | speedup 1.014x | N=5 alternating order, fixed=[128, 128, 128, 77], dynamic=[64, 141, 132, 124]
+pp512 exit=0
+snapshot 2026-08-08T14:19:23Z
+0, 36, 2400 MHz, 0 MiB
+1, 37, 2317 MHz, 0 MiB
+########## pp2048 ##########
+raw=/tmp/microchunk-perf-20260808T140918Z/pp2048-raw-20260808T140918Z.log
+snapshot 2026-08-08T14:19:23Z
+0, 37, 2400 MHz, 0 MiB
+1, 37, 2317 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppschedperf: T=1833 fixed=[230, 230, 230, 230, 230, 230, 230, 223] dynamic=[115, 269, 260, 252, 244, 237, 231, 225] chunks=8 reps=5 warmup=1 devices=0,1
+  warmup 1 arm=FIXED: 1833 tok in 4.6190s = 396.8 tok/s split=8 overlaps=7
+  warmup 1 arm=DYNAMIC: 1833 tok in 4.4807s = 409.1 tok/s split=8 overlaps=7
+  rep 1 arm=FIXED: 1833 tok in 4.4629s = 410.7 tok/s split=8 overlaps=7
+  rep 1 arm=DYNAMIC: 1833 tok in 4.4511s = 411.8 tok/s split=8 overlaps=7
+  rep 2 arm=DYNAMIC: 1833 tok in 4.4516s = 411.8 tok/s split=8 overlaps=7
+  rep 2 arm=FIXED: 1833 tok in 4.4524s = 411.7 tok/s split=8 overlaps=7
+  rep 3 arm=FIXED: 1833 tok in 4.4548s = 411.5 tok/s split=8 overlaps=7
+  rep 3 arm=DYNAMIC: 1833 tok in 4.4487s = 412.0 tok/s split=8 overlaps=7
+  rep 4 arm=DYNAMIC: 1833 tok in 4.4506s = 411.9 tok/s split=8 overlaps=7
+  rep 4 arm=FIXED: 1833 tok in 4.4793s = 409.2 tok/s split=8 overlaps=7
+  rep 5 arm=FIXED: 1833 tok in 4.4634s = 410.7 tok/s split=8 overlaps=7
+  rep 5 arm=DYNAMIC: 1833 tok in 4.4510s = 411.8 tok/s split=8 overlaps=7
+ppschedperf MEDIAN: FIXED 410.7 tok/s (4.4629s) | DYNAMIC 411.8 tok/s (4.4510s) | speedup 1.003x | N=5 alternating order, fixed=[230, 230, 230, 230, 230, 230, 230, 223], dynamic=[115, 269, 260, 252, 244, 237, 231, 225]
+pp2048 exit=0
+snapshot 2026-08-08T14:20:52Z
+0, 40, 2392 MHz, 0 MiB
+1, 42, 2317 MHz, 0 MiB
+########## pp4096 ##########
+raw=/tmp/microchunk-perf-20260808T140918Z/pp4096-raw-20260808T140918Z.log
+snapshot 2026-08-08T14:20:52Z
+0, 40, 2392 MHz, 0 MiB
+1, 42, 2317 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppschedperf: T=4096 fixed=[512, 512, 512, 512, 512, 512, 512, 512] dynamic=[256, 602, 580, 563, 545, 531, 516, 503] chunks=8 reps=5 warmup=1 devices=0,1
+  warmup 1 arm=FIXED: 4096 tok in 9.6711s = 423.5 tok/s split=8 overlaps=7
+  warmup 1 arm=DYNAMIC: 4096 tok in 9.5843s = 427.4 tok/s split=8 overlaps=7
+  rep 1 arm=FIXED: 4096 tok in 9.5752s = 427.8 tok/s split=8 overlaps=7
+  rep 1 arm=DYNAMIC: 4096 tok in 9.5802s = 427.5 tok/s split=8 overlaps=7
+  rep 2 arm=DYNAMIC: 4096 tok in 9.5868s = 427.3 tok/s split=8 overlaps=7
+  rep 2 arm=FIXED: 4096 tok in 9.5902s = 427.1 tok/s split=8 overlaps=7
+  rep 3 arm=FIXED: 4096 tok in 9.5796s = 427.6 tok/s split=8 overlaps=7
+  rep 3 arm=DYNAMIC: 4096 tok in 9.5769s = 427.7 tok/s split=8 overlaps=7
+  rep 4 arm=DYNAMIC: 4096 tok in 9.5740s = 427.8 tok/s split=8 overlaps=7
+  rep 4 arm=FIXED: 4096 tok in 9.5804s = 427.5 tok/s split=8 overlaps=7
+  rep 5 arm=FIXED: 4096 tok in 9.6097s = 426.2 tok/s split=8 overlaps=7
+  rep 5 arm=DYNAMIC: 4096 tok in 9.5735s = 427.8 tok/s split=8 overlaps=7
+ppschedperf MEDIAN: FIXED 427.5 tok/s (9.5804s) | DYNAMIC 427.7 tok/s (9.5769s) | speedup 1.000x | N=5 alternating order, fixed=[512, 512, 512, 512, 512, 512, 512, 512], dynamic=[256, 602, 580, 563, 545, 531, 516, 503]
+pp4096 exit=0
+snapshot 2026-08-08T14:23:22Z
+0, 41, 2400 MHz, 0 MiB
+1, 44, 2422 MHz, 0 MiB
+lock released 2026-08-08T14:23:22Z
+=== medians ===
+ppschedperf MEDIAN: FIXED 410.7 tok/s (4.4629s) | DYNAMIC 411.8 tok/s (4.4510s) | speedup 1.003x | N=5 alternating order, fixed=[230, 230, 230, 230, 230, 230, 230, 223], dynamic=[115, 269, 260, 252, 244, 237, 231, 225]
+ppschedperf MEDIAN: FIXED 427.5 tok/s (9.5804s) | DYNAMIC 427.7 tok/s (9.5769s) | speedup 1.000x | N=5 alternating order, fixed=[512, 512, 512, 512, 512, 512, 512, 512], dynamic=[256, 602, 580, 563, 545, 531, 516, 503]
+ppschedperf MEDIAN: FIXED 339.0 tok/s (1.3600s) | DYNAMIC 343.8 tok/s (1.3408s) | speedup 1.014x | N=5 alternating order, fixed=[128, 128, 128, 77], dynamic=[64, 141, 132, 124]
+=== dynamic microchunk perf rc=0
+=== done 2026-08-08T14:23:22Z

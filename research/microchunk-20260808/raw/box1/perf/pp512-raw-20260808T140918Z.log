@@ -1,0 +1,19 @@
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppschedperf: T=461 fixed=[128, 128, 128, 77] dynamic=[64, 141, 132, 124] chunks=4 reps=5 warmup=1 devices=0,1
+  warmup 1 arm=FIXED: 461 tok in 1.4270s = 323.1 tok/s split=4 overlaps=3
+  warmup 1 arm=DYNAMIC: 461 tok in 1.3720s = 336.0 tok/s split=4 overlaps=3
+  rep 1 arm=FIXED: 461 tok in 1.3922s = 331.1 tok/s split=4 overlaps=3
+  rep 1 arm=DYNAMIC: 461 tok in 1.3601s = 338.9 tok/s split=4 overlaps=3
+  rep 2 arm=DYNAMIC: 461 tok in 1.3623s = 338.4 tok/s split=4 overlaps=3
+  rep 2 arm=FIXED: 461 tok in 1.3616s = 338.6 tok/s split=4 overlaps=3
+  rep 3 arm=FIXED: 461 tok in 1.3600s = 339.0 tok/s split=4 overlaps=3
+  rep 3 arm=DYNAMIC: 461 tok in 1.3408s = 343.8 tok/s split=4 overlaps=3
+  rep 4 arm=DYNAMIC: 461 tok in 1.3391s = 344.3 tok/s split=4 overlaps=3
+  rep 4 arm=FIXED: 461 tok in 1.3567s = 339.8 tok/s split=4 overlaps=3
+  rep 5 arm=FIXED: 461 tok in 1.3521s = 341.0 tok/s split=4 overlaps=3
+  rep 5 arm=DYNAMIC: 461 tok in 1.3337s = 345.7 tok/s split=4 overlaps=3
+ppschedperf MEDIAN: FIXED 339.0 tok/s (1.3600s) | DYNAMIC 343.8 tok/s (1.3408s) | speedup 1.014x | N=5 alternating order, fixed=[128, 128, 128, 77], dynamic=[64, 141, 132, 124]
