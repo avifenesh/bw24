@@ -1,0 +1,3 @@
+shape	n	prompt_tokens	client_ttft_p50_ms	request_parse_ms	admission_ms	queue_wait_ms	tokenize_ms	prime_wait_ms	prime_ms	decode_wait_ms	sse_handoff_ms	total_ms	client_minus_server_ms
+4k	5	4107	5991.509	0.051	0.019	0.044	8.769	1.078	5981.119	0.141	0.039	5991.215	0.271
+short	8	228	589.238	0.015	0.012	0.045	0.694	5.743	582.295	0.136	0.029	589.053	0.191
