@@ -1,0 +1,7 @@
+shape	tokens	arm	n	median_s	median_tok_s
+pp512	461	off	5	1.4207	324.5
+pp512	461	grouped	5	0.9266	497.5
+pp2048	1833	off	5	4.5565	402.3
+pp2048	1833	grouped	5	2.8678	639.2
+pp4096	4096	off	5	9.5947	426.9
+pp4096	4096	grouped	5	5.8718	697.6

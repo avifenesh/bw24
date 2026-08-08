@@ -1,0 +1,508 @@
+=== Lever C perf 20260808T112734Z commit=41f0af6f95f3a76d7d0b60cef331bad20926b417
+model=/data/models/step37/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+protocol=N=5 interleaved, order alternated, one warmup per independent timed arm
+prompt=/tmp/leverC-perf-41f0af6f/prompt-pp512-20260808T112734Z.txt bytes=2800 sha256=f3a1cb67f9beb3fc398c0cde1f22e9459ef63cfc4595576c2981e38398f6af4b
+prompt=/tmp/leverC-perf-41f0af6f/prompt-pp2048-20260808T112734Z.txt bytes=11200 sha256=14e61d63268d5ea3d62b4ac5db1b4a110e4f4743ba2efa1030ff79371b08f5a2
+prompt=/tmp/pipeprime-prompt-pp4096.txt bytes=25036 sha256=23c1d8384a16c7c0bcb7736b412d43e64c0b4d8e238703864e928565f824ae11
+lock acquired 2026-08-08T11:27:59Z
+snapshot 2026-08-08T11:27:59Z
+0, 41, 2370 MHz, 0 MiB
+1, 42, 2272 MHz, 0 MiB
+########## pp512 rep=1 arm=off ##########
+raw=/tmp/leverC-perf-41f0af6f/pp512-off-r1-20260808T112734Z.log
+snapshot 2026-08-08T11:27:59Z
+0, 41, 2370 MHz, 0 MiB
+1, 42, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 461 tok in 1.3967s = 330.1 tok/s
+ppprime MEDIAN: 461 tok in 1.3967s = 330.1 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp512 rep=1 arm=off exit=0
+snapshot 2026-08-08T11:28:46Z
+0, 38, 2370 MHz, 0 MiB
+1, 38, 2272 MHz, 0 MiB
+########## pp512 rep=1 arm=grouped ##########
+raw=/tmp/leverC-perf-41f0af6f/pp512-grouped-r1-20260808T112734Z.log
+snapshot 2026-08-08T11:28:46Z
+0, 38, 2370 MHz, 0 MiB
+1, 38, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 461 tok in 0.9269s = 497.3 tok/s
+ppprime MEDIAN: 461 tok in 0.9269s = 497.3 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp512 rep=1 arm=grouped exit=0
+snapshot 2026-08-08T11:29:31Z
+0, 37, 2370 MHz, 0 MiB
+1, 37, 2272 MHz, 0 MiB
+########## pp512 rep=2 arm=grouped ##########
+raw=/tmp/leverC-perf-41f0af6f/pp512-grouped-r2-20260808T112734Z.log
+snapshot 2026-08-08T11:29:31Z
+0, 37, 2370 MHz, 0 MiB
+1, 37, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 461 tok in 0.9279s = 496.8 tok/s
+ppprime MEDIAN: 461 tok in 0.9279s = 496.8 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp512 rep=2 arm=grouped exit=0
+snapshot 2026-08-08T11:30:18Z
+0, 37, 2370 MHz, 0 MiB
+1, 36, 2272 MHz, 0 MiB
+########## pp512 rep=2 arm=off ##########
+raw=/tmp/leverC-perf-41f0af6f/pp512-off-r2-20260808T112734Z.log
+snapshot 2026-08-08T11:30:18Z
+0, 37, 2370 MHz, 0 MiB
+1, 37, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 461 tok in 1.4282s = 322.8 tok/s
+ppprime MEDIAN: 461 tok in 1.4282s = 322.8 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp512 rep=2 arm=off exit=0
+snapshot 2026-08-08T11:31:05Z
+0, 37, 2370 MHz, 0 MiB
+1, 37, 2272 MHz, 0 MiB
+########## pp512 rep=3 arm=off ##########
+raw=/tmp/leverC-perf-41f0af6f/pp512-off-r3-20260808T112734Z.log
+snapshot 2026-08-08T11:31:05Z
+0, 37, 2370 MHz, 0 MiB
+1, 37, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 461 tok in 1.4207s = 324.5 tok/s
+ppprime MEDIAN: 461 tok in 1.4207s = 324.5 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp512 rep=3 arm=off exit=0
+snapshot 2026-08-08T11:31:53Z
+0, 37, 2370 MHz, 0 MiB
+1, 37, 2272 MHz, 0 MiB
+########## pp512 rep=3 arm=grouped ##########
+raw=/tmp/leverC-perf-41f0af6f/pp512-grouped-r3-20260808T112734Z.log
+snapshot 2026-08-08T11:31:53Z
+0, 37, 2370 MHz, 0 MiB
+1, 37, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 461 tok in 0.9266s = 497.5 tok/s
+ppprime MEDIAN: 461 tok in 0.9266s = 497.5 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp512 rep=3 arm=grouped exit=0
+snapshot 2026-08-08T11:32:39Z
+0, 37, 2370 MHz, 0 MiB
+1, 37, 2272 MHz, 0 MiB
+########## pp512 rep=4 arm=grouped ##########
+raw=/tmp/leverC-perf-41f0af6f/pp512-grouped-r4-20260808T112734Z.log
+snapshot 2026-08-08T11:32:39Z
+0, 37, 2370 MHz, 0 MiB
+1, 37, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 461 tok in 0.9253s = 498.2 tok/s
+ppprime MEDIAN: 461 tok in 0.9253s = 498.2 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp512 rep=4 arm=grouped exit=0
+snapshot 2026-08-08T11:33:26Z
+0, 37, 2370 MHz, 0 MiB
+1, 36, 2272 MHz, 0 MiB
+########## pp512 rep=4 arm=off ##########
+raw=/tmp/leverC-perf-41f0af6f/pp512-off-r4-20260808T112734Z.log
+snapshot 2026-08-08T11:33:26Z
+0, 37, 2370 MHz, 0 MiB
+1, 36, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 461 tok in 1.4264s = 323.2 tok/s
+ppprime MEDIAN: 461 tok in 1.4264s = 323.2 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp512 rep=4 arm=off exit=0
+snapshot 2026-08-08T11:34:11Z
+0, 37, 2370 MHz, 0 MiB
+1, 37, 2272 MHz, 0 MiB
+########## pp512 rep=5 arm=off ##########
+raw=/tmp/leverC-perf-41f0af6f/pp512-off-r5-20260808T112734Z.log
+snapshot 2026-08-08T11:34:12Z
+0, 37, 2370 MHz, 0 MiB
+1, 37, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 461 tok in 1.3975s = 329.9 tok/s
+ppprime MEDIAN: 461 tok in 1.3975s = 329.9 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp512 rep=5 arm=off exit=0
+snapshot 2026-08-08T11:34:57Z
+0, 37, 2370 MHz, 0 MiB
+1, 37, 2272 MHz, 0 MiB
+########## pp512 rep=5 arm=grouped ##########
+raw=/tmp/leverC-perf-41f0af6f/pp512-grouped-r5-20260808T112734Z.log
+snapshot 2026-08-08T11:34:57Z
+0, 37, 2370 MHz, 0 MiB
+1, 37, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 461 tok in 0.9078s = 507.8 tok/s
+ppprime MEDIAN: 461 tok in 0.9078s = 507.8 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp512 rep=5 arm=grouped exit=0
+snapshot 2026-08-08T11:35:38Z
+0, 37, 2370 MHz, 0 MiB
+1, 37, 2272 MHz, 0 MiB
+########## pp2048 rep=1 arm=off ##########
+raw=/tmp/leverC-perf-41f0af6f/pp2048-off-r1-20260808T112734Z.log
+snapshot 2026-08-08T11:35:38Z
+0, 37, 2370 MHz, 0 MiB
+1, 37, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 1833 tok in 4.5629s = 401.7 tok/s
+ppprime MEDIAN: 1833 tok in 4.5629s = 401.7 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp2048 rep=1 arm=off exit=0
+snapshot 2026-08-08T11:36:29Z
+0, 39, 2370 MHz, 0 MiB
+1, 39, 2272 MHz, 0 MiB
+########## pp2048 rep=1 arm=grouped ##########
+raw=/tmp/leverC-perf-41f0af6f/pp2048-grouped-r1-20260808T112734Z.log
+snapshot 2026-08-08T11:36:29Z
+0, 39, 2370 MHz, 0 MiB
+1, 39, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 1833 tok in 2.8802s = 636.4 tok/s
+ppprime MEDIAN: 1833 tok in 2.8802s = 636.4 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp2048 rep=1 arm=grouped exit=0
+snapshot 2026-08-08T11:37:18Z
+0, 39, 2370 MHz, 0 MiB
+1, 38, 2272 MHz, 0 MiB
+########## pp2048 rep=2 arm=grouped ##########
+raw=/tmp/leverC-perf-41f0af6f/pp2048-grouped-r2-20260808T112734Z.log
+snapshot 2026-08-08T11:37:18Z
+0, 39, 2370 MHz, 0 MiB
+1, 38, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 1833 tok in 2.8674s = 639.3 tok/s
+ppprime MEDIAN: 1833 tok in 2.8674s = 639.3 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp2048 rep=2 arm=grouped exit=0
+snapshot 2026-08-08T11:38:08Z
+0, 38, 2370 MHz, 0 MiB
+1, 38, 2272 MHz, 0 MiB
+########## pp2048 rep=2 arm=off ##########
+raw=/tmp/leverC-perf-41f0af6f/pp2048-off-r2-20260808T112734Z.log
+snapshot 2026-08-08T11:38:08Z
+0, 39, 2370 MHz, 0 MiB
+1, 38, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 1833 tok in 4.5565s = 402.3 tok/s
+ppprime MEDIAN: 1833 tok in 4.5565s = 402.3 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp2048 rep=2 arm=off exit=0
+snapshot 2026-08-08T11:39:01Z
+0, 39, 2370 MHz, 0 MiB
+1, 39, 2272 MHz, 0 MiB
+########## pp2048 rep=3 arm=off ##########
+raw=/tmp/leverC-perf-41f0af6f/pp2048-off-r3-20260808T112734Z.log
+snapshot 2026-08-08T11:39:01Z
+0, 39, 2370 MHz, 0 MiB
+1, 39, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 1833 tok in 4.5564s = 402.3 tok/s
+ppprime MEDIAN: 1833 tok in 4.5564s = 402.3 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp2048 rep=3 arm=off exit=0
+snapshot 2026-08-08T11:39:55Z
+0, 39, 2370 MHz, 0 MiB
+1, 39, 2272 MHz, 0 MiB
+########## pp2048 rep=3 arm=grouped ##########
+raw=/tmp/leverC-perf-41f0af6f/pp2048-grouped-r3-20260808T112734Z.log
+snapshot 2026-08-08T11:39:55Z
+0, 39, 2370 MHz, 0 MiB
+1, 39, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 1833 tok in 2.8702s = 638.6 tok/s
+ppprime MEDIAN: 1833 tok in 2.8702s = 638.6 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp2048 rep=3 arm=grouped exit=0
+snapshot 2026-08-08T11:40:44Z
+0, 39, 2370 MHz, 0 MiB
+1, 38, 2272 MHz, 0 MiB
+########## pp2048 rep=4 arm=grouped ##########
+raw=/tmp/leverC-perf-41f0af6f/pp2048-grouped-r4-20260808T112734Z.log
+snapshot 2026-08-08T11:40:44Z
+0, 39, 2370 MHz, 0 MiB
+1, 38, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 1833 tok in 2.8678s = 639.2 tok/s
+ppprime MEDIAN: 1833 tok in 2.8678s = 639.2 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp2048 rep=4 arm=grouped exit=0
+snapshot 2026-08-08T11:41:34Z
+0, 39, 2370 MHz, 0 MiB
+1, 38, 2272 MHz, 0 MiB
+########## pp2048 rep=4 arm=off ##########
+raw=/tmp/leverC-perf-41f0af6f/pp2048-off-r4-20260808T112734Z.log
+snapshot 2026-08-08T11:41:34Z
+0, 39, 2370 MHz, 0 MiB
+1, 38, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 1833 tok in 4.5526s = 402.6 tok/s
+ppprime MEDIAN: 1833 tok in 4.5526s = 402.6 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp2048 rep=4 arm=off exit=0
+snapshot 2026-08-08T11:42:26Z
+0, 39, 2370 MHz, 0 MiB
+1, 39, 2272 MHz, 0 MiB
+########## pp2048 rep=5 arm=off ##########
+raw=/tmp/leverC-perf-41f0af6f/pp2048-off-r5-20260808T112734Z.log
+snapshot 2026-08-08T11:42:26Z
+0, 39, 2370 MHz, 0 MiB
+1, 39, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 1833 tok in 4.5608s = 401.9 tok/s
+ppprime MEDIAN: 1833 tok in 4.5608s = 401.9 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp2048 rep=5 arm=off exit=0
+snapshot 2026-08-08T11:43:19Z
+0, 39, 2370 MHz, 0 MiB
+1, 39, 2272 MHz, 0 MiB
+########## pp2048 rep=5 arm=grouped ##########
+raw=/tmp/leverC-perf-41f0af6f/pp2048-grouped-r5-20260808T112734Z.log
+snapshot 2026-08-08T11:43:19Z
+0, 39, 2370 MHz, 0 MiB
+1, 39, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 1833 tok in 2.7976s = 655.2 tok/s
+ppprime MEDIAN: 1833 tok in 2.7976s = 655.2 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp2048 rep=5 arm=grouped exit=0
+snapshot 2026-08-08T11:44:06Z
+0, 39, 2370 MHz, 0 MiB
+1, 38, 2272 MHz, 0 MiB
+########## pp4096 rep=1 arm=off ##########
+raw=/tmp/leverC-perf-41f0af6f/pp4096-off-r1-20260808T112734Z.log
+snapshot 2026-08-08T11:44:06Z
+0, 39, 2370 MHz, 0 MiB
+1, 39, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 9.6120s = 426.1 tok/s
+ppprime MEDIAN: 4096 tok in 9.6120s = 426.1 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp4096 rep=1 arm=off exit=0
+snapshot 2026-08-08T11:45:05Z
+0, 41, 2370 MHz, 0 MiB
+1, 42, 2272 MHz, 0 MiB
+########## pp4096 rep=1 arm=grouped ##########
+raw=/tmp/leverC-perf-41f0af6f/pp4096-grouped-r1-20260808T112734Z.log
+snapshot 2026-08-08T11:45:05Z
+0, 41, 2370 MHz, 0 MiB
+1, 42, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 5.8718s = 697.6 tok/s
+ppprime MEDIAN: 4096 tok in 5.8718s = 697.6 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp4096 rep=1 arm=grouped exit=0
+snapshot 2026-08-08T11:45:55Z
+0, 41, 2370 MHz, 0 MiB
+1, 41, 2272 MHz, 0 MiB
+########## pp4096 rep=2 arm=grouped ##########
+raw=/tmp/leverC-perf-41f0af6f/pp4096-grouped-r2-20260808T112734Z.log
+snapshot 2026-08-08T11:45:55Z
+0, 41, 2370 MHz, 0 MiB
+1, 42, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 5.8701s = 697.8 tok/s
+ppprime MEDIAN: 4096 tok in 5.8701s = 697.8 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp4096 rep=2 arm=grouped exit=0
+snapshot 2026-08-08T11:46:47Z
+0, 41, 2370 MHz, 0 MiB
+1, 41, 2272 MHz, 0 MiB
+########## pp4096 rep=2 arm=off ##########
+raw=/tmp/leverC-perf-41f0af6f/pp4096-off-r2-20260808T112734Z.log
+snapshot 2026-08-08T11:46:47Z
+0, 41, 2370 MHz, 0 MiB
+1, 42, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 9.5992s = 426.7 tok/s
+ppprime MEDIAN: 4096 tok in 9.5992s = 426.7 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp4096 rep=2 arm=off exit=0
+snapshot 2026-08-08T11:47:45Z
+0, 42, 2370 MHz, 0 MiB
+1, 43, 2272 MHz, 0 MiB
+########## pp4096 rep=3 arm=off ##########
+raw=/tmp/leverC-perf-41f0af6f/pp4096-off-r3-20260808T112734Z.log
+snapshot 2026-08-08T11:47:45Z
+0, 42, 2370 MHz, 0 MiB
+1, 43, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 9.5947s = 426.9 tok/s
+ppprime MEDIAN: 4096 tok in 9.5947s = 426.9 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp4096 rep=3 arm=off exit=0
+snapshot 2026-08-08T11:48:44Z
+0, 42, 2370 MHz, 0 MiB
+1, 42, 2272 MHz, 0 MiB
+########## pp4096 rep=3 arm=grouped ##########
+raw=/tmp/leverC-perf-41f0af6f/pp4096-grouped-r3-20260808T112734Z.log
+snapshot 2026-08-08T11:48:44Z
+0, 42, 2370 MHz, 0 MiB
+1, 43, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 5.8731s = 697.4 tok/s
+ppprime MEDIAN: 4096 tok in 5.8731s = 697.4 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp4096 rep=3 arm=grouped exit=0
+snapshot 2026-08-08T11:49:35Z
+0, 41, 2370 MHz, 0 MiB
+1, 42, 2272 MHz, 0 MiB
+########## pp4096 rep=4 arm=grouped ##########
+raw=/tmp/leverC-perf-41f0af6f/pp4096-grouped-r4-20260808T112734Z.log
+snapshot 2026-08-08T11:49:35Z
+0, 41, 2370 MHz, 0 MiB
+1, 42, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 5.8709s = 697.7 tok/s
+ppprime MEDIAN: 4096 tok in 5.8709s = 697.7 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp4096 rep=4 arm=grouped exit=0
+snapshot 2026-08-08T11:50:27Z
+0, 41, 2370 MHz, 0 MiB
+1, 41, 2272 MHz, 0 MiB
+########## pp4096 rep=4 arm=off ##########
+raw=/tmp/leverC-perf-41f0af6f/pp4096-off-r4-20260808T112734Z.log
+snapshot 2026-08-08T11:50:27Z
+0, 41, 2370 MHz, 0 MiB
+1, 42, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 9.5894s = 427.1 tok/s
+ppprime MEDIAN: 4096 tok in 9.5894s = 427.1 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp4096 rep=4 arm=off exit=0
+snapshot 2026-08-08T11:51:25Z
+0, 42, 2370 MHz, 0 MiB
+1, 43, 2272 MHz, 0 MiB
+########## pp4096 rep=5 arm=off ##########
+raw=/tmp/leverC-perf-41f0af6f/pp4096-off-r5-20260808T112734Z.log
+snapshot 2026-08-08T11:51:25Z
+0, 42, 2370 MHz, 0 MiB
+1, 43, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 9.5920s = 427.0 tok/s
+ppprime MEDIAN: 4096 tok in 9.5920s = 427.0 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp4096 rep=5 arm=off exit=0
+snapshot 2026-08-08T11:52:24Z
+0, 42, 2370 MHz, 0 MiB
+1, 43, 2272 MHz, 0 MiB
+########## pp4096 rep=5 arm=grouped ##########
+raw=/tmp/leverC-perf-41f0af6f/pp4096-grouped-r5-20260808T112734Z.log
+snapshot 2026-08-08T11:52:24Z
+0, 42, 2370 MHz, 0 MiB
+1, 43, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 5.8722s = 697.5 tok/s
+ppprime MEDIAN: 4096 tok in 5.8722s = 697.5 tok/s (budget=0 chunk=4096(default) calllocal=0)
+pp4096 rep=5 arm=grouped exit=0
+snapshot 2026-08-08T11:53:15Z
+0, 41, 2370 MHz, 0 MiB
+1, 42, 2272 MHz, 0 MiB
+snapshot 2026-08-08T11:53:15Z
+0, 41, 2370 MHz, 0 MiB
+1, 42, 2272 MHz, 0 MiB
+lock released 2026-08-08T11:53:15Z
+=== medians ===
+shape	tokens	arm	n	median_s	median_tok_s
+pp512	461	off	5	1.4207	324.5
+pp512	461	grouped	5	0.9266	497.5
+pp2048	1833	off	5	4.5565	402.3
+pp2048	1833	grouped	5	2.8678	639.2
+pp4096	4096	off	5	9.5947	426.9
+pp4096	4096	grouped	5	5.8718	697.6
+=== comparisons ===
+pp512 grouped=497.5 tok/s off=324.5 tok/s delta=+53.3% grouped-vs-417.6=+19.1%
+pp2048 grouped=639.2 tok/s off=402.3 tok/s delta=+58.9% grouped-vs-417.6=+53.1%
+pp4096 grouped=697.6 tok/s off=426.9 tok/s delta=+63.4% grouped-vs-417.6=+67.0%
+=== Lever C perf rc=0
+=== done 2026-08-08T11:53:15Z

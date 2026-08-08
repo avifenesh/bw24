@@ -218,3 +218,49 @@ the recorded boundaries. Across 44 before/after snapshots, GPU temperature range
 
 Raw logs and their checksum manifest are retained in
 `research/leverC-20260808/raw/gates-b341c109/`.
+
+## Increment 6 - grouped prefill is the Box2 winner
+
+The final mechanism keeps Step35 inside its legal host-sigmoid routing family:
+
+- `router_gemv` computes m-invariant logits and the existing host oracle fixes expert ids,
+  weights, and top-k order for the whole prefill chunk;
+- unclamped layers batch the sequential fused q8 program over token rows with
+  `moe_gate_up_silu8_dev_q8_rows` and `moe_down8_fma_dev_q8_rows_g`;
+- clamped layers batch the literal `qmatvec_expert_q8` row program by routed pair, retain
+  `ffn_act_lim`, requantize each row, and scatter in original slot order;
+- decode and speculative verification remain on their prior dispatch, and
+  `MEMRA_MOE_GROUPED=0` is the live prefill rollback seam.
+
+Box2 measured commit `41f0af6f` on two RTX PRO 6000 Blackwell Server Edition GPUs. Each cell
+used five independent timed processes with one warmup per process; grouped-default and rollback
+order alternated by repetition under one GPU-lock hold. The same prompt bytes and pipeline source
+as `research/pipeprime-20260808` were used.
+
+| shape | realized T / effective auto geometry | rollback median, N=5 | grouped median, N=5 | grouped vs rollback | historical pipeline | grouped vs historical |
+|---|---|---:|---:|---:|---:|---:|
+| pp512 class | 461 / chunk 128 x 4 | 324.5 tok/s | **497.5 tok/s** | **+53.3%** | 330.0 tok/s | +50.8% |
+| pp2048 class | 1833 / chunk 230 x 8 | 402.3 tok/s | **639.2 tok/s** | **+58.9%** | 401.8 tok/s | +59.1% |
+| pp4096 | 4096 / chunk 512 x 8 | 426.9 tok/s | **697.6 tok/s** | **+63.4%** | 417.6 tok/s | **+67.0%** |
+
+The same-commit rollback is the controlled A/B result; the historical pipeline column is context.
+The raw `ppprime` footer prints `chunk=4096(default)` when `MEMRA_PRIME_CHUNK` is unset, but that
+is the raw environment label, not the effective chunk. The naked PP-2 policy in
+`prime_chunk_tokens()` resolves the three prompts to the geometry shown above, and the preceding
+`ppsplit` gate proves the default pipeline and overlap counters are live.
+
+All 30 timed arms exited zero. Independent parsing of the individual logs reproduced every TSV
+median. Across 62 before/after snapshots, temperatures were 36 to 43 C and SM clocks were 2272 to
+2370 MHz; all boundaries showed 0 MiB used and no competing compute process.
+
+The grouped arm therefore remains the Step35 prefill default in this lane. No merge, tag, release,
+or origin push is made here: the local RTX 5090 proof-rig correctness, memory, and throughput
+battery remains required before this default can ship.
+
+The lane steering file was first observed during the final receipt check, after the Box2 campaign
+had completed. Its `2026-08-08T11:15:33Z` coordination note reserves Box2 for serving, forbids new
+long runs there, and explicitly exempts lanes already in final receipts. No further Box2 GPU work
+was started after reading it.
+
+Raw logs, prompts, results, transfer provenance, and checksums are retained in
+`research/leverC-20260808/raw/perf-41f0af6f/`.
