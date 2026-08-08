@@ -1,363 +1,674 @@
-# Qwen 3.8 27B — day-one bring-up runbook
+# Qwen 3.8 27B FP8-ST day-one runbook
 
-Written 2026-08-03 (lane/qwen38-prep), before the release; revised 2026-08-04 on the
-train (FP8-ST leg added, dry-run fixes — see
-`research/qwen38-prep-20260803/DRYRUN-20260804.md`). Target: HF repo appears →
-"published as supported" in one day, IF the arch-diff is clean. Companion files:
-`research/qwen38-prep-20260803/AUDIT.md` (what we know about 3.6-27B),
-`baseline-36-27b.jsonl` (the frozen numbers every 3.8 cell diffs against),
-`WATCH.md` (where the release lands).
+Prepared 2026-08-08 for the expected Qwen 3.8 drop. This is an executable same-architecture
+runbook, not a substitute for a bring-up lane.
 
-Two serving legs run in parallel after the arch-diff (owner direction 2026-08-04:
-FP8-ST serving on the exact arm is the prod direction):
+The production model artifact is the official Qwen FP8 safetensors directory. There is no
+Q8_0, GGUF, NVFP4, or community-requant bridge for Qwen 3.8. The frozen Qwen 3.6 GGUF appears
+below only as:
 
-- **Leg A — FP8-ST** (§3b): the official FP8 block-128 checkpoint served as a
-  safetensors DIR by memra-server. Exact by construction (block-128 → Q8_0 host
-  dequant, or the byte-identical `MEMRA_FP8_BLK_GPU` device dequant). No spec
-  day-one — dir checkpoints are spec-QUARANTINED (research/serve-st-20260803).
-- **Leg B — GGUF** (§3): the house NVFP4+MTP conversion, parallel/fallback leg and
-  the ONLY leg with spec/drafter rows day-one.
+- the real-weight oracle for `kernel-check`, whose model-backed sections are GGUF-specific;
+- an A/B performance reference; and
+- a byte-verbatim MTP donor for a small external drafter, and only when the trunk interface is
+  exactly compatible.
 
-Ground rules that apply to every step:
+The shipped defaults are the desired path: `MEMRA_ST_E4M3` and `MEMRA_ST_E4M3_BLK` are on,
+and block-128 prefill uses the native `MEMRA_FP8_MMQ` source. Do not set
+`MEMRA_ST_E4M3=1`, `MEMRA_ST_E4M3_BLK=1`, or `MEMRA_FP8_MMQ=1`; naked behavior is the
+production behavior. `MEMRA_FP8_MMQ=1` additionally admits a duplicate stash source and is
+not this path.
 
-- Every GPU command on the 5090 goes through `flock /tmp/gpu5090.lock` (rig is shared).
-- Raw logs are part of the deliverable — `tee` first, parse second (CLAUDE.md evidence
-  discipline). Work dir for receipts: `research/qwen38-bringup-<date>/`.
-- The deployment bar is >=1.1x e2e vs llama.cpp + own-gen trimmed drafter, per model,
-  before "published as supported" (owner rule, see AUDIT.md §4). Gates green = bring-up
-  floor, not the finish.
+## Before release
 
-## 0. Branch + workspace
+Run from the dedicated worktree in Bash; the snippets use Bash arrays and `PIPESTATUS`. Every GPU
+command on the local 5090 uses the shared lock. Raw logs are written first and parsed second.
 
 ```bash
-cd ~/projects/bw24-unified
-git checkout restructure/public-split && git pull
-git checkout -b lane/qwen38-bringup
-mkdir -p research/qwen38-bringup-$(date +%Y%m%d)
+set -euo pipefail
+cd /home/avifenesh/projects/wt-cx-38prep
+
+export Q38_REPO=Qwen/Qwen3.8-27B-FP8
+export Q38_DIR=/data/ai-ml/hf-models/qwen38-27b-fp8
+export Q38_DERIVED_ROOT=/data/ai-ml/hf-models/qwen38-27b-derived
+export Q38_VENV_ROOT=/data/ai-ml/venvs
+export Q36_REF=/data/ai-ml/hf-models/qwen36-27b-hf-min
+export Q36_ST=/data/ai-ml/hf-models/qwen36-27b-blk128fp8
+export Q36_GGUF=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+export Q36_DRAFT=/data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf
+export R=research/qwen38-bringup-$(date +%Y%m%d)
+mkdir -p "$R"
+
+# A copied shell must not turn a default-path gate into an inherited experiment.
+unset MEMRA_ST_E4M3 MEMRA_ST_E4M3_BLK MEMRA_FP8_MMQ MEMRA_FP8_FOLD
+unset MEMRA_FP8_BLK_GPU MEMRA_PP_FP8 MEMRA_MTP_DRAFT MEMRA_FRSPEC_TRIM
+unset MEMRA_SPEC_K
+
+tools/preflight-38.sh 2>&1 | tee "$R/preflight.log"
 ```
 
-## 1. Download (first hour; no GPU)
+`PREFLIGHT-38: READY-WITH-WAITS` is green before release. A missing official repository and
+target directory are expected `WAIT`s. Any `FAIL` is fixed before day one.
 
-Grab safetensors + config FIRST (arch-diff needs only config.json + tokenizer, ~20 MB):
+## Day-one clock
 
-```bash
-D=/data/ai-ml/hf-models/qwen38-27b
-huggingface-cli download Qwen/Qwen3.8-27B config.json generation_config.json \
-    tokenizer.json tokenizer_config.json chat_template.jinja --local-dir $D-hf-min
-# full BF16 weights in the background while the arch-diff runs:
-nohup huggingface-cli download Qwen/Qwen3.8-27B --local-dir $D > $D-dl.log 2>&1 &
-# FP8-ST leg artifact: the official FP8 sibling (3.6 precedent: Qwen/Qwen3.6-27B-FP8
-# was created the same day as the BF16 repo, block-128 e4m3, dynamic activations,
-# vision tower excluded). This DIR is what memra-server serves in leg A:
-nohup huggingface-cli download Qwen/Qwen3.8-27B-FP8 --local-dir $D-fp8 \
-    > $D-fp8-dl.log 2>&1 &
-```
-
-If the FP8 sibling does NOT appear day-one, leg A waits (do not substitute a community
-FP8 requant — official checkpoint only, it is the "exact arm" premise) and leg B carries
-the day. If Qwen ships an official GGUF repo (they did not for 3.6; unsloth/NVIDIA filled
-that gap — see WATCH.md), download it too but treat it as a cross-check, not the artifact:
-our shipped 3.6 artifact is a house conversion (NVFP4 trunk + Q4_K_M/Q5_K head + baked MTP).
-
-## 2. Arch-diff checklist (minutes; blocks everything downstream)
-
-Reference = `/data/ai-ml/hf-models/qwen36-27b-hf-min/config.json`. Mechanized:
-
-```bash
-python3 research/qwen38-prep-20260803/arch-diff-fields.py \
-    $D-hf-min/config.json /data/ai-ml/hf-models/qwen36-27b-hf-min/config.json
-# exit 0 = fast-path (numeric-only diffs), exit 1 = STOP-CLASS diff or missing field.
-# Self-tested 2026-08-04 on the 3.6 config (0 diffs) and the 3.6-FP8 sibling (4
-# quantization_config diffs only): research/qwen38-prep-20260803/arch-diff-selftest-36.txt
-```
-
-3.6-27B values listed so a diff is readable without the reference file open:
-
-| Field | 3.6-27B value | Divergence class |
+| Time | Work | Exit condition |
 |---|---|---|
-| `architectures` / `model_type` | `Qwen3_5ForConditionalGeneration` / `qwen3_5` | new string = check converter support first (§3) |
-| `text_config.num_hidden_layers` | 64 | numeric-only diff = FAST PATH |
-| `text_config.hidden_size` / `intermediate_size` | 5120 / 17408 | numeric-only = fast path |
-| `num_attention_heads` / `num_key_value_heads` / `head_dim` | 24 / 4 / 256 | numeric = fast path; NEW head_dim value needs an FA-arm check (fa dispatch is head_dim-keyed) |
-| `layer_types` + `full_attention_interval` | linear_attention x3 : full_attention, interval 4 | any change in the pattern or a new layer type = STOP |
-| `linear_*` (GDN block) | key_heads 16, value_heads 48, k/v head_dim 128, conv_kernel 4 | numeric = fast path; missing block entirely = STOP |
-| `rope_parameters` | theta 1e7, partial_rotary_factor 0.25, mrope_interleaved, section [11,11,10] | theta/factor numeric = fast path; new rope_type or scaling block (yarn etc.) = STOP |
-| `vocab_size` | 248320 | changed size with same tokenizer family = fast path (embed/head re-shape rides conversion); new tokenizer.json model class = STOP |
-| special tokens | bos/eos 248044, image 248056, video 248057 | additions fine; EOS semantics change = re-check chat stops |
-| `chat_template.jinja` | 3.6 template on disk | diff it; template-only change = fast path (re-derive ranks with template ON) |
-| `mtp_num_hidden_layers` / `mtp_use_dedicated_embeddings` | 1 / false | more MTP layers or dedicated embeds = drafter pipeline change, STOP on drafter step only |
-| `max_position_embeddings` | 262144 | shrink/grow = fine |
-| vision tower present | yes (we serve text-only) | ignored, same as 3.6 |
-| FP8 repo `quantization_config` | 3.6-FP8: `quant_method fp8`, `fmt e4m3`, `weight_block_size [128,128]`, `activation_scheme dynamic` | block-128 = the merged loader's class, leg A proceeds; per-tensor scalar = also fine (`MEMRA_ST_E4M3` class); any OTHER block size or a non-e4m3 fmt = leg A STOP (loader assumes 128×128), leg B unaffected |
+| H+00:00 | Bind the exact official repo/revision; fetch metadata | official FP8 repo and immutable revision recorded |
+| H+00:15 | Config and tokenizer diff | same-architecture verdict; otherwise STOP |
+| H+00:30 | Download FP8 weights; create manifest | every indexed shard present and hashed |
+| H+01:00 | Build binaries and current HF reference environment | release binaries and reference imports succeed |
+| H+01:30 | FP8 header census | every F8 weight is per-tensor or block-128 |
+| H+02:00 | Model-backed `kernel-check` | final line `ALL GREEN` |
+| H+02:30 | Naked memra first light and residency proof | native FP8 residency, no silent class fallback |
+| H+03:15 | HF greedy-reference comparison | identical generated token ids |
+| H+04:00 | Chunk invariance | invariant across the pinned chunk sizes |
+| H+04:30 | Embedded-MTP `run-spec` | K=1..8 self-consistency passes |
+| H+05:15 | ST serve battery and thinking surface | serve gate green; Qwen thinking switch detected and exercised |
+| H+06:30 | Own-generation ranks and trim validation | corpus floor met; in-model trim A/B recorded |
+| H+09:00 | External drafter build and gates | donor compatible, draft built, K=1..8 passes, e2e verdict recorded |
+| H+10:00 | Close receipt | every publish gate green or an explicit STOP recorded |
 
-**Same-arch fast path** = every diff is numeric-only (sizes, counts, theta) with the same
-`model_type`, same layer_types pattern, same tokenizer class, same rope type, MTP >= 1 layer.
-Proceed to §3.
+Downloads, the HF reference environment, and the model-backed kernel battery can overlap.
+Do not overlap two GPU jobs.
 
-**Divergent-arch STOP rule** — any of the following means STOP, do not force day-one publish;
-open a real bring-up lane (per-model plan file, gemma4-bringup style) instead:
+## H+00:00 - bind the official artifact
 
-- new attention variant (layer_types pattern change, sliding-window fields appearing, new
-  rope_type/scaling, attn gating semantics change)
-- MoE-ification (any `num_experts` field — 27B going MoE changes the whole dispatch class)
-- tokenizer swap (different tokenizer.json model class or pretokenizer regex — goldens,
-  ranks, and every prompt-id file die)
-- `model_type` unknown to the converter fork (§3) with structural tensor-name changes
-- MTP head removed entirely (drafter falls back to donor-block variant,
-  docs/DRAFT-REGIME.md §"Targets that ship no NextN head" — 3.6-27B is the natural donor
-  ONLY if trunk interface matches: n_embd, head_dim, n_head, n_head_kv, identical vocab)
-
-Record the diff verdict in `research/qwen38-bringup-<date>/arch-diff.md` before touching GPU.
-
-## 3. GGUF conversion + the quant lanes we ship
-
-Converter = the house llama.cpp fork (`~/projects/llama.cpp`, conversion/qwen.py —
-`Qwen3_5TextModel` handles MRoPE + MTP + NVFP4 repack; `convert_hf_to_gguf.py` accepts
-mixed NVFP4+FP8 groups since bb090d1f1). If `model_type` moved to `qwen3_8`, the first code
-task is a subclass in conversion/qwen.py (usually a registration + any new hparam mapping —
-small if fast-path).
-
-3.6-27B ships two quant lanes (README.md:86): **NVFP4 trunk + Q4_K_M-class MTP block baked**
-(the daily) — that is the ONE artifact to reproduce day-one. The recipe that produced the
-daily-equivalent unsloth artifact (convert.log/mtp-convert.log in
-`/data/ai-ml/hf-models/unsloth-qwen36-27b-nvfp4-gguf/`):
+Search the official namespace instead of assuming the release name. An official BF16 repo is
+source/reference material; the official FP8 sibling is the only production candidate.
 
 ```bash
-cd ~/projects/llama.cpp    # interpreter = .venv/bin/python3 — system python3 has no
-                           # torch (dry-run finding 2026-08-04; venv now carries torch
-                           # 2.13 cpu + numpy + transformers + safetensors)
-# free pre-flight, before any weights write (validated on the 3.6 NVFP4 source:
-# 1252 tensors / 28.2G main, 18 tensors / 2.5G mtp):
-.venv/bin/python3 convert_hf_to_gguf.py $D --dry-run --outfile /tmp/dryrun-q38.gguf
-# main model: NVFP4 experts/trunk repack straight from the modelopt/NVFP4 checkpoint if
-# Qwen or NVIDIA publish one; from BF16 source, quantize via llama-quantize after an
-# f16/bf16 convert. Embed/head land Q5_K (the "q5h" in the artifact name), imatrix-guided:
-.venv/bin/python3 convert_hf_to_gguf.py $D --outfile $OUT/qwen38-27b-trunk.gguf [--outtype ...]
-# MTP block sidecar (bf16 in the checkpoint -> q8_0; the acceptance-proven form):
-.venv/bin/python3 convert_hf_to_gguf.py $D --mtp --outtype q8_0 --outfile $OUT/mtp-qwen38-27b-q8_0.gguf
+curl -fsS \
+  'https://huggingface.co/api/models?author=Qwen&search=Qwen3.8-27B&limit=100' \
+  | tee "$R/hf-search.json"
+jq -r '.[] | (.id // .modelId)' "$R/hf-search.json"
+
+# Set this to the exact official FP8 id printed above if the release spelling differs.
+export Q38_REPO=Qwen/Qwen3.8-27B-FP8
+jq -e --arg repo "$Q38_REPO" \
+  'any(.[]; (.id // .modelId) == $repo)' "$R/hf-search.json"
+
+curl -fsS "https://huggingface.co/api/models/$Q38_REPO" \
+  | tee "$R/hf-model.json"
+export Q38_REV
+Q38_REV=$(jq -er '.sha' "$R/hf-model.json")
+printf 'repo=%s\nrevision=%s\n' "$Q38_REPO" "$Q38_REV" \
+  | tee "$R/artifact-source.txt"
+export A="$Q38_DERIVED_ROOT/$Q38_REV"
+mkdir -p "$A" "$Q38_VENV_ROOT"
+printf 'derived_artifacts=%s\n' "$A" | tee -a "$R/artifact-source.txt"
 ```
 
-Exact flags: mirror the 3.6 logs (they are the receipts — `convert.log` line 1 onward).
-If only BF16 ships day-one, convert + quantize BF16→NVFP4 with the 3.6 imatrix procedure
-(new imatrix from the new model, NOT the 3.6 one) and note the artifact is house-quantized.
+STOP if the FP8 sibling is absent. Do not fill the gap with Q8_0, a local conversion, or a
+community FP8 requant.
 
-Sanity gate before GPU: header dump via
-`~/projects/llama.cpp/.venv/bin/python3 ~/projects/llama.cpp/gguf-py/gguf/scripts/gguf_dump.py --no-tensors $OUT/qwen38-27b.gguf`
-— n_layers/vocab/head counts match config.json; MTP block present as
-`blk.<n_layers>.nextn.*` (3.6: blk.64, rig5090.jsonl:185).
-
-## 3b. FP8-ST leg — the prod direction (parallel to §3, no conversion)
-
-The official FP8 block-128 DIR is served as-is; "conversion" is zero steps. What gates it:
-
-1. **Config check** (part of §2): `quantization_config` must be
-   `fp8 / e4m3 / weight_block_size [128,128]` (the 3.6-FP8 shape). Anything else = leg A
-   STOP, note it in arch-diff.md, continue leg B.
-2. **Loader gates, block-128 class** — already merged and green on synthetic + real
-   block-128 checkpoints (v0.68 lanes), re-run in-config on the new model:
-   ```bash
-   # kernel-check carries the fp8-blk-gpu bit-parity section (ARM B' device dequant
-   # byte-equal to host, kernel_check.rs:3415) — runs in the §4 full kernel-check, no
-   # separate invocation. The load-time dequant path this section gates is now the
-   # FALLBACK, not the default (see below), but it must still be green: it is where every
-   # native-residency precondition falls through.
-   ```
-   **NAKED IS THE FAST PATH ON THIS CLASS since lane/fp8-blk128-decode (2026-08-05) —
-   day-one needs NO flags to get it.** If 3.8-FP8 ships `weight_block_size [128,128]`
-   like 3.6, the checkpoint's e4m3 bytes are the ONE resident copy (decode dequants
-   per-k128 in `qmatvec_e4m3_blk_mmvq`) and prefill rides the per-block MMQ tile
-   directly. Measured on the 3.6-27B block-128 artifact: decode +1.69%, VRAM −430 MiB,
-   pp512 +0.83% over the Q8_0-slab floor. Rollback seams if the new model misbehaves:
-   `MEMRA_FP8_MMQ=0` (prefill route only), `MEMRA_ST_E4M3_BLK=0` (this class's residency),
-   `MEMRA_ST_E4M3=0` (all native e4m3 residency).
-   Still do NOT reach for the other perf doors day-one: `MEMRA_FP8_FOLD` is LOSSY (greedy
-   MISMATCH pos 20, research/fp8st receipts) and `MEMRA_FP8_MMQ=1`'s extra meaning — the
-   duplicate-copy STASH source — buys nothing on a natively-resident checkpoint. Both stay
-   off. (The old "MEMRA_FP8_MMQ measured 0.81-0.94x the floor, stays OFF" line was correct
-   for the stash denominator and wrong for this one; `research/fp8blk-20260805/VERDICT.md`
-   has the arithmetic.)
-3. **First light, CLI arm** (same §4 step-2 form, ST dir instead of GGUF):
-   ```bash
-   flock /tmp/gpu5090.lock env MEMRA_NGEN=20 MEMRA_PROMPT_FILE=tools/fast-gate/prompts/probe.txt \
-       target/release/run-gen $D-fp8 2>&1 | tee research/qwen38-bringup-*/first-light-fp8st.log
-   ```
-   Expected: argmax MATCH lines, coherent text.
-4. **ST serving battery**:
-   ```bash
-   flock /tmp/gpu5090.lock tools/serve-st-gate.sh $D-fp8 \
-       2>&1 | tee research/qwen38-bringup-*/serve-st-gate-fp8.log
-   ```
-   Green = 4 gates: /models lists it, chat coherent through the checkpoint's own
-   template, CLI-vs-server greedy token streams IDENTICAL, spec quarantine holds.
-   (Dry-run 2026-08-04 on the merged state, qwen35-4b BF16 ckpt: 0 failed —
-   research/qwen38-prep-20260803/serve-st-gate-dryrun-20260804.log.)
-5. **ST serving cells** (perf record, self-competition protocol per §7): decode tok/s
-   N=5 medians on pp512.txt / p3-agentic-long.txt via run-gen on the DIR, interleaved
-   against the NV-27B-ST 3.6 standing config re-measured same-session (rig5090.jsonl
-   lines 180-289 lineage; every historical 27B ST pairing carries a correction row —
-   keep the same-session law). Serve-side smoke: `tools/serve-smoke.sh` with
-   `MEMRA_MODELS="q38fp8=$D-fp8"`.
-6. **Known limits day-one**: spec/drafter rows are leg-B-only (dir ckpts
-   spec-quarantined until the ST serve-spec exactness gate goes green — root cause open,
-   research/serve-st-20260803/RESULTS.md); `MEMRA_PP_FP8` prefill GEMM on this class
-   rides per-tensor scalar only (cuBLASLt refuses block-128 on sm_120,
-   research/fp8st-20260803/P1-VERDICT.md) — prefill stays on the exact Q8_0-resident
-   floor unless a leg-specific lane says otherwise.
-
-## 4. Gate battery (order matters: cheap first)
-
-All commands from repo root, binaries in `target/release/` (rebuild first: `cargo build
---release`). `M=$OUT/qwen38-27b.gguf`.
-
-1. **fast-gate tier-0** (seconds, catches build/link + scoped kernel oracles):
-   ```bash
-   tools/fast-gate/fast-gate.sh --tier 0
-   ```
-   Green = compile + scoped kernel-check pass. (New-model bring-up mostly doesn't touch
-   kernels; this guards whatever loader/dispatch edits §3 forced.)
-2. **First light, run-gen argmax** (the bring-up moment of truth):
-   ```bash
-   flock /tmp/gpu5090.lock env MEMRA_NGEN=20 MEMRA_PROMPT_FILE=tools/fast-gate/prompts/probe.txt \
-       target/release/run-gen $M 2>&1 | tee research/qwen38-bringup-*/first-light.log
-   ```
-   Expected green: `MATCH` on both prefill-vs-decode argmax lines, no MISMATCH-STRUCTURED,
-   coherent text. A MISMATCH here = loader/kernel bug, stop and bisect (the 3.6 bring-up
-   history: load-tail OOM via TENSOR-map F8 resolution, rig5090.jsonl:184 — check there first).
-3. **kernel-check ALL GREEN** (~4.5 min full):
-   ```bash
-   flock /tmp/gpu5090.lock target/release/kernel-check 2>&1 | tee .../kernel-check.log
-   ```
-   Note: the `nvfp4-27b-shape` section pins the 3.6 file path (kernel_check.rs:1877 at
-   2026-08-04 HEAD; grep the section name, the line drifts) — it keeps gating 3.6
-   regardless. If 3.8 introduces a new weight shape class, add a section; same-arch
-   same-shapes needs nothing. The FP8-ST leg's `fp8-blk-gpu` bit-parity section
-   (kernel_check.rs:3415) rides the same full run.
-4. **run-gen argmax at depth** (the deep-fa arms): repeat step 2 with
-   `MEMRA_PROMPT_FILE=research/e2e/prompts/p3-agentic-long.txt` (or the board 6257-tok
-   prompt). Expected: MATCH.
-5. **run-spec K=1..8 self-consistency** (needs the drafter from §6 — run K=1..8 sweep after
-   the draft exists; a pre-drafter smoke with the baked MTP head at K=3 is legitimate):
-   ```bash
-   for K in 1 2 3 4 5 6 7 8; do
-     flock /tmp/gpu5090.lock env MEMRA_SPEC_K=$K MEMRA_DRAFT=$DRAFT MEMRA_NGEN=64 \
-       target/release/run-spec $M 2>&1 | tee -a .../run-spec-sweep.log
-   done
-   ```
-   Expected green: `SELF-CONSISTENCY PASS` every K, acceptance > 0.
-6. **prime-gate + serve-smoke** (serving surface): `tools/serve-smoke.sh` with the model, and
-   a prime-gate run mirroring tools/local-ci.sh:79-84 form. Expected: PASS lines, exit 0.
-   Day-one serve-feature smokes on the NEW model (features merged post-runbook, v0.68/0.69
-   train — each is model-load-sensitive, so smoke them on the bring-up model, not just the
-   models they were gated on):
-   - **Constrained decoding**: one `/v1/chat/completions` with
-     `response_format {"type":"json_schema", ...}` → valid JSON matching the schema, and
-     one `{"type":"json_object"}` → valid JSON (docs/SERVING.md constrained section;
-     plain constrained-greedy gated at 99.4% of unconstrained on q9). Draft-side grammar
-     masking is default-on — spec+constrained needs no flag (leg B only; leg A has no spec).
-   - **/v1/models OR-schema**: `curl $BASE/v1/models` → the model listed with the
-     OR-schema enrichment fields (serve-tail lane form,
-     research/serve-tail-20260804/v1-models.json is the reference shape).
-   - **Graceful drain**: SIGTERM mid-stream → in-flight stream completes, new request
-     503s, exit 0 (research/serve-tail-20260804/run-battery.sh item 3 is the ready-made
-     probe — run it with the new model path as $1).
-7. **Full battery on the final tree** (the merge/tag gate, unchanged):
-   ```bash
-   tools/local-ci.sh 2>&1 | tee .../local-ci.log
-   ```
-
-## 5. Register the model in the gate tables (same commit as bring-up)
-
-- `tools/fast-gate/models.tsv`: add a `k38` argmax probe row (copy the k27 row, new path).
-- `tools/fast-gate/map.tsv`: extend the NVFP4 rows (27, 30, 32) with `k38` if the artifact
-  is NVFP4+Q45K-class like 3.6.
-- Goldens: ONLY at a full-battery green point —
-  `tools/fast-gate/fast-gate.sh --refresh-goldens` (docs/TESTING.md:78-90).
-- Consider a q38 cell in `research/tune-data/perf-cells.json` — NOTE: 3.6-27B never got one
-  (audit §3), which is a standing gap; adding both q27 and q38 plain cells closes it.
-
-## 6. Drafter build — REQUIRED before publish, not optional (leg B / GGUF only)
-
-Leg A note: the drafter and every spec row belong to the GGUF leg — dir checkpoints are
-spec-quarantined in serve (§3b item 6). Leg A publishes plain serving cells only.
-
-Own-gen trimmed drafter per docs/DRAFT-REGIME.md (laws 1-3). ~30-60 min GPU for ranks; use
-the bounded-chunk mode on the shared rig:
+Fetch the small files first:
 
 ```bash
-# 1. own-gen ranks (chat template ON — we serve chat), chunked to release the GPU lock:
-flock /tmp/gpu5090.lock target/release/frspec-owngen $M ranks38.gguf 32768 \
-    --corpus-out corpus-ids.txt --limit 64        # rerun until the final chunk writes ranks
-# 2. extract + trim + quantize (byte-verbatim from the SERVING gguf's own MTP block):
-tools/make-trimmed-draft.sh $M ranks38.gguf.txt draft-qwen38-owntrim.gguf 32768 [imatrix.gguf]
-# 3. validate (GOOD/WASH/BAD verdict, baseline-vs-trimmed A/B):
-flock /tmp/gpu5090.lock target/release/frspec-owngen $M out.gguf --validate
+mapfile -t META_FILES < <(
+  jq -r '.siblings[].rfilename' "$R/hf-model.json" \
+  | grep -E '(^README\.md$|\.json$|chat_template.*\.jinja$)'
+)
+hf download "$Q38_REPO" "${META_FILES[@]}" \
+  --revision "$Q38_REV" --local-dir "$Q38_DIR" \
+  2>&1 | tee "$R/hf-metadata-download.log"
 ```
 
-Never reuse 3.6 ranks (law 1: foreign ranks measured −12 acceptance pts on an identical
-tokenizer). Never convert the draft from the HF checkpoint (law 2: converter drafts
-collapsed to ~35-39% acceptance). Adopt on e2e tok/s only (law 3). Then complete the
-regime checklist (DRAFT-REGIME.md bottom): draft + ranks to the HF bench repo
-(huggingface.co/Avifenesh/memra-bench) with provenance.
+## H+00:15 - same-architecture gate
 
-## 7. Board rows + the self-competition pairing (the publish gate)
-
-**Measurement doctrine (owner, 2026-08-03): llama benching is STOPPED.** The llama
-denominators recorded through 2026-08-03 (board + rig5090.jsonl) are frozen reference
-points — no fresh llama builds, no new llama-bench runs, no interleaved llama arms.
-All pairing is self-competition: memra-vs-memra, interleaved against OUR baseline binary.
-
-Protocol: memra `run-gen MEMRA_NGEN=128` on pp512.txt / p3-agentic-long.txt, and the
-3.8 arms interleaved round-robin against the **3.6-27B rows re-measured in the same
-session with the same binary** (that pairing is the verdict). N=5 medians, flock'd,
-idle-gated, temps recorded per rep. Spec row: K-sweep for the best class config, N>=2,
-same window (the 07-18 q27 K-sweep shape, rig5090.jsonl:344, minus the llama arm).
-
-**Re-pair the 3.6-27B rows in the same session** — the frozen baseline notes the spec row
-is stale vs HEAD (baseline-36-27b.jsonl STALENESS row); the 3.8-vs-3.6 story needs both
-measured in one window.
-
-Publish decision: judged against the FROZEN llama row for the 27B class (recorded
-2026-07/08, non-interleaved caveat stated) — >=1.1x vs that frozen number or the lane
-stays open — plus absolute tok/s tracked in jsonl as the ongoing self-competition
-record. Do not run new llama sessions to manufacture a fresh denominator.
-
-Board mechanics (CLAUDE.md perf-board rule):
+Run the mechanized diff before downloading the weight shards:
 
 ```bash
-$EDITOR research/tune-data/current-board.json   # add plain/depth/spec/supported_models rows
-python3 tools/update-perf-board.py              # regenerates README/PERFORMANCE/SVGs
-git add research/tune-data/current-board.json README.md docs/PERFORMANCE.md docs/perf-card*.svg
-# + the rig5090.jsonl evidence row + raw logs dir, same commit
+set +e
+python3 research/qwen38-prep-20260803/arch-diff-fields.py --expect-fp8 \
+  "$Q38_DIR/config.json" "$Q36_REF/config.json" \
+  2>&1 | tee "$R/config-diff.log"
+CONFIG_RC=${PIPESTATUS[0]}
+set -e
+
+case "$CONFIG_RC" in
+  0) echo "same-architecture config; continue" ;;
+  2) echo "architecture matches; FP8 metadata waits for tensor-header proof" ;;
+  *) echo "STOP: architecture/config contract changed"; exit 1 ;;
+esac
 ```
 
-Never hand-edit PERF-* marker blocks; never push with --no-verify.
-
-## 8. Release (docs/RELEASING.md)
+Verify the tokenizer and thinking dialect. Qwen 3.8 must remain the Qwen ChatML class:
 
 ```bash
-bash tools/changelog.sh          # preview
-git tag vX.Y.0 && git push origin vX.Y.0    # minor bump: model lane landed
+python3 - "$Q38_DIR/tokenizer_config.json" "$Q36_REF/tokenizer_config.json" <<'PY' \
+  2>&1 | tee "$R/tokenizer-contract.log"
+import json
+import sys
+
+new = json.load(open(sys.argv[1]))
+ref = json.load(open(sys.argv[2]))
+hard = ("tokenizer_class", "pretokenize_regex", "add_bos_token")
+bad = [(key, ref.get(key), new.get(key)) for key in hard if new.get(key) != ref.get(key)]
+template = new.get("chat_template") or ""
+markers = ("enable_thinking", "add_generation_prompt", "<think>")
+missing = [marker for marker in markers if marker not in template]
+print("hard-field diffs:", bad)
+print("missing Qwen thinking markers:", missing)
+if bad or missing:
+    raise SystemExit(1)
+PY
+
+jq -S '.model.type, .pre_tokenizer' "$Q38_DIR/tokenizer.json" \
+  > "$R/tokenizer38-structure.json"
+jq -S '.model.type, .pre_tokenizer' "$Q36_REF/tokenizer.json" \
+  > "$R/tokenizer36-structure.json"
+diff -u "$R/tokenizer36-structure.json" "$R/tokenizer38-structure.json" \
+  | tee "$R/tokenizer-structure.diff"
+test "${PIPESTATUS[0]}" -eq 0
 ```
 
-Tag only after the full battery is green on the tagged commit on the rig
-(docs/RELEASING.md:11-19). Commit prefixes: bring-up lands as `feat:`, board move as
-`perf:`/`data:` per the changelog split.
+Any tokenizer-class, pre-tokenizer, regex, or thinking-template change is a bring-up lane,
+not a runbook edit.
 
-## Wall-clock estimate, same-arch fast path
+## Config-diff checklist
 
-| Step | Wall | GPU-holding |
+These are the frozen Qwen 3.6 values and memra's current interpretation. “GO with gates” means
+the parser consumes the value generically; it does not waive model-backed, HF-reference, or
+serve gates.
+
+| Config field | Frozen 3.6 value | Day-one classification |
 |---|---|---|
-| download (~55 GB BF16 safetensors — 3.6 precedent is 15 shards — + ~28 GB FP8 sibling; config first) | 0.5-2 h (bg) | none |
-| arch-diff | 15 min | none |
-| FP8-ST leg (first light + serve-st-gate + serving cells + serve smokes) | ~1.5 h, overlaps leg B's conversion window | short bursts |
-| conversion + quant + header sanity | 1-2 h | none/negligible |
-| gates 1-6 (first light → spec smoke) | ~1 h | short bursts |
-| drafter (ranks + trim + validate) | 1.5-2.5 h | chunked bursts |
-| run-spec K=1..8 + full local-ci | ~1 h | yes |
-| board head-to-head (plain N=5 x2 depths + spec re-pair, incl. 3.6 re-pair) | 2-3 h | yes, serialized |
-| board JSON + regenerate + release tag | 0.5 h | none |
-| **Total** | **~8-11 h wall, one working day** | |
+| `architectures` | `["Qwen3_5ForConditionalGeneration"]` | any change: STOP; current HF mapping does not recognize a new Qwen 3.8 class |
+| top/text `model_type` | `qwen3_5` / `qwen3_5_text` | any change: STOP; only these names map to the Qwen35 engine |
+| `num_hidden_layers` | `64` | GO with gates; parsed size |
+| `hidden_size` | `5120` | GO with gates; parsed size, but a change forbids the 3.6 MTP donor |
+| `intermediate_size` | `17408` | GO with gates; parsed size |
+| `num_attention_heads` | `24` | any change: STOP |
+| `num_key_value_heads` | `4` | any change: STOP |
+| `head_dim` | `256` | any change: STOP; FA dispatch and MTP interface are head-dimension keyed |
+| `full_attention_interval` | `4` | any change: STOP |
+| `layer_types` | 64 entries repeating `linear, linear, linear, full` | new type, changed cycle, interval mismatch, or count mismatch with `num_hidden_layers`: STOP |
+| `linear_num_key_heads` | `16` | any change: STOP |
+| `linear_num_value_heads` | `48` | any change: STOP |
+| `linear_key_head_dim` / `linear_value_head_dim` | `128` / `128` | any change: STOP |
+| `linear_conv_kernel_dim` | `4` | any change: STOP |
+| `attention_bias` / `attention_dropout` | `false` / `0.0` | any change: STOP; these are not generic runtime knobs |
+| `attn_output_gate` / `output_gate_type` | `true` / `swish` | any change: STOP; the Qwen35 forward assumes this gate contract |
+| `hidden_act` | `silu` | any change: STOP |
+| `tie_word_embeddings` | `false` | any change: STOP; tensor ownership and output-head loading change |
+| `rope_parameters.rope_type` | `default` | any change, including YaRN: STOP |
+| `rope_parameters.rope_theta` | `10000000` | any change: STOP |
+| `rope_parameters.partial_rotary_factor` | `0.25` | any change: STOP |
+| `rope_parameters.mrope_interleaved` | `true` | any change: STOP |
+| `rope_parameters.mrope_section` | `[11,11,10]` | any change: STOP |
+| `vocab_size` | `248320` | GO for plain loading if tokenizer gates pass; change forbids the 3.6 MTP donor |
+| `bos_token_id` / `eos_token_id` | `248044` / `248044` | review chat stops; tokenizer/template gates must explain any change |
+| `image_token_id` / `video_token_id` | `248056` / `248057` | text-only load may continue if tokenizer contract is unchanged |
+| `mtp_num_hidden_layers` | `1` | any change: publish/spec STOP |
+| `mtp_use_dedicated_embeddings` | `false` | any change: publish/spec STOP |
+| `max_position_embeddings` | `262144` | GO with gates; parsed limit |
+| `rms_norm_eps` | `1e-6` | GO with gates; parsed numeric value |
+| `num_experts` | absent | any value: STOP; this is no longer the dense-hybrid architecture |
+| `quant_method` / `fmt` | `fp8` / `e4m3` | explicit different value: STOP |
+| `weight_block_size` | `[128,128]` | block-128 direct class; a different explicit block: STOP |
+| `activation_scheme` | `dynamic` | explicit different value: STOP |
 
-Assumes: fast-path arch, converter accepts the checkpoint with <1 h of code, no gate
-failures. First structural surprise moves this to the divergent-arch lane — that is the
-stop rule working, not the plan failing.
+The config is not authoritative for scale granularity. The tensor sibling shape is:
+
+- one scale value: `MEMRA_ST_E4M3`, per-tensor direct;
+- `[out,1]` or `out` values: per-row, no direct kernel, STOP;
+- `[ceil(out/128),ceil(in/128)]`: `MEMRA_ST_E4M3_BLK`, block-128 direct;
+- anything else: unsupported, STOP.
+
+## H+00:30 - full download and immutable manifest
+
+```bash
+hf download "$Q38_REPO" --revision "$Q38_REV" --local-dir "$Q38_DIR" \
+  2>&1 | tee "$R/hf-full-download.log"
+
+while read -r shard; do
+  test -f "$Q38_DIR/$shard" || {
+    echo "missing indexed shard: $shard"
+    exit 1
+  }
+done < <(jq -r '.weight_map[]' "$Q38_DIR/model.safetensors.index.json" | sort -u)
+
+find "$Q38_DIR" -maxdepth 1 -type f -print0 \
+  | sort -z | xargs -0 sha256sum \
+  > "$R/q38-files.sha256"
+du -sh "$Q38_DIR" | tee "$R/q38-size.txt"
+```
+
+Do not mutate the downloaded config to make a diff pass. A RoPE override creates a different
+model configuration and belongs in a separate lane.
+
+## H+01:00 - build and HF reference environment
+
+```bash
+cargo build --release \
+  --bin kernel-check \
+  --bin run-gen \
+  --bin run-spec \
+  --bin concat-prime-probe \
+  --bin frspec-owngen \
+  --bin memra-server \
+  2>&1 | tee "$R/build.log"
+
+export HFV="$Q38_VENV_ROOT/q38-hf-$Q38_REV"
+uv venv "$HFV"
+uv pip install --python "$HFV/bin/python" --upgrade \
+  torch transformers accelerate safetensors \
+  2>&1 | tee "$R/hf-reference-install.log"
+"$HFV/bin/python" -c \
+  'import torch, transformers; print("torch", torch.__version__); print("transformers", transformers.__version__)' \
+  | tee "$R/hf-reference-versions.txt"
+```
+
+If the released model card names a newer minimum or an additional package, install that exact
+requirement and record it. Do not use an older environment merely because it imports.
+
+## H+01:30 - FP8 artifact classification
+
+```bash
+python3 tools/inspect-fp8-st.py "$Q38_DIR" --require-direct \
+  2>&1 | tee "$R/fp8-header-census.log"
+```
+
+This check is header-only. It must report at least one FP8 weight and zero per-row/unsupported
+weights. Runtime still has to prove finite scales, no E4M3 NaN refusal, supported transforms,
+native residency, and native prefill dispatch.
+
+## H+02:00 - model-backed kernel battery
+
+`kernel-check` cannot use an ST directory as its real-weight oracle. Pass the frozen Qwen 3.6
+GGUF so the 27B shape sections are model-backed, while the synthetic FP8 cells cover per-tensor
+and block-128 arithmetic:
+
+```bash
+flock /tmp/gpu5090.lock \
+  target/release/kernel-check "$Q36_GGUF" \
+  2>&1 | tee "$R/kernel-check.log"
+grep -q 'ALL GREEN' "$R/kernel-check.log"
+```
+
+A new Qwen 3.8 shape that is not represented by the existing synthetic cells is a kernel lane,
+not a reason to accept a skipped section.
+
+## H+02:30 - naked direct-path proof
+
+Use a prompt longer than the prefill GEMM threshold so block-128 MMQ can dispatch:
+
+```bash
+export PROBE=tools/fast-gate/prompts/probe.txt
+FP8_DEFAULT_ENV=(
+  -u MEMRA_ST_E4M3
+  -u MEMRA_ST_E4M3_BLK
+  -u MEMRA_FP8_MMQ
+  -u MEMRA_FP8_FOLD
+  -u MEMRA_FP8_BLK_GPU
+  -u MEMRA_PP_FP8
+)
+
+flock /tmp/gpu5090.lock env "${FP8_DEFAULT_ENV[@]}" \
+  MEMRA_CHAT=1 \
+  MEMRA_NGEN=32 \
+  MEMRA_PROMPT_FILE="$PROBE" \
+  MEMRA_RESIDENCY_CENSUS=1 \
+  target/release/run-gen "$Q38_DIR" \
+  2>&1 | tee "$R/run-gen-naked.log"
+
+grep -q 'argmax=.*MATCH' "$R/run-gen-naked.log"
+grep -Eq 'F8_E4M3(_BLK)?:[[:space:]]+[1-9]' "$R/run-gen-naked.log"
+if grep -Eq 'block-128[[:space:]]*:[[:space:]]*[1-9]' "$R/fp8-header-census.log"; then
+  flock /tmp/gpu5090.lock env "${FP8_DEFAULT_ENV[@]}" \
+    MEMRA_CHAT=1 \
+    MEMRA_PROMPT_FILE="$PROBE" \
+    MEMRA_PP_ONLY=1 \
+    MEMRA_PP_WARMUP=1 \
+    MEMRA_PP_REPS=1 \
+    target/release/run-gen "$Q38_DIR" \
+    2>&1 | tee "$R/run-gen-pp-direct.log"
+  grep -Eq 'fp8-mmq dispatches: [1-9]' "$R/run-gen-pp-direct.log"
+fi
+```
+
+Run one diagnostic rollback census. This is proof of the seam, not a production arm:
+
+```bash
+flock /tmp/gpu5090.lock env "${FP8_DEFAULT_ENV[@]}" \
+  MEMRA_ST_E4M3=0 \
+  MEMRA_CHAT=1 \
+  MEMRA_NGEN=1 \
+  MEMRA_PROMPT_FILE="$PROBE" \
+  MEMRA_RESIDENCY_CENSUS=1 \
+  target/release/run-gen "$Q38_DIR" \
+  2>&1 | tee "$R/run-gen-q8-rollback-census.log"
+! grep -Eq 'F8_E4M3(_BLK)?:[[:space:]]+[1-9]' "$R/run-gen-q8-rollback-census.log"
+grep -Eq 'Q8_0:[[:space:]]+[1-9]' "$R/run-gen-q8-rollback-census.log"
+```
+
+The naked log must contain native `F8_E4M3` and/or `F8_E4M3_BLK` residency. The rollback log
+must remove those native bytes and increase Q8_0 residency. Residual small Q8_0 tensors are
+allowed; routing the FP8 projection bank through Q8_0 is not. Any native decline, NaN refusal,
+bad grid, or zero block-MMQ dispatch is STOP.
+
+Never set `MEMRA_FP8_FOLD=1`; it is lossy. Never set `MEMRA_FP8_MMQ=0`; that reintroduces
+dequant-per-call. Never use `MEMRA_FP8_MMQ=1`; that enables the duplicate stash source.
+
+## H+03:15 - Hugging Face greedy-reference gate
+
+Generate the reference from the same official FP8 directory, same prompt, same chat template,
+thinking enabled, and greedy decoding. The comparator checks the rendered prompt ids before it
+checks the generated ids:
+
+```bash
+flock /tmp/gpu5090.lock \
+  "$HFV/bin/python" tools/hf-greedy-reference.py "$Q38_DIR" \
+  --prompt-file "$PROBE" \
+  --tokens-out "$R/hf-greedy.json" \
+  --max-new-tokens 32 \
+  2>&1 | tee "$R/hf-greedy.log"
+
+python3 tools/compare-greedy-tokens.py \
+  "$R/hf-greedy.json" "$R/run-gen-naked.log" \
+  2>&1 | tee "$R/hf-vs-memra.log"
+```
+
+The gate is exact prompt-token and generated-token identity. A mismatch is not waived as “close
+logits”; prompt-token failure is tokenizer/template work, while a generated-token failure after
+prompt parity is model arithmetic.
+
+## H+04:00 - chunk invariance
+
+The probe and wrapper accept an HF safetensors directory:
+
+```bash
+MEMRA_CHUNKINV_LOG="$R/chunk-invariance.raw.log" \
+flock /tmp/gpu5090.lock \
+  tools/chunk-invariance-gate.sh "$Q38_DIR" \
+  --chunks 2048,64,32 --steps 48 --expect-invariant \
+  2>&1 | tee "$R/chunk-invariance.gate.log"
+grep -q 'chunk-invariance-gate: PASS' "$R/chunk-invariance.gate.log"
+```
+
+Any chunk-dependent result is STOP. Do not tune the chunk list or switch the expectation to make
+the release pass.
+
+## H+04:30 - embedded MTP gate
+
+If the checkpoint carries its own MTP tensors, run without `MEMRA_SPEC_K` so the binary executes
+its K=1..8 self-consistency battery:
+
+```bash
+if jq -e 'any(.weight_map | keys[]; startswith("mtp."))' \
+  "$Q38_DIR/model.safetensors.index.json" >/dev/null; then
+  flock /tmp/gpu5090.lock env \
+    -u MEMRA_SPEC_K \
+    -u MEMRA_MTP_DRAFT \
+    -u MEMRA_FRSPEC_TRIM \
+    MEMRA_CHAT=1 \
+    MEMRA_NGEN=64 \
+    MEMRA_PROMPT_FILE="$PROBE" \
+    target/release/run-spec "$Q38_DIR" \
+    2>&1 | tee "$R/run-spec-embedded.log"
+  grep -q 'SELF-CONSISTENCY PASS' "$R/run-spec-embedded.log"
+else
+  printf 'WAIT: checkpoint carries no embedded MTP tensors; run-spec waits for a compatible draft\n' \
+    | tee "$R/run-spec-embedded.WAIT"
+fi
+```
+
+Plain first-light evidence may continue without a head, but publication does not: `run-spec`
+waits until either the embedded head or the compatible external draft below exists.
+
+## H+05:15 - serving and thinking surface
+
+Run the existing ST battery:
+
+```bash
+flock /tmp/gpu5090.lock \
+  tools/serve-st-gate.sh "$Q38_DIR" \
+  2>&1 | tee "$R/serve-st-gate.log"
+grep -q 'serve-st-gate: 0 failed' "$R/serve-st-gate.log"
+```
+
+Pin the per-architecture thinking mapping in unit tests:
+
+```bash
+cargo test -p memra-tokenizer qwen_think_mode_covers_all_three_directions \
+  2>&1 | tee "$R/test-qwen-thinking.log"
+cargo test -p memra-server reasoning_effort_maps_to_think_switch \
+  2>&1 | tee "$R/test-reasoning-effort.log"
+```
+
+Then exercise the actual Qwen 3.8 template:
+
+```bash
+export ADDR=127.0.0.1:8188
+export BASE=http://$ADDR
+flock -F /tmp/gpu5090.lock env MEMRA_COMPAT=openai MEMRA_SERVE_SPEC=0 \
+  MEMRA_MODELS="q38=$Q38_DIR" MEMRA_ADDR="$ADDR" \
+  target/release/memra-server > "$R/thinking-server.log" 2>&1 &
+SPID=$!
+trap 'kill "$SPID" 2>/dev/null || true; wait "$SPID" 2>/dev/null || true' EXIT
+for _ in $(seq 600); do
+  curl -sf "$BASE/health" >/dev/null && break
+  sleep 2
+done
+curl -sf "$BASE/health" >/dev/null
+grep -Eq 'q38: template caps .*think=true think_switch=true chat_ok=true' \
+  "$R/thinking-server.log"
+
+for effort in absent none high; do
+  extra=
+  [ "$effort" != absent ] && extra=",\"reasoning_effort\":\"$effort\""
+  curl -fsS "$BASE/v1/chat/completions" \
+    -H 'Content-Type: application/json' \
+    -d "{\"model\":\"q38\",\"messages\":[{\"role\":\"user\",\"content\":\"Why is the sky blue?\"}],
+         \"max_tokens\":64,\"temperature\":0$extra}" \
+    > "$R/thinking-$effort.json"
+done
+
+python3 - "$R" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+records = {
+    name: json.load(open(root / f"thinking-{name}.json"))["choices"][0]["message"]
+    for name in ("absent", "none", "high")
+}
+for name, message in records.items():
+    emitted = (message.get("reasoning") or "") + (message.get("content") or "")
+    assert emitted.strip(), f"{name}: empty response"
+assert not (records["none"].get("reasoning") or ""), "none did not close thinking"
+assert (records["absent"].get("reasoning") or ""), "default did not use Qwen thinking"
+assert (records["high"].get("reasoning") or ""), "high did not enable Qwen thinking"
+print("THINKING-SURFACE PASS: default/high on, none off")
+PY
+
+kill "$SPID"
+wait "$SPID" || true
+trap - EXIT
+```
+
+For the Qwen binary switch, `low`, `medium`, and `high` all mean thinking on; `none` and
+`minimal` mean off; absent preserves the template default, which is on.
+
+## H+06:30 - own-generation trim regime
+
+Ranks always come from Qwen 3.8's own generations with chat templating on. Use bounded chunks
+so the shared GPU lock is released between batches:
+
+```bash
+export PACK=research/gemma4-bringup/corpus-prompts
+export RANKS="$A/q38-own-ranks-32768.gguf"
+export CORPUS="$A/q38-own-corpus-ids.txt"
+test "$(find "$PACK" -type f -name '*.txt' | wc -l)" -eq 254
+
+while [ ! -f "$RANKS" ]; do
+  flock /tmp/gpu5090.lock \
+    target/release/frspec-owngen "$Q38_DIR" "$RANKS" 32768 \
+    --ngen 1024 \
+    --corpus-out "$CORPUS" \
+    --limit 32 \
+    --validate \
+    "$PACK" \
+    2>&1 | tee -a "$R/frspec-owngen.log"
+done
+
+awk '
+  { total += NF }
+  END {
+    print "own-generated tokens:", total
+    if (total < 131072) exit 1
+  }
+' "$CORPUS" | tee "$R/own-corpus-count.txt"
+sha256sum "$CORPUS" "$RANKS" "$RANKS.txt" | tee "$R/own-ranks.sha256"
+```
+
+This is the daily-drafter regime's canonical 254-prompt pack, greedy decoding, chat template on,
+and bounded 32-prompt lock holds. The 1,024-token window is deliberately larger than the older
+512-token receipts so the current four-times-top-N floor is enforceable rather than theoretical.
+The floor is at least 131,072 own-generated tokens for a 32,768-row head. If the count misses it,
+STOP and expand the frozen prompt pack; do not build from the warning-sized corpus. The final
+`--validate` run records embedded-MTP baseline versus runtime-trimmed e2e throughput. Acceptance
+explains the result; e2e tokens/s decides it.
+
+## H+09:00 - build the external trimmed drafter
+
+The current standalone builder extracts MTP bytes from a GGUF donor. It does not extract from
+the ST directory. The approved donor variant is executable only when the Qwen 3.8 trunk/MTP
+interface is exactly the frozen Qwen 3.6 interface:
+
+```bash
+python3 - "$Q38_DIR/config.json" "$Q36_REF/config.json" <<'PY' \
+  2>&1 | tee "$R/donor-interface.log"
+import json
+import sys
+
+new = json.load(open(sys.argv[1])).get("text_config")
+ref = json.load(open(sys.argv[2])).get("text_config")
+keys = (
+    "hidden_size",
+    "num_attention_heads",
+    "num_key_value_heads",
+    "head_dim",
+    "vocab_size",
+    "mtp_num_hidden_layers",
+    "mtp_use_dedicated_embeddings",
+)
+bad = [(key, ref.get(key), new.get(key)) for key in keys if new.get(key) != ref.get(key)]
+print("donor interface diffs:", bad)
+if bad:
+    raise SystemExit(1)
+PY
+
+export DRAFT="$A/draft-q38-owntrim-nvfp4head-q4blk.gguf"
+tools/make-trimmed-draft.sh \
+  "$Q36_GGUF" "$RANKS.txt" "$DRAFT" 32768 \
+  2>&1 | tee "$R/make-trimmed-draft.log"
+sha256sum "$DRAFT" "$RANKS" "$RANKS.txt" \
+  | tee "$R/drafter.sha256"
+
+flock /tmp/gpu5090.lock env \
+  -u MEMRA_SPEC_K \
+  -u MEMRA_MTP_DRAFT \
+  -u MEMRA_FRSPEC_TRIM \
+  MEMRA_MTP_DRAFT="$DRAFT" \
+  MEMRA_CHAT=1 \
+  MEMRA_NGEN=64 \
+  MEMRA_PROMPT_FILE="$PROBE" \
+  target/release/run-spec "$Q38_DIR" \
+  2>&1 | tee "$R/run-spec-owntrim.log"
+grep -q 'SELF-CONSISTENCY PASS' "$R/run-spec-owntrim.log"
+
+mkdir -p "$R/drafter-prompts"
+cp "$PROBE" "$R/drafter-prompts/probe.txt"
+cp research/e2e/prompts/p3-agentic-long.txt "$R/drafter-prompts/p3-agentic-long.txt"
+
+run_draft_arm() {
+  local arm=$1 rep=$2 draft=${3:-}
+  local envs=(
+    MEMRA_SPEC_K=3
+    MEMRA_NGEN=256
+    MEMRA_CHAT=1
+    MEMRA_PROMPT_DIR="$R/drafter-prompts"
+  )
+  [ -n "$draft" ] && envs+=(MEMRA_MTP_DRAFT="$draft")
+  flock /tmp/gpu5090.lock env \
+    -u MEMRA_MTP_DRAFT \
+    -u MEMRA_FRSPEC_TRIM \
+    "${envs[@]}" \
+    target/release/run-spec "$Q38_DIR" \
+    2>&1 | tee "$R/drafter-ab-$arm-r$rep.log"
+}
+
+# Adjacent, alternating order: embedded/trimmed, then trimmed/embedded.
+run_draft_arm embedded 1
+run_draft_arm owntrim 1 "$DRAFT"
+run_draft_arm owntrim 2 "$DRAFT"
+run_draft_arm embedded 2
+
+grep -hE '^\[SWEEP\]|SELF-CONSISTENCY' "$R"/drafter-ab-*.log \
+  | tee "$R/drafter-ab-summary.txt"
+
+flock /tmp/gpu5090.lock env \
+  MEMRA_MTP_DRAFT="$Q36_DRAFT" \
+  MEMRA_SPEC_K=3 \
+  MEMRA_NGEN=256 \
+  MEMRA_CHAT=1 \
+  MEMRA_PROMPT_DIR="$R/drafter-prompts" \
+  target/release/run-spec "$Q36_GGUF" \
+  2>&1 | tee "$R/q36-daily-reference.log"
+```
+
+The donor supplies only byte-verbatim NextN/MTP block bytes; ranks are from Qwen 3.8, and the
+serving model supplies token embeddings. Verify-based speculation remains exact, but donor drift
+can reduce acceptance. The four A/B runs are one adjacent, alternating N=2 session over short and
+agentic-long prompt classes. Adopt the external draft only when both per-prompt evidence and the
+aggregate e2e tokens/s justify it; acceptance is diagnostic.
+
+The Qwen 3.6 daily run is a frozen operational reference, not a Qwen 3.8 acceptance threshold.
+Keep its number separate from the embedded-versus-owntrim Qwen 3.8 decision.
+
+If the donor-interface check fails, do not create a full-model GGUF bridge. Keep the embedded ST
+MTP path and open a narrowly scoped ST-MTP extraction lane before publishing an external draft.
+
+## Completion and STOP matrix
+
+Day one is complete only when the receipt directory contains:
+
+- official repo id and immutable revision;
+- full local file hashes;
+- config and tokenizer verdicts;
+- FP8 header census;
+- model-backed `kernel-check` raw log;
+- naked and rollback residency logs;
+- HF and memra token streams plus exact comparison;
+- chunk-invariance raw log;
+- embedded and external-draft `run-spec` logs;
+- ST serve battery;
+- thinking default/off/on responses;
+- own-generation corpus/rank/draft paths under `/data`, their hashes, and the e2e verdict.
+
+Hard architecture STOP, open a bring-up lane:
+
+- new `architectures`/`model_type`;
+- changed full-attention cycle, attention/KV head counts, head dimension, attention gate/bias,
+  GDN geometry, RoPE contract, tokenizer class/pre-tokenizer, or dense-to-MoE change;
+- new tensor names or shapes the current Qwen35 mapping cannot resolve.
+
+Artifact/direct-path STOP:
+
+- no official FP8 release;
+- explicit non-E4M3 or non-128 block metadata;
+- per-row or unsupported FP8 scale layouts;
+- native FP8 residency absent, block-MMQ dispatch absent for a block artifact, or any FP8 bank
+  silently landing in Q8_0;
+- HF greedy token mismatch.
+
+Correctness/publish STOP:
+
+- `kernel-check`, internal argmax, chunk invariance, or K=1..8 self-consistency failure;
+- no embedded or interface-compatible external MTP head that passes `run-spec`;
+- missing `enable_thinking`, `think_switch=false`, or live default/off/on mapping failure;
+- external donor interface mismatch or a trimmed draft that loses e2e throughput.
+
+Do not merge, tag, or publish support from this runbook until every applicable gate is green.
