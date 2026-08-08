@@ -4880,9 +4880,9 @@ impl HybridModel {
 // ================================================================================================
 
 impl HybridModel {
-    /// Resident-slab fast path for host-routed grouped prefill. This reuses the arithmetic-only
-    /// expert-major pair kernels without entering `moe_ffn_pairs`: selection and weights already
-    /// came from the Step35 sigmoid host oracle, and activation remains clamp-aware.
+    /// Resident-slab fast path for host-routed grouped prefill. Unclamped layers batch the
+    /// sequential fused q8 program over the token axis; clamped layers use the separate
+    /// expert-major q8 chain so `ffn_act_lim` remains authoritative.
     #[allow(clippy::too_many_arguments)]
     fn moe_ffn_grouped_resident_q8(
         e: &Engine,
@@ -4910,6 +4910,77 @@ impl HybridModel {
                 && m.down_exps.macros.is_none(),
             "resident grouped q8 does not fold per-expert macro scales",
         );
+
+        // The rows twins run the resident sequential program verbatim on grid.z = token:
+        // fused gate/up/SiLU per slot, batched activation quantization, then the original
+        // slot-ordered down/FMA chain. Routing remains the host sigmoid oracle above; these
+        // kernels consume sel/w only and never enter the softmax device router.
+        if !cfg.swiglu_clamped_at(il as u32) {
+            let sel: Vec<i32> = sel_all.iter().map(|&expert| expert as i32).collect();
+            let sel_d = e.htod_i32(&sel)?;
+            let w_d = e.htod(w_all)?;
+            let (gate_row_bytes, up_row_bytes) = if gu_il {
+                let combined = m.gate_exps.row_bytes + m.up_exps.row_bytes;
+                (combined, combined)
+            } else {
+                (m.gate_exps.row_bytes, m.up_exps.row_bytes)
+            };
+            let (zq, zd) = e.quantize_q8_1(z, t, n_embd)?;
+            let act = e.moe_gate_up_silu8_dev_q8_rows(
+                table,
+                &sel_d,
+                &zq,
+                &zd,
+                t,
+                n_embd,
+                n_ff_exp,
+                n_used,
+                n_expert,
+                m.gate_exps.qtype,
+                m.up_exps.qtype,
+                gate_row_bytes,
+                up_row_bytes,
+                &m.dev_macros,
+            )?;
+            let (aq2, ad2) = e.quantize_q8_1(&act, n_pairs, n_ff_exp)?;
+            let mut moe_out = e.uninit(t * n_embd)?;
+            e.moe_down8_fma_dev_q8_rows_g(
+                table,
+                &sel_d,
+                &w_d,
+                &aq2,
+                &ad2,
+                &mut moe_out,
+                t,
+                n_ff_exp,
+                n_embd,
+                n_used,
+                n_expert,
+                m.down_exps.qtype,
+                m.down_exps.row_bytes,
+            )?;
+
+            if std::env::var("MEMRA_MOE_STATS").is_ok() {
+                let mut counts = vec![0usize; n_expert];
+                for &expert in sel_all {
+                    counts[expert as usize] += 1;
+                }
+                let mut sizes: Vec<usize> =
+                    counts.into_iter().filter(|&count| count != 0).collect();
+                sizes.sort_unstable();
+                let mean = sizes.iter().sum::<usize>() as f64 / sizes.len().max(1) as f64;
+                println!(
+                    "moe-grouped il={il} t={t} dispatch=resident-q8-rows active={}/{} \
+                     m_e: min={} median={} mean={mean:.1} max={}",
+                    sizes.len(),
+                    n_expert,
+                    sizes.first().copied().unwrap_or(0),
+                    sizes.get(sizes.len() / 2).copied().unwrap_or(0),
+                    sizes.last().copied().unwrap_or(0),
+                );
+            }
+            return Ok(moe_out);
+        }
 
         // Pair ids stay in router slot order. The expert CSR changes only execution order; every
         // kernel writes its result back to the original pair id and the scatter performs the same
