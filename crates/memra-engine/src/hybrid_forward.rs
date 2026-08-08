@@ -179,6 +179,15 @@ fn moe_slab_enabled() -> bool {
     std::env::var("MEMRA_MOE_SLAB").as_deref() != Ok("0")
 }
 
+/// Expert-grouped dispatch is the Step35 prefill default. The env remains a live per-call seam:
+/// `=0` restores the sequential oracle, while any other explicit value preserves the historical
+/// opt-in for non-Step35/non-prefill callers.
+fn moe_grouped_enabled(cfg: &ModelConfig, prefill: bool) -> bool {
+    std::env::var("MEMRA_MOE_GROUPED")
+        .map(|value| value != "0")
+        .unwrap_or(prefill && cfg.step35.is_some())
+}
+
 /// Deterministic in-token expert prefetch. `MEMRA_MOE_PREFETCH=1` overlaps memory-source H2D on the
 /// copy stream; selecting the opt-in worker spill backend enables the same known-next hook for disk.
 fn moe_prefetch_enabled() -> bool {
@@ -433,7 +442,7 @@ impl HybridModel {
                                       self.cfg.clamp_shexp_at(il as u32), &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
                 }
-                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
+                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il_prefill(e, m, &z, t, il as u16)?,
             };
             let mut x2 = e.uninit(t * n_embd)?;
             e.add(&x1, &ffn_out, &mut x2, t * n_embd)?;
@@ -490,7 +499,7 @@ impl HybridModel {
                                       self.cfg.clamp_shexp_at(il as u32), &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
                 }
-                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
+                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il_prefill(e, m, &z, t, il as u16)?,
             };
             if probe { e.stream().synchronize()?; eprintln!("[probe] L{il} ffn ok"); }
             let mut x2 = e.uninit(t * n_embd)?;
@@ -1169,7 +1178,7 @@ impl HybridModel {
                     }
                 }
                 crate::hybrid::Ffn::Moe(m) => {
-                    let y = self.moe_ffn_il(e, m, z, t, il as u16)?;
+                    let y = self.moe_ffn_il_prefill(e, m, z, t, il as u16)?;
                     e.copy_into(sl_fo, 0, &y, t * n_embd)?;
                 }
             }
@@ -1507,7 +1516,7 @@ impl HybridModel {
                                       self.cfg.clamp_shexp_at(il as u32), &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
                 }
-                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
+                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il_prefill(e, m, &z, t, il as u16)?,
             };
             let mut x2 = e.uninit(t * n_embd)?;
             e.add(&x1, &ffn_out, &mut x2, t * n_embd)?;
@@ -2202,7 +2211,9 @@ impl HybridModel {
                         e.matmul(ffn_down, &act, total)?
                     }
                 }
-                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, total, il as u16)?,
+                crate::hybrid::Ffn::Moe(m) => {
+                    self.moe_ffn_il_prefill(e, m, &z, total, il as u16)?
+                }
             };
             let mut x2 = e.uninit(total * n_embd)?;
             e.add(&x1, &ffn_out, &mut x2, total * n_embd)?;
@@ -2968,7 +2979,20 @@ impl HybridModel {
     /// Convenience wrapper used by the hybrid trunk/MTP loops: pulls dims + max-block from `self`.
     pub fn moe_ffn_il(&self, e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>, t: usize, il: u16)
                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        Self::moe_ffn(e, m, z, t, &self.cfg, il, self.max_moe_block())
+        Self::moe_ffn_inner(e, m, z, None, t, &self.cfg, il, self.max_moe_block(), false)
+    }
+
+    /// Prefill twin: Step35 promotes expert-grouped dispatch by default while decode/spec callers
+    /// keep `moe_ffn_il` and therefore retain their existing dispatch class.
+    pub fn moe_ffn_il_prefill(
+        &self,
+        e: &Engine,
+        m: &MoeWeights,
+        z: &CudaSlice<f32>,
+        t: usize,
+        il: u16,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        Self::moe_ffn_inner(e, m, z, None, t, &self.cfg, il, self.max_moe_block(), true)
     }
 
     /// Decode-path twin with a PRE-QUANTIZED z (from add_rms_norm_zq8): threads (zq, zd) into the
@@ -2977,7 +3001,9 @@ impl HybridModel {
     pub fn moe_ffn_il_zq8(&self, e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>,
                           zq8: Option<&(CudaSlice<i8>, CudaSlice<f32>)>, t: usize, il: u16)
                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        Self::moe_ffn_inner(e, m, z, zq8, t, &self.cfg, il, self.max_moe_block())
+        Self::moe_ffn_inner(
+            e, m, z, zq8, t, &self.cfg, il, self.max_moe_block(), false,
+        )
     }
 
     /// MoE FFN (EDGE-1), source-/model-agnostic. z: [T, n_embd] (already post-attention-normed).
@@ -2990,7 +3016,7 @@ impl HybridModel {
     pub(crate) fn moe_ffn(e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>, t: usize,
                           cfg: &ModelConfig, il: u16, max_block: usize)
                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        Self::moe_ffn_inner(e, m, z, None, t, cfg, il, max_block)
+        Self::moe_ffn_inner(e, m, z, None, t, cfg, il, max_block, false)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3003,6 +3029,7 @@ impl HybridModel {
         cfg: &ModelConfig,
         il: u16,
         max_block: usize,
+        prefill: bool,
     ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let worker_io = crate::spill_pread::worker_enabled();
         let epoch_lfu = std::env::var_os("MEMRA_MOE_LFU_DECAY").is_some();
@@ -3015,15 +3042,14 @@ impl HybridModel {
                 Ok(())
             })?;
         }
-        // A2: Expert-grouped dispatch for prefill (T>1). MEMRA_MOE_GROUPED=1 routes here.
-        if t > 1 && std::env::var("MEMRA_MOE_GROUPED").is_ok() {
+        // Expert-grouped dispatch for prefill (T>1). Step35 prefill defaults here; the live
+        // MEMRA_MOE_GROUPED seam can restore sequential or opt other callers in explicitly.
+        if t > 1 && moe_grouped_enabled(cfg, prefill) {
             let grouped_out = Self::moe_ffn_grouped(e, m, z, t, cfg, il, max_block)?;
             // MEMRA_MOE_GATE: byte-identity comparison vs sequential path.
-            // KNOWN t>1 MISMATCH maxdiff ~3.4e-4 (deterministic, 5x bit-identical 2026-07-05): the
-            // sequential arm routes resident experts through the dev_q8 dp4a path (q8_1-quantized z
-            // and act rows) while grouped stays f32-dequant qmatvec — a quantize-path difference,
-            // not a bug (per-stage: act q8-vs-f32 ~4-9e-3 abs on |act|<=3, down-only ~1-3e-4; the
-            // q8_1 activation-quantize error class). MEMRA_MOE_Q8=0 restores BYTE-IDENTICAL.
+            // The grouped q8 path uses the same row-wise quantize/dot/activation/FMA programs as
+            // sequential dispatch; mixed or q8-disabled layouts fall back to the matching f32
+            // path. A mismatch is therefore a correctness failure, not an accepted numeric class.
             if std::env::var("MEMRA_MOE_GATE").is_ok() {
                 let seq_out = Self::moe_ffn_sequential(e, m, z, t, cfg, il, max_block)?;
                 let g_host = e.dtoh(&grouped_out)?;
@@ -3031,7 +3057,7 @@ impl HybridModel {
                 let g_bytes: &[u8] = unsafe { std::slice::from_raw_parts(g_host.as_ptr() as *const u8, g_host.len() * 4) };
                 let s_bytes: &[u8] = unsafe { std::slice::from_raw_parts(s_host.as_ptr() as *const u8, s_host.len() * 4) };
                 if g_bytes == s_bytes {
-                    if il == 0 { println!("moe-gate il={il} t={t} BYTE-IDENTICAL (first layer only printed)"); }
+                    println!("moe-gate il={il} t={t} BYTE-IDENTICAL");
                 } else {
                     let diffs = g_host.iter().zip(s_host.iter()).enumerate()
                         .filter(|(_, (a, b))| a != b).count();
@@ -3050,6 +3076,42 @@ impl HybridModel {
                           cfg: &ModelConfig, il: u16, max_block: usize)
                -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         Self::moe_ffn_sequential_zq8(e, m, z, None, t, cfg, il, max_block)
+    }
+
+    /// One router-logit selector shared by sequential and grouped dispatch. Real prefill must use
+    /// the row-wise GEMV when exact routing is enabled: cuBLASLt's reduction changes with `m`,
+    /// which makes expert selection depend on the caller's chunk or concat-batch shape.
+    fn moe_router_logits(
+        e: &Engine,
+        m: &MoeWeights,
+        z: &CudaSlice<f32>,
+        t: usize,
+        cfg: &ModelConfig,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        if t < PRIME_MIN_T {
+            // Decode and speculative verify use one fixed per-row reduction program.
+            if crate::router_kernel_on() {
+                e.router_gemv(
+                    m.gate_inp.float_data(),
+                    z,
+                    cfg.n_embd as usize,
+                    m.gate_exps.n_expert,
+                    t,
+                )
+            } else {
+                e.matmul_decode_exact(&m.gate_inp, z, t)
+            }
+        } else if crate::router_prefill_exact_on() && crate::router_kernel_on() {
+            e.router_gemv(
+                m.gate_inp.float_data(),
+                z,
+                cfg.n_embd as usize,
+                m.gate_exps.n_expert,
+                t,
+            )
+        } else {
+            e.matmul(&m.gate_inp, z, t)
+        }
     }
 
     /// Append the host-visible router selection for one layer/forward when calibration tracing is
@@ -3196,44 +3258,9 @@ impl HybridModel {
         let cache_frozen = use_cache && e.moe_cache_frozen();
         let cache_dispatch = use_cache && (!cache_frozen || cpu_hybrid);
 
-        // 1. ROUTER: logits = ffn_gate_inp @ z  -> [T, 256]. gate_inp is F32 -> cuBLASLt, whose
-        // reductions are n-DEPENDENT (lt_ndep probe: m=1 vs m=2 col0 differs every bit). At
-        // small t (spec verify, 2..15) that shifts router logits vs the T=1 decode chain ->
-        // top-k WEIGHTS (and at tie margins the SELECTION) differ -> verify != decode. Route
-        // small-t through per-column m=1 calls (decode-exact contract); real prefill keeps the
-        // batched GEMM.
-        let logits = if t < PRIME_MIN_T {
-            // t == 1 included since 2026-07-10 (was cuBLAS gemvx, 3.1% + adjacent of the depth
-            // decode map): decode and verify now route through the SAME kernel — the
-            // verify==decode router parity holds by construction instead of by FP-order luck.
-            if crate::router_kernel_on() {
-                // MEMRA_ROUTER_KERNEL=1: in-house router GEMV (battery-gated numeric config —
-                // top-k discontinuity means FP-order changes can flip routing; oracle arbitrates).
-                e.router_gemv(m.gate_inp.float_data(), z, cfg.n_embd as usize,
-                              m.gate_exps.n_expert, t)?
-            } else {
-                e.matmul_decode_exact(&m.gate_inp, z, t)?
-            }
-        } else if crate::router_prefill_exact_on() && crate::router_kernel_on() {
-            // SERVE ISOLATION (lane/concat-prime-exact, 2026-08-02): the cuBLASLt router GEMM
-            // is m-DEPENDENT — probed on the Ornith-35B router weight, rows [0,19) of an m=65
-            // call differ from the m=19 call by 3.9e-3 while the same probe on the lm_head /
-            // wq MMQ+f16 weights is BIT-IDENTICAL across m (research/concat-prime-exact-20260802,
-            // gemm-razor-router-o35b.log vs gemm-razor-o35b.log). Because the router feeds a
-            // top-k DISCONTINUITY, that perturbation reorders ties and at ~16% of (layer,token)
-            // pairs changes the selected expert SET — so a request's own prefill routing depended
-            // on how many OTHER requests' tokens shared its concat batch (cross-request prime
-            // batching, worker.rs task #13). The in-house router GEMV computes one row per
-            // (expert, token) block with a fixed per-row reduction order and is m-INVARIANT
-            // (same probe: BIT-IDENTICAL, gemm-razor-router-gemv-o35b.log), so routing prefill
-            // through it makes a session's routing a function of its OWN tokens alone — the
-            // serving isolation contract at the prime level. MEMRA_ROUTER_PREFILL_EXACT=0 reverts
-            // to the batched cuBLASLt GEMM (numeric-config rollback seam).
-            e.router_gemv(m.gate_inp.float_data(), z, cfg.n_embd as usize,
-                          m.gate_exps.n_expert, t)?
-        } else {
-            e.matmul(&m.gate_inp, z, t)?
-        };
+        // 1. ROUTER: one selector is shared with expert-grouped prefill so changing dispatch
+        // cannot change logits, selected expert ids, or routing weights.
+        let logits = Self::moe_router_logits(e, m, z, t, cfg)?;
 
         // LAUNCH-STRUCTURE STAGE 3 (2026-07-05, MEMRA_MOE_DEV default ON, =0 rollback): ZERO-DtoH
         // device-dispatch when this layer's expert blocks are ALL cache-resident. The fused
@@ -5240,10 +5267,287 @@ impl HybridModel {
 // ================================================================================================
 
 impl HybridModel {
+    /// Resident-slab fast path for host-routed grouped prefill. Unclamped layers batch the
+    /// sequential fused q8 program over the token axis; clamped layers use the separate
+    /// expert-major q8 chain so `ffn_act_lim` remains authoritative.
+    #[allow(clippy::too_many_arguments)]
+    fn moe_ffn_grouped_resident_q8(
+        e: &Engine,
+        m: &MoeWeights,
+        z: &CudaSlice<f32>,
+        t: usize,
+        cfg: &ModelConfig,
+        il: u16,
+        sel_all: &[u32],
+        w_all: &[f32],
+        table: &CudaSlice<u64>,
+        gu_il: bool,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let moe = cfg.moe.as_ref().unwrap();
+        let n_embd = cfg.n_embd as usize;
+        let n_expert = moe.expert_count as usize;
+        let n_used = moe.expert_used_count as usize;
+        let n_ff_exp = moe.expert_ff_length as usize;
+        let n_pairs = t * n_used;
+        debug_assert_eq!(sel_all.len(), n_pairs);
+        debug_assert_eq!(w_all.len(), n_pairs);
+        debug_assert!(
+            m.gate_exps.macros.is_none()
+                && m.up_exps.macros.is_none()
+                && m.down_exps.macros.is_none(),
+            "resident grouped q8 does not fold per-expert macro scales",
+        );
+
+        // The rows twins run the resident sequential program verbatim on grid.z = token:
+        // fused gate/up/SiLU per slot, batched activation quantization, then the original
+        // slot-ordered down/FMA chain. Routing remains the host sigmoid oracle above; these
+        // kernels consume sel/w only and never enter the softmax device router.
+        if !cfg.swiglu_clamped_at(il as u32) {
+            let sel: Vec<i32> = sel_all.iter().map(|&expert| expert as i32).collect();
+            let sel_d = e.htod_i32(&sel)?;
+            let w_d = e.htod(w_all)?;
+            let (gate_row_bytes, up_row_bytes) = if gu_il {
+                let combined = m.gate_exps.row_bytes + m.up_exps.row_bytes;
+                (combined, combined)
+            } else {
+                (m.gate_exps.row_bytes, m.up_exps.row_bytes)
+            };
+            let (zq, zd) = e.quantize_q8_1(z, t, n_embd)?;
+            let act = e.moe_gate_up_silu8_dev_q8_rows(
+                table,
+                &sel_d,
+                &zq,
+                &zd,
+                t,
+                n_embd,
+                n_ff_exp,
+                n_used,
+                n_expert,
+                m.gate_exps.qtype,
+                m.up_exps.qtype,
+                gate_row_bytes,
+                up_row_bytes,
+                &m.dev_macros,
+            )?;
+            let (aq2, ad2) = e.quantize_q8_1(&act, n_pairs, n_ff_exp)?;
+            let mut moe_out = e.uninit(t * n_embd)?;
+            e.moe_down8_fma_dev_q8_rows_g(
+                table,
+                &sel_d,
+                &w_d,
+                &aq2,
+                &ad2,
+                &mut moe_out,
+                t,
+                n_ff_exp,
+                n_embd,
+                n_used,
+                n_expert,
+                m.down_exps.qtype,
+                m.down_exps.row_bytes,
+            )?;
+
+            if std::env::var("MEMRA_MOE_STATS").is_ok() {
+                let mut counts = vec![0usize; n_expert];
+                for &expert in sel_all {
+                    counts[expert as usize] += 1;
+                }
+                let mut sizes: Vec<usize> =
+                    counts.into_iter().filter(|&count| count != 0).collect();
+                sizes.sort_unstable();
+                let mean = sizes.iter().sum::<usize>() as f64 / sizes.len().max(1) as f64;
+                println!(
+                    "moe-grouped il={il} t={t} dispatch=resident-q8-rows active={}/{} \
+                     m_e: min={} median={} mean={mean:.1} max={}",
+                    sizes.len(),
+                    n_expert,
+                    sizes.first().copied().unwrap_or(0),
+                    sizes.get(sizes.len() / 2).copied().unwrap_or(0),
+                    sizes.last().copied().unwrap_or(0),
+                );
+            }
+            return Ok(moe_out);
+        }
+
+        // Clamped layers keep gate/up, activation, and down as separate stages. The pair-major
+        // matvec body is qmatvec_expert_q8 verbatim, while one launch covers every routed pair.
+        // Pair ids stay in router slot order so scatter preserves the sequential FMA chain.
+        let pair_tok: Vec<i32> = (0..n_pairs).map(|pair| (pair / n_used) as i32).collect();
+        let pair_ex: Vec<i32> = sel_all.iter().map(|&expert| expert as i32).collect();
+        let tok_off: Vec<i32> = (0..=t).map(|tok| (tok * n_used) as i32).collect();
+        let tok_ids: Vec<i32> = (0..n_pairs as i32).collect();
+
+        let mut by_expert: Vec<Vec<i32>> = vec![Vec::new(); n_expert];
+        for (pair, &expert) in pair_ex.iter().enumerate() {
+            by_expert[expert as usize].push(pair as i32);
+        }
+
+        let pair_tok_d = e.htod_i32(&pair_tok)?;
+        let pair_ex_d = e.htod_i32(&pair_ex)?;
+        let pair_w_d = e.htod(w_all)?;
+        let tok_off_d = e.htod_i32(&tok_off)?;
+        let tok_ids_d = e.htod_i32(&tok_ids)?;
+
+        let matvec = |
+            proj: i32,
+            pair_rows: &CudaSlice<i32>,
+            aq: &CudaSlice<i8>,
+            ad: &CudaSlice<f32>,
+            in_f: usize,
+            out_f: usize,
+            qtype: i32,
+            row_bytes: usize,
+        | -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+            e.moe_pairs_matvec_q8(
+                table,
+                proj,
+                pair_rows,
+                &pair_ex_d,
+                aq,
+                ad,
+                in_f,
+                out_f,
+                n_expert,
+                n_pairs,
+                qtype,
+                row_bytes,
+            )
+        };
+
+        let (gate_row_bytes, up_row_bytes) = if gu_il {
+            let combined = m.gate_exps.row_bytes + m.up_exps.row_bytes;
+            (combined, combined)
+        } else {
+            (m.gate_exps.row_bytes, m.up_exps.row_bytes)
+        };
+        let (zq, zd) = e.quantize_q8_1(z, t, n_embd)?;
+        let gate = matvec(
+            0,
+            &pair_tok_d,
+            &zq,
+            &zd,
+            n_embd,
+            n_ff_exp,
+            m.gate_exps.qtype,
+            gate_row_bytes,
+        )?;
+        let up = matvec(
+            1,
+            &pair_tok_d,
+            &zq,
+            &zd,
+            n_embd,
+            n_ff_exp,
+            m.up_exps.qtype,
+            up_row_bytes,
+        )?;
+        let mut act = e.uninit(n_pairs * n_ff_exp)?;
+        Self::ffn_act_lim(
+            e,
+            cfg,
+            &gate,
+            &up,
+            1.0,
+            1.0,
+            cfg.clamp_exp_at(il as u32),
+            &mut act,
+            n_pairs * n_ff_exp,
+        )?;
+        let (aq2, ad2) = e.quantize_q8_1(&act, n_pairs, n_ff_exp)?;
+        let pair_self: Vec<i32> = (0..n_pairs as i32).collect();
+        let pair_self_d = e.htod_i32(&pair_self)?;
+        let down = matvec(
+            2,
+            &pair_self_d,
+            &aq2,
+            &ad2,
+            n_ff_exp,
+            n_embd,
+            m.down_exps.qtype,
+            m.down_exps.row_bytes,
+        )?;
+        let mut moe_out = e.uninit(t * n_embd)?;
+        e.moe_pairs_scatter(
+            &down,
+            &pair_w_d,
+            &tok_off_d,
+            &tok_ids_d,
+            &mut moe_out,
+            t,
+            n_embd,
+        )?;
+
+        if std::env::var("MEMRA_MOE_STATS").is_ok() {
+            let mut sizes: Vec<usize> = by_expert
+                .iter()
+                .filter_map(|pairs| (!pairs.is_empty()).then_some(pairs.len()))
+                .collect();
+            sizes.sort_unstable();
+            let mean = sizes.iter().sum::<usize>() as f64 / sizes.len().max(1) as f64;
+            println!(
+                "moe-grouped il={il} t={t} dispatch=resident-q8-clamped-pairs active={}/{} \
+                 m_e: min={} median={} mean={mean:.1} max={}",
+                sizes.len(),
+                n_expert,
+                sizes.first().copied().unwrap_or(0),
+                sizes.get(sizes.len() / 2).copied().unwrap_or(0),
+                sizes.last().copied().unwrap_or(0),
+            );
+        }
+        Ok(moe_out)
+    }
+
+    fn moe_ffn_grouped_add_shared(
+        e: &Engine,
+        m: &MoeWeights,
+        z: &CudaSlice<f32>,
+        t: usize,
+        cfg: &ModelConfig,
+        il: u16,
+        moe_out: &mut CudaSlice<f32>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let n_embd = cfg.n_embd as usize;
+        if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp)) =
+            (&m.gate_shexp, &m.up_shexp, &m.down_shexp)
+        {
+            let n_ff_sh = gate_shexp.out_features();
+            let sg_gate = e.matmul(gate_shexp, z, t)?;
+            let sg_up = e.matmul(up_shexp, z, t)?;
+            let mut sa = e.uninit(t * n_ff_sh)?;
+            Self::ffn_act_lim(
+                e,
+                cfg,
+                &sg_gate,
+                &sg_up,
+                1.0,
+                1.0,
+                cfg.clamp_shexp_at(il as u32),
+                &mut sa,
+                t * n_ff_sh,
+            )?;
+            let sh = e.matmul(down_shexp, &sa, t)?;
+            let gate = match &m.gate_inp_shexp {
+                Some(gate_inp_shexp) => {
+                    if t < PRIME_MIN_T || crate::router_prefill_exact_on() {
+                        e.sigmoid_dot_rows(z, gate_inp_shexp.float_data(), n_embd, t)?
+                    } else {
+                        let raw = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
+                        let mut gate = e.uninit(t)?;
+                        e.sigmoid(&raw, &mut gate, t)?;
+                        gate
+                    }
+                }
+                None => e.htod(&vec![1.0f32; t])?,
+            };
+            e.add_scaled_rows(&sh, &gate, moe_out, n_embd, t)?;
+        }
+        Ok(())
+    }
+
     /// A2 expert-grouped MoE FFN (prefill path, MEMRA_MOE_GROUPED=1). Same semantics as moe_ffn:
     /// z [T, n_embd] -> moe_out [T, n_embd]. BIT-IDENTICAL to moe_ffn when using the slot scheme.
     pub(crate) fn moe_ffn_grouped(e: &Engine, m: &MoeWeights, z: &CudaSlice<f32>, t: usize,
-                                  cfg: &ModelConfig, il: u16, _max_block: usize)
+                                  cfg: &ModelConfig, il: u16, max_block: usize)
                    -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let moe = cfg.moe.as_ref().unwrap();
         let n_embd = cfg.n_embd as usize;
@@ -5252,10 +5556,10 @@ impl HybridModel {
         let n_ff_exp = moe.expert_ff_length as usize;
         // step35 per-layer SwiGLU clamp; None on every other arch / unclamped layer.
         let lim_exp = cfg.clamp_exp_at(il as u32);
-        let lim_shexp = cfg.clamp_shexp_at(il as u32);
 
-        // 1. ROUTER (identical to moe_ffn).
-        let logits = e.matmul(&m.gate_inp, z, t)?;
+        // 1. ROUTER: exactly the same m-invariant selector and host sigmoid oracle as the
+        // sequential path. The grouped dispatch never enters the softmax-only pairs/dev router.
+        let logits = Self::moe_router_logits(e, m, z, t, cfg)?;
         let (sel_all, w_all) = if let Some(sig) = cfg.sigmoid_router() {
             Self::moe_route_cfg(e, &logits, t, n_expert, n_used,
                                 m.exp_probs_b.as_deref(), Some(sig), m.active_experts.as_deref())?
@@ -5264,6 +5568,41 @@ impl HybridModel {
                                 None, None, m.active_experts.as_deref())?
         };
         Self::trace_moe_routes(il, t, &sel_all, &w_all)?;
+        Self::trace_moe_input(e, il, t, n_embd, z)?;
+
+        // Fits-VRAM Step35 under the PP stage split: use the expert-major q8 arithmetic directly
+        // from the owning device's uniform resident slab. This is not `moe_ffn_pairs`: routing
+        // already happened above and the activation is clamp-aware. Mixed layouts, remote slabs,
+        // macro-scaled experts, q8-disabled configs, and spill fall through to metadata-aware A2.
+        let no_exp_macros = m.gate_exps.macros.is_none()
+            && m.up_exps.macros.is_none()
+            && m.down_exps.macros.is_none();
+        let resident_q8 = m.dev_exps.as_ref().filter(|dev| {
+            m.has_uniform_expert_layout()
+                && no_exp_macros
+                && moe_q8_enabled()
+                && q8_expert_supported(m.gate_exps.qtype)
+                && q8_expert_supported(m.up_exps.qtype)
+                && q8_expert_supported(m.down_exps.qtype)
+                && moe_slab_enabled()
+                && dev.dev == e.ctx().ordinal()
+        });
+        if let Some(dev) = resident_q8 {
+            let mut moe_out = Self::moe_ffn_grouped_resident_q8(
+                e,
+                m,
+                z,
+                t,
+                cfg,
+                il,
+                &sel_all,
+                &w_all,
+                &dev.ptr_row,
+                dev.gu_il,
+            )?;
+            Self::moe_ffn_grouped_add_shared(e, m, z, t, cfg, il, &mut moe_out)?;
+            return Ok(moe_out);
+        }
 
         // 2. BUILD PER-EXPERT TOKEN LISTS (host-side grouping).
         // For each expert e, we need: which tokens use it, their positions in z, their top-k
@@ -5296,11 +5635,24 @@ impl HybridModel {
         let g_len = m.gate_exps.max_expert_bytes();
         let u_len = m.up_exps.max_expert_bytes();
         let d_len = m.down_exps.max_expert_bytes();
-        let use_cache = Engine::moe_cache_enabled();
-        let max_block = _max_block;
+        let moe_q8 = m.has_uniform_expert_layout()
+            && moe_q8_enabled()
+            && q8_expert_supported(m.gate_exps.qtype)
+            && q8_expert_supported(m.up_exps.qtype)
+            && q8_expert_supported(m.down_exps.qtype);
+        // The per-expert slab view is legal only for the ordinary contiguous uniform layout.
+        // Interleaved GU slabs require the pointer-table fast path above.
+        let slab_local = m.dev_exps.as_ref().filter(|dev| {
+            !dev.gu_il && moe_slab_enabled() && dev.dev == e.ctx().ordinal()
+        });
+        let use_cache =
+            slab_local.is_none() && Engine::moe_cache_enabled() && !e.moe_cache_frozen();
+        // The sequential no-cache/frozen staging oracle is f32. Use q8 only where sequential
+        // also does: a local resident slab or a live SLRU dispatch.
+        let grouped_q8 = moe_q8 && (slab_local.is_some() || use_cache);
 
-        // GPU scratch for staging (only allocated when NOT using cache).
-        let (mut scratch_g, mut scratch_u, mut scratch_d) = if !use_cache {
+        // GPU scratch for staging (only allocated without a local slab or cache).
+        let (mut scratch_g, mut scratch_u, mut scratch_d) = if slab_local.is_none() && !use_cache {
             (Some(e.alloc_u8(g_len)?), Some(e.alloc_u8(u_len)?), Some(e.alloc_u8(d_len)?))
         } else {
             (None, None, None)
@@ -5366,55 +5718,330 @@ impl HybridModel {
             e.gather_rows(z, &tok_idx_d, &mut gathered, n_embd, m_e)?;
             let gv = gathered.slice(0..m_e * n_embd);
 
-            // Compute gate/up/down matmuls -- two paths: cache-resident or host-staged.
-            let y = if use_cache {
-                use crate::moe_cache::{BlockId, PROJ_GATE, PROJ_UP, PROJ_DOWN};
-                // CACHE PATH: dispatch through MOE cache, get device-resident buffer, GEMM at m=m_e.
-                let gate = e.with_moe_cache(max_block, |c, eng| {
-                    let id = BlockId::new(il, PROJ_GATE, ex as u16);
-                    let slot = c.dispatch_source(id, m.gate_exps.expert_source(ex), eng)?;
-                    let buf = c.buf(slot);
-                    eng.qmatvec_view(buf, 0..gl.len, &gv, m_e,
-                        m.gate_exps.in_f, m.gate_exps.out_f, gl.qtype, gl.row_bytes)
-                })?;
-                let up = e.with_moe_cache(max_block, |c, eng| {
-                    let id = BlockId::new(il, PROJ_UP, ex as u16);
-                    let slot = c.dispatch_source(id, m.up_exps.expert_source(ex), eng)?;
-                    let buf = c.buf(slot);
-                    eng.qmatvec_view(buf, 0..ul.len, &gv, m_e,
-                        m.up_exps.in_f, m.up_exps.out_f, ul.qtype, ul.row_bytes)
-                })?;
-                // SiLU-MUL activation (per-expert macro-scales folded; step35's per-layer clamp).
-                let mut act = e.zeros(m_e * n_ff_exp)?;
-                Self::ffn_act_lim(e, cfg, &gate, &up, m.gate_exps.macro_scale(ex),
-                    m.up_exps.macro_scale(ex), lim_exp, &mut act, m_e * n_ff_exp)?;
-                let actv = act.slice(0..m_e * n_ff_exp);
-                e.with_moe_cache(max_block, |c, eng| {
-                    let id = BlockId::new(il, PROJ_DOWN, ex as u16);
-                    let slot = c.dispatch_source(id, m.down_exps.expert_source(ex), eng)?;
-                    let buf = c.buf(slot);
-                    eng.qmatvec_view(buf, 0..dl.len, &actv, m_e,
-                        m.down_exps.in_f, m.down_exps.out_f, dl.qtype, dl.row_bytes)
-                })?
+            // Compute gate/up/down from the local slab, metadata-aware cache, or staging. The q8
+            // form keeps each gathered row in the sequential arithmetic class at `m=m_e`.
+            let y = if let Some(dev) = slab_local {
+                let gate_start = ex * m.gate_exps.expert_stride;
+                let up_start = ex * m.up_exps.expert_stride;
+                let down_start = ex * m.down_exps.expert_stride;
+                if grouped_q8 {
+                    let (zq, zd) = e.quantize_q8_1(&gathered, m_e, n_embd)?;
+                    let gate = e.qmatvec_expert_q8(
+                        &dev.gate,
+                        gate_start..gate_start + gl.len,
+                        &zq,
+                        &zd,
+                        m_e,
+                        m.gate_exps.in_f,
+                        m.gate_exps.out_f,
+                        gl.qtype,
+                        gl.row_bytes,
+                    )?;
+                    let up = e.qmatvec_expert_q8(
+                        &dev.up,
+                        up_start..up_start + ul.len,
+                        &zq,
+                        &zd,
+                        m_e,
+                        m.up_exps.in_f,
+                        m.up_exps.out_f,
+                        ul.qtype,
+                        ul.row_bytes,
+                    )?;
+                    let mut act = e.uninit(m_e * n_ff_exp)?;
+                    Self::ffn_act_lim(
+                        e,
+                        cfg,
+                        &gate,
+                        &up,
+                        m.gate_exps.macro_scale(ex),
+                        m.up_exps.macro_scale(ex),
+                        lim_exp,
+                        &mut act,
+                        m_e * n_ff_exp,
+                    )?;
+                    let (aq2, ad2) = e.quantize_q8_1(&act, m_e, n_ff_exp)?;
+                    e.qmatvec_expert_q8(
+                        &dev.down,
+                        down_start..down_start + dl.len,
+                        &aq2,
+                        &ad2,
+                        m_e,
+                        m.down_exps.in_f,
+                        m.down_exps.out_f,
+                        dl.qtype,
+                        dl.row_bytes,
+                    )?
+                } else {
+                    let gate = e.qmatvec_view(
+                        &dev.gate,
+                        gate_start..gate_start + gl.len,
+                        &gv,
+                        m_e,
+                        m.gate_exps.in_f,
+                        m.gate_exps.out_f,
+                        gl.qtype,
+                        gl.row_bytes,
+                    )?;
+                    let up = e.qmatvec_view(
+                        &dev.up,
+                        up_start..up_start + ul.len,
+                        &gv,
+                        m_e,
+                        m.up_exps.in_f,
+                        m.up_exps.out_f,
+                        ul.qtype,
+                        ul.row_bytes,
+                    )?;
+                    let mut act = e.uninit(m_e * n_ff_exp)?;
+                    Self::ffn_act_lim(
+                        e,
+                        cfg,
+                        &gate,
+                        &up,
+                        m.gate_exps.macro_scale(ex),
+                        m.up_exps.macro_scale(ex),
+                        lim_exp,
+                        &mut act,
+                        m_e * n_ff_exp,
+                    )?;
+                    let actv = act.slice(0..m_e * n_ff_exp);
+                    e.qmatvec_view(
+                        &dev.down,
+                        down_start..down_start + dl.len,
+                        &actv,
+                        m_e,
+                        m.down_exps.in_f,
+                        m.down_exps.out_f,
+                        dl.qtype,
+                        dl.row_bytes,
+                    )?
+                }
+            } else if use_cache {
+                use crate::moe_cache::{BlockId, PROJ_DOWN, PROJ_GATE, PROJ_UP};
+                if grouped_q8 {
+                    let (zq, zd) = e.quantize_q8_1(&gathered, m_e, n_embd)?;
+                    let gate = e.with_moe_cache(max_block, |cache, eng| {
+                        let id = BlockId::new(il, PROJ_GATE, ex as u16);
+                        let slot =
+                            cache.dispatch_source(id, m.gate_exps.expert_source(ex), eng)?;
+                        eng.qmatvec_expert_q8(
+                            cache.buf(slot),
+                            0..gl.len,
+                            &zq,
+                            &zd,
+                            m_e,
+                            m.gate_exps.in_f,
+                            m.gate_exps.out_f,
+                            gl.qtype,
+                            gl.row_bytes,
+                        )
+                    })?;
+                    let up = e.with_moe_cache(max_block, |cache, eng| {
+                        let id = BlockId::new(il, PROJ_UP, ex as u16);
+                        let slot =
+                            cache.dispatch_source(id, m.up_exps.expert_source(ex), eng)?;
+                        eng.qmatvec_expert_q8(
+                            cache.buf(slot),
+                            0..ul.len,
+                            &zq,
+                            &zd,
+                            m_e,
+                            m.up_exps.in_f,
+                            m.up_exps.out_f,
+                            ul.qtype,
+                            ul.row_bytes,
+                        )
+                    })?;
+                    let mut act = e.uninit(m_e * n_ff_exp)?;
+                    Self::ffn_act_lim(
+                        e,
+                        cfg,
+                        &gate,
+                        &up,
+                        m.gate_exps.macro_scale(ex),
+                        m.up_exps.macro_scale(ex),
+                        lim_exp,
+                        &mut act,
+                        m_e * n_ff_exp,
+                    )?;
+                    let (aq2, ad2) = e.quantize_q8_1(&act, m_e, n_ff_exp)?;
+                    e.with_moe_cache(max_block, |cache, eng| {
+                        let id = BlockId::new(il, PROJ_DOWN, ex as u16);
+                        let slot =
+                            cache.dispatch_source(id, m.down_exps.expert_source(ex), eng)?;
+                        eng.qmatvec_expert_q8(
+                            cache.buf(slot),
+                            0..dl.len,
+                            &aq2,
+                            &ad2,
+                            m_e,
+                            m.down_exps.in_f,
+                            m.down_exps.out_f,
+                            dl.qtype,
+                            dl.row_bytes,
+                        )
+                    })?
+                } else {
+                    let gate = e.with_moe_cache(max_block, |cache, eng| {
+                        let id = BlockId::new(il, PROJ_GATE, ex as u16);
+                        let slot =
+                            cache.dispatch_source(id, m.gate_exps.expert_source(ex), eng)?;
+                        eng.qmatvec_view(
+                            cache.buf(slot),
+                            0..gl.len,
+                            &gv,
+                            m_e,
+                            m.gate_exps.in_f,
+                            m.gate_exps.out_f,
+                            gl.qtype,
+                            gl.row_bytes,
+                        )
+                    })?;
+                    let up = e.with_moe_cache(max_block, |cache, eng| {
+                        let id = BlockId::new(il, PROJ_UP, ex as u16);
+                        let slot =
+                            cache.dispatch_source(id, m.up_exps.expert_source(ex), eng)?;
+                        eng.qmatvec_view(
+                            cache.buf(slot),
+                            0..ul.len,
+                            &gv,
+                            m_e,
+                            m.up_exps.in_f,
+                            m.up_exps.out_f,
+                            ul.qtype,
+                            ul.row_bytes,
+                        )
+                    })?;
+                    let mut act = e.uninit(m_e * n_ff_exp)?;
+                    Self::ffn_act_lim(
+                        e,
+                        cfg,
+                        &gate,
+                        &up,
+                        m.gate_exps.macro_scale(ex),
+                        m.up_exps.macro_scale(ex),
+                        lim_exp,
+                        &mut act,
+                        m_e * n_ff_exp,
+                    )?;
+                    let actv = act.slice(0..m_e * n_ff_exp);
+                    e.with_moe_cache(max_block, |cache, eng| {
+                        let id = BlockId::new(il, PROJ_DOWN, ex as u16);
+                        let slot =
+                            cache.dispatch_source(id, m.down_exps.expert_source(ex), eng)?;
+                        eng.qmatvec_view(
+                            cache.buf(slot),
+                            0..dl.len,
+                            &actv,
+                            m_e,
+                            m.down_exps.in_f,
+                            m.down_exps.out_f,
+                            dl.qtype,
+                            dl.row_bytes,
+                        )
+                    })?
+                }
             } else {
-                // STAGING PATH: H2D the expert blocks into scratch buffers, then GEMM.
                 let sg = scratch_g.as_mut().unwrap();
                 let su = scratch_u.as_mut().unwrap();
                 let sd = scratch_d.as_mut().unwrap();
                 e.stage_expert(m.gate_exps.expert_bytes(ex), sg, 0)?;
                 e.stage_expert(m.up_exps.expert_bytes(ex), su, 0)?;
                 e.stage_expert(m.down_exps.expert_bytes(ex), sd, 0)?;
-                let gate = e.qmatvec_view(sg, 0..gl.len, &gv, m_e,
-                    m.gate_exps.in_f, m.gate_exps.out_f, gl.qtype, gl.row_bytes)?;
-                let up = e.qmatvec_view(su, 0..ul.len, &gv, m_e,
-                    m.up_exps.in_f, m.up_exps.out_f, ul.qtype, ul.row_bytes)?;
-                // SiLU-MUL activation (per-expert macro-scales folded; step35's per-layer clamp).
-                let mut act = e.zeros(m_e * n_ff_exp)?;
-                Self::ffn_act_lim(e, cfg, &gate, &up, m.gate_exps.macro_scale(ex),
-                    m.up_exps.macro_scale(ex), lim_exp, &mut act, m_e * n_ff_exp)?;
-                let actv = act.slice(0..m_e * n_ff_exp);
-                e.qmatvec_view(sd, 0..dl.len, &actv, m_e,
-                    m.down_exps.in_f, m.down_exps.out_f, dl.qtype, dl.row_bytes)?
+                if grouped_q8 {
+                    let (zq, zd) = e.quantize_q8_1(&gathered, m_e, n_embd)?;
+                    let gate = e.qmatvec_expert_q8(
+                        sg,
+                        0..gl.len,
+                        &zq,
+                        &zd,
+                        m_e,
+                        m.gate_exps.in_f,
+                        m.gate_exps.out_f,
+                        gl.qtype,
+                        gl.row_bytes,
+                    )?;
+                    let up = e.qmatvec_expert_q8(
+                        su,
+                        0..ul.len,
+                        &zq,
+                        &zd,
+                        m_e,
+                        m.up_exps.in_f,
+                        m.up_exps.out_f,
+                        ul.qtype,
+                        ul.row_bytes,
+                    )?;
+                    let mut act = e.uninit(m_e * n_ff_exp)?;
+                    Self::ffn_act_lim(
+                        e,
+                        cfg,
+                        &gate,
+                        &up,
+                        m.gate_exps.macro_scale(ex),
+                        m.up_exps.macro_scale(ex),
+                        lim_exp,
+                        &mut act,
+                        m_e * n_ff_exp,
+                    )?;
+                    let (aq2, ad2) = e.quantize_q8_1(&act, m_e, n_ff_exp)?;
+                    e.qmatvec_expert_q8(
+                        sd,
+                        0..dl.len,
+                        &aq2,
+                        &ad2,
+                        m_e,
+                        m.down_exps.in_f,
+                        m.down_exps.out_f,
+                        dl.qtype,
+                        dl.row_bytes,
+                    )?
+                } else {
+                    let gate = e.qmatvec_view(
+                        sg,
+                        0..gl.len,
+                        &gv,
+                        m_e,
+                        m.gate_exps.in_f,
+                        m.gate_exps.out_f,
+                        gl.qtype,
+                        gl.row_bytes,
+                    )?;
+                    let up = e.qmatvec_view(
+                        su,
+                        0..ul.len,
+                        &gv,
+                        m_e,
+                        m.up_exps.in_f,
+                        m.up_exps.out_f,
+                        ul.qtype,
+                        ul.row_bytes,
+                    )?;
+                    let mut act = e.uninit(m_e * n_ff_exp)?;
+                    Self::ffn_act_lim(
+                        e,
+                        cfg,
+                        &gate,
+                        &up,
+                        m.gate_exps.macro_scale(ex),
+                        m.up_exps.macro_scale(ex),
+                        lim_exp,
+                        &mut act,
+                        m_e * n_ff_exp,
+                    )?;
+                    let actv = act.slice(0..m_e * n_ff_exp);
+                    e.qmatvec_view(
+                        sd,
+                        0..dl.len,
+                        &actv,
+                        m_e,
+                        m.down_exps.in_f,
+                        m.down_exps.out_f,
+                        dl.qtype,
+                        dl.row_bytes,
+                    )?
+                }
             };
 
             // SCATTER into slot buffer: each row goes to slot_buf[tok, slot, :].
@@ -5440,39 +6067,7 @@ impl HybridModel {
                       above_gemm_threshold(>=16)={above16}/{active}");
         }
 
-        // 6. SHARED EXPERT (same as moe_ffn — untouched).
-        // gate_inp_shexp is OPTIONAL: qwen35moe gates the shared expert (sigmoid(gate_inp) x sh);
-        // MiniMax-M3 (DeepSeek-V3 class) has NO shexp gate — the shared expert adds directly.
-        if let (Some(gate_shexp), Some(up_shexp), Some(down_shexp)) =
-            (&m.gate_shexp, &m.up_shexp, &m.down_shexp)
-        {
-            let n_ff_sh = gate_shexp.out_features();
-            let sg_gate = e.matmul(gate_shexp, z, t)?;
-            let sg_up = e.matmul(up_shexp, z, t)?;
-            let mut sa = e.zeros(t * n_ff_sh)?;
-            Self::ffn_act_lim(e, cfg, &sg_gate, &sg_up, 1.0, 1.0, lim_shexp, &mut sa, t * n_ff_sh)?;
-            let sh = e.matmul(down_shexp, &sa, t)?;
-            // shexp gate: qwen35moe sigmoid-gates; M3 has no gate tensor -> weight 1.0.
-            // Fused sigmoid-dot below PRIME_MIN_T — one fold order with the sequential and
-            // dev decode arms (dispatch choice must not change bits).
-            let g = match &m.gate_inp_shexp {
-                Some(gate_inp_shexp) => {
-                    // router_prefill_exact_on(): the fused sigmoid-dot is m-INVARIANT and
-                    // serves EVERY t (serve isolation, lane/concat-prime-exact).
-                    if t < PRIME_MIN_T || crate::router_prefill_exact_on() {
-                        e.sigmoid_dot_rows(z, gate_inp_shexp.float_data(), n_embd, t)?
-                    } else {
-                        let gs = e.linear(z, gate_inp_shexp.float_data(), t, n_embd, 1)?;
-                        let mut g = e.uninit(t)?;
-                        e.sigmoid(&gs, &mut g, t)?;
-                        g
-                    }
-                }
-                None => e.htod(&vec![1.0f32; t])?,
-            };
-            e.add_scaled_rows(&sh, &g, &mut moe_out, n_embd, t)?;
-        }
-
+        Self::moe_ffn_grouped_add_shared(e, m, z, t, cfg, il, &mut moe_out)?;
         Ok(moe_out)
     }
 
