@@ -37,6 +37,9 @@ pub fn enabled() -> bool {
 }
 
 pub fn start(path: &str) -> Option<Arc<Trace>> {
+    if !matches!(path, "/v1/completions" | "/v1/chat/completions") {
+        return None;
+    }
     enabled().then(|| {
         Arc::new(Trace {
             started: Instant::now(),
