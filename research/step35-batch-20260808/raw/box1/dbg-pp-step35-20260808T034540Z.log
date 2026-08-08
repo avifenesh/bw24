@@ -1,0 +1,12 @@
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers); steps=24 batch=1
+pp mode: batched stage-split exactness battery over 45 layers; stages=2 fence=[0, 22, 45] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+pp mode: batches=[1, 2, 4, 8] steps=24 reps=2 (split arm)
+pp mode: B=1 fast path pinned OFF (live default = ON)
+
+thread 'main' (206379) panicked at crates/memra-engine/src/lib.rs:1134:33:
+kernel fa_prefill_qw_db_w_hd128 not in any fatbin
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
