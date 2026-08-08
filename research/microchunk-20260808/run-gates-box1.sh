@@ -54,7 +54,6 @@ main() {
   echo "=== dynamic microchunk gates $TS commit=$(git rev-parse HEAD)"
   echo "model=$MODEL"
   echo "draft=$DRAFT"
-  local rc=0
   (
     flock -w 21600 9 || {
       echo "LOCK TIMEOUT"
@@ -64,46 +63,46 @@ main() {
     snapshot
 
     run_gate kernel-check timeout 3600 \
-      ./target/release/kernel-check "$MODEL" || rc=1
+      ./target/release/kernel-check "$MODEL" || exit 1
 
     run_gate ppsplit env "${PP[@]}" timeout 7200 \
       tools/prime-split-gate.sh "$MODEL" --devices 0,1 --stages 2 \
-      --chunks auto,513 --steps 8 || rc=1
+      --chunks auto,513 --steps 8 || exit 1
     run_gate ppsplit-canary env "${PP[@]}" timeout 7200 \
       tools/prime-split-gate.sh "$MODEL" --devices 0,1 --stages 2 \
-      --chunks auto,513 --steps 8 --canary || rc=1
+      --chunks auto,513 --steps 8 --canary || exit 1
 
     run_gate chunkinv35 env "${PP[@]}" timeout 7200 \
       tools/chunk-invariance-gate.sh "$MODEL" --label step35-swa \
       --prompts research/chunk-invariance-20260805/prompt-pp6257.txt \
-      --chunks 4096,513,512,256,64 --seam MEMRA_STEP35_SWA_TKV --steps 24 || rc=1
+      --chunks 4096,513,512,256,64 --seam MEMRA_STEP35_SWA_TKV --steps 24 || exit 1
     run_gate chunkinv35-canary env "${PP[@]}" timeout 7200 \
       tools/chunk-invariance-gate.sh "$MODEL" --label step35-swa \
       --prompts research/chunk-invariance-20260805/prompt-pp6257.txt \
       --chunks 4096,513,512,256,64 --seam MEMRA_STEP35_SWA_TKV --steps 24 \
-      --canary || rc=1
+      --canary || exit 1
 
     run_gate tickinv35 env "${PP[@]}" timeout 7200 \
       tools/tick-invariance-gate.sh "$MODEL" --label step35-tick \
       --prompts research/chunk-invariance-20260805/prompt-pp6257.txt \
       --budgets 0,1024,513,512,256,64 --splits 64,256,512 \
-      --seam MEMRA_PRIME_CALLLOCAL --steps 24 || rc=1
+      --seam MEMRA_PRIME_CALLLOCAL --steps 24 || exit 1
     run_gate tickinv35-canary env "${PP[@]}" timeout 7200 \
       tools/tick-invariance-gate.sh "$MODEL" --label step35-tick \
       --prompts research/chunk-invariance-20260805/prompt-pp6257.txt \
       --budgets 0,1024,513,512,256,64 --splits 64,256,512 \
-      --seam MEMRA_PRIME_CALLLOCAL --steps 24 --canary || rc=1
+      --seam MEMRA_PRIME_CALLLOCAL --steps 24 --canary || exit 1
 
     run_gate run-gen env "${PP[@]}" MEMRA_NGEN=64 timeout 3600 \
-      ./target/release/run-gen "$MODEL" --prompt "$PROMPT" || rc=1
+      ./target/release/run-gen "$MODEL" --prompt "$PROMPT" || exit 1
 
     run_gate run-spec env "${PP[@]}" MEMRA_MTP_DRAFT="$DRAFT" MEMRA_NGEN=32 \
       MEMRA_PROMPT="$PROMPT" timeout 7200 \
-      ./target/release/run-spec "$MODEL" || rc=1
+      ./target/release/run-spec "$MODEL" || exit 1
 
     snapshot
     echo "lock released $(date -u +%FT%TZ)"
-    exit "$rc"
+    exit 0
   ) 9>/tmp/memra-gpu.lock
   local battery_rc=$?
   echo "=== dynamic microchunk gates rc=$battery_rc"

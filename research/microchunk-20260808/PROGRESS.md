@@ -184,3 +184,18 @@ Local verification:
 
 Box1 was not free at this increment: PID 230699 (`target/release/memra-server`) held
 29,322 MiB on GPU 0 and 1,036 MiB on GPU 1. No GPU work was queued.
+
+## Increment 3 - box1 staging and fail-fast battery
+
+Box1 later cleared to 0 MiB on both GPUs with `/tmp/memra-gpu.lock` free. The branch
+was transferred without an origin push through a verified complete Git bundle into
+`~/memra-cx-microchunk`.
+
+The release build at `77040bf6` passed in 3m45s with CUDA 13.2 and auto-detected
+sm_120a. The initial non-interactive invocation failed before compilation with
+`cargo: command not found`; the successful retry called the installed stable
+`cargo`/`rustc` binaries directly and did not invoke `rustup`.
+
+Before launching the GPU battery, its driver was corrected to exit immediately after
+the first red gate. This matches the lane stop rule: no later exactness or performance
+work may continue after a failure.
