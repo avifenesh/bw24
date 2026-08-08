@@ -90,6 +90,12 @@ use worker::{Cmd, Event, ModelCaps, Request, SharedMetrics};
 #[derive(Clone, Default)]
 struct TtftRequestTrace(Option<Arc<ttft::Trace>>);
 
+fn is_sse_data_frame(bytes: &[u8]) -> bool {
+    bytes
+        .windows(b"data:".len())
+        .any(|window| window == b"data:")
+}
+
 async fn ttft_request_start(mut req: AxumRequest, next: Next) -> Response {
     let trace = ttft::start(req.uri().path());
     req.extensions_mut().insert(TtftRequestTrace(trace.clone()));
@@ -106,15 +112,18 @@ async fn ttft_request_start(mut req: AxumRequest, next: Next) -> Response {
         return response;
     }
 
-    // Stamp the first serialized SSE body frame as Hyper polls it. This is later and
-    // more truthful than marking the Event before Axum has encoded it into bytes.
+    // Stamp the first serialized application data frame as Hyper polls it. Axum's
+    // keepalive comments can precede a long prefill, so non-data frames do not count.
     let (parts, body) = response.into_parts();
     let mut body = Box::pin(body.into_data_stream());
     let stream = async_stream::stream! {
         while let Some(frame) =
             std::future::poll_fn(|cx| body.as_mut().poll_next(cx)).await
         {
-            if frame.as_ref().is_ok_and(|bytes| !bytes.is_empty()) {
+            if frame
+                .as_ref()
+                .is_ok_and(|bytes| is_sse_data_frame(bytes))
+            {
                 trace.mark_first_sse_byte();
             }
             yield frame;
@@ -3636,6 +3645,15 @@ mod tests {
         assert_eq!(err["error"]["type"], "server_error");
         assert_eq!(err["error"]["code"], "engine_error");
         assert_eq!(lines.last(), Some(&"[DONE]"));
+    }
+
+    #[test]
+    fn ttft_sse_marker_ignores_keepalive_comments() {
+        assert!(!is_sse_data_frame(b": keep-alive\n\n"));
+        assert!(is_sse_data_frame(b"data: {\"choices\":[]}\n\n"));
+        assert!(is_sse_data_frame(
+            b"event: error\ndata: {\"error\":\"failed\"}\n\n"
+        ));
     }
 
     #[tokio::test]

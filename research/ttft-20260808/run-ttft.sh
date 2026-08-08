@@ -131,9 +131,13 @@ echo "serve=naked scheduler/prefill geometry, grouped default, PP-2 0,1, spec of
         --client "short=$SHORT_JSONL" \
         --client "4k=$LONG_JSONL" \
         --joined "$JOINED_JSONL" \
-        --table "$PHASE_TSV"
+        --table "$PHASE_TSV" || exit 1
 
-    echo "trace_lines=$(grep -c '^\\[ttft\\]' "$SERVER_LOG") expected=15"
+    trace_lines=$(grep -c '^\[ttft\]' "$SERVER_LOG")
+    echo "trace_lines=$trace_lines expected=15"
+    if [[ "$trace_lines" -ne 15 ]]; then
+        exit 1
+    fi
     echo "lock released $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ) 9>/tmp/memra-gpu.lock
 rc=$?
