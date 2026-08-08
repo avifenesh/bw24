@@ -1,0 +1,249 @@
+#!/usr/bin/env bash
+# Generated architecture gate. Re-run tools/generate-arch-gates.py to change it.
+set -uo pipefail
+
+GATE_NAME={{GATE_NAME}}
+ARCHITECTURE={{ARCHITECTURE}}
+ARTIFACT_ENV={{ARTIFACT_ENV}}
+DEFAULT_ARTIFACT={{DEFAULT_ARTIFACT}}
+DRAFT_ENV={{DRAFT_ENV}}
+DEFAULT_DRAFT={{DEFAULT_DRAFT}}
+MODEL_ALIAS={{MODEL_ALIAS}}
+REQUIRED_GPUS={{REQUIRED_GPUS}}
+PP_STAGES={{PP_STAGES}}
+PP_DEVICES={{PP_DEVICES}}
+CONCURRENCY=({{CONCURRENCY}})
+DEFAULT_PORT={{DEFAULT_PORT}}
+RECEIPT_DIR={{RECEIPT_DIR}}
+{{SERVER_ENV}}
+{{CANARY_ENV}}
+BODY={{REQUEST_BODY}}
+CAP_REGEX={{CAP_REGEX}}
+CAP_MIN={{CAP_MIN}}
+WALK_REGEX={{WALK_REGEX}}
+
+CANARY=0
+PORT="$DEFAULT_PORT"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --canary) CANARY=1; shift ;;
+    --port) PORT="$2"; shift 2 ;;
+    *) echo "$GATE_NAME: unknown arg $1" >&2; exit 2 ;;
+  esac
+done
+
+MODEL="${!ARTIFACT_ENV:-}"
+[ -n "$MODEL" ] || MODEL="$DEFAULT_ARTIFACT"
+[ -f "$MODEL" ] || {
+  echo "$GATE_NAME: SKIP (no artifact at $MODEL; set $ARTIFACT_ENV)"
+  exit 0
+}
+
+DRAFT=""
+if [ -n "$DRAFT_ENV" ]; then
+  DRAFT="${!DRAFT_ENV:-}"
+fi
+[ -n "$DRAFT" ] || DRAFT="$DEFAULT_DRAFT"
+[ -f "$DRAFT" ] || DRAFT=""
+
+command -v nvidia-smi >/dev/null 2>&1 || {
+  echo "$GATE_NAME: SKIP (nvidia-smi unavailable)"
+  exit 0
+}
+NGPU=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc -l)
+[ "$NGPU" -ge "$REQUIRED_GPUS" ] || {
+  echo "$GATE_NAME: SKIP (needs $REQUIRED_GPUS GPUs, have $NGPU)"
+  exit 0
+}
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$HERE"
+while [ "$ROOT" != / ] && [ ! -f "$ROOT/Cargo.toml" ]; do
+  ROOT="$(dirname "$ROOT")"
+done
+[ -f "$ROOT/Cargo.toml" ] || {
+  echo "$GATE_NAME: FAIL (cannot locate repository root)"
+  exit 1
+}
+cd "$ROOT" || exit 1
+BIN=./target/release/memra-server
+[ -x "$BIN" ] || {
+  echo "$GATE_NAME: FAIL (no $BIN; build release first)"
+  exit 1
+}
+
+MODELS_SPEC="${MODEL_ALIAS}=${MODEL}"
+[ -n "$DRAFT" ] && MODELS_SPEC="${MODELS_SPEC}+${DRAFT}"
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+mkdir -p "$RECEIPT_DIR"
+TAG=$([ "$CANARY" = 1 ] && echo canary || echo naked)
+SLOG="$RECEIPT_DIR/${GATE_NAME}-server-${TAG}-${TS}.log"
+GLOG="$RECEIPT_DIR/${GATE_NAME}-${TAG}-${TS}.log"
+BASE="http://127.0.0.1:${PORT}"
+LOCK="${MEMRA_GATE_LOCK:-/tmp/memra-gpu.lock}"
+LOCK_WAIT="${MEMRA_GATE_LOCK_WAIT:-3600}"
+TMP=$(mktemp -d "/tmp/${GATE_NAME}-XXXXXX")
+ASSERTIONS_RAN=$(mktemp "/tmp/${GATE_NAME}-assertions-XXXXXX")
+rm -f "$ASSERTIONS_RAN"
+
+exec > >(tee "$GLOG") 2>&1
+echo "=== $GATE_NAME arch=$ARCHITECTURE tag=$TAG ts=$TS model=$MODEL draft=${DRAFT:-none} ==="
+
+(
+  flock -w "$LOCK_WAIT" 9 || {
+    echo "$GATE_NAME: FAIL (GPU lock timeout)"
+    exit 75
+  }
+  echo "lock acquired $(date -u +%FT%TZ)"
+  nvidia-smi --query-gpu=index,memory.used --format=csv,noheader
+
+  ACTIVE_CANARY_ENV=()
+  [ "$CANARY" = 1 ] && ACTIVE_CANARY_ENV=("${CANARY_ENV[@]}")
+  env "${ACTIVE_CANARY_ENV[@]}" "${SERVER_ENV[@]}" \
+    MEMRA_MODELS="$MODELS_SPEC" \
+    MEMRA_PP_STAGES="$PP_STAGES" \
+    MEMRA_PP_DEVICES="$PP_DEVICES" \
+    MEMRA_ADDR="127.0.0.1:$PORT" \
+    "$BIN" > "$SLOG" 2>&1 &
+  SRV=$!
+  cleanup_server() {
+    kill "$SRV" 2>/dev/null || true
+    wait "$SRV" 2>/dev/null || true
+  }
+  trap cleanup_server EXIT INT TERM
+
+  READY=0
+  for _ in $(seq 1 120); do
+    sleep 5
+    if curl -sf "$BASE/readyz" >/dev/null 2>&1; then
+      READY=1
+      break
+    fi
+    kill -0 "$SRV" 2>/dev/null || {
+      echo "$GATE_NAME: FAIL (server died during boot)"
+      sed -n '1,80p' "$SLOG"
+      exit 1
+    }
+  done
+  [ "$READY" = 1 ] || {
+    echo "$GATE_NAME: FAIL (server never became ready)"
+    exit 1
+  }
+
+  ask() {
+    curl -sS --fail-with-body "$BASE/v1/chat/completions" \
+      -H 'Content-Type: application/json' \
+      -d "$BODY" |
+      python3 -c 'import json,sys
+r=json.load(sys.stdin)
+c=r.get("choices")
+if not c:
+    print("ERROR", json.dumps(r.get("error"), sort_keys=True))
+    raise SystemExit(1)
+m=c[0]["message"]
+print(json.dumps({"reasoning": m.get("reasoning"), "content": m.get("content")}, sort_keys=True))'
+  }
+
+  echo "--- c=1 reference (greedy) ---"
+  ask > "$TMP/ref.txt" || {
+    echo "$GATE_NAME: FAIL (reference request failed)"
+    exit 1
+  }
+  cat "$TMP/ref.txt"
+
+  for C in "${CONCURRENCY[@]}"; do
+    echo "--- c=$C concurrent identical requests ---"
+    PIDS=()
+    for I in $(seq 1 "$C"); do
+      ask > "$TMP/c${C}-${I}.txt" &
+      PIDS+=($!)
+    done
+    REQUEST_RC=0
+    for PID in "${PIDS[@]}"; do
+      wait "$PID" || REQUEST_RC=1
+    done
+    [ "$REQUEST_RC" = 0 ] || {
+      echo "$GATE_NAME: FAIL (one or more c=$C requests failed)"
+      exit 1
+    }
+    cat "$TMP"/c"$C"-*.txt
+  done
+
+  cleanup_server
+  trap - EXIT INT TERM
+  nvidia-smi --query-gpu=index,memory.used --format=csv,noheader
+  echo "lock released $(date -u +%FT%TZ)"
+
+  REF=$(cat "$TMP/ref.txt")
+  [ -n "$REF" ] && ! grep -q '^ERROR' "$TMP/ref.txt" || {
+    echo "$GATE_NAME: FAIL (empty/error c=1 reference)"
+    exit 1
+  }
+  for C in "${CONCURRENCY[@]}"; do
+    for I in $(seq 1 "$C"); do
+      ROW_FILE="$TMP/c${C}-${I}.txt"
+      [ -s "$ROW_FILE" ] && ! grep -q '^ERROR' "$ROW_FILE" || {
+        echo "$GATE_NAME: FAIL (empty/error c=$C response $I)"
+        exit 1
+      }
+    done
+  done
+
+  touch "$ASSERTIONS_RAN"
+  FAILS=0
+  for C in "${CONCURRENCY[@]}"; do
+    for I in $(seq 1 "$C"); do
+      ROW=$(cat "$TMP/c${C}-${I}.txt")
+      if [ "$ROW" = "$REF" ]; then
+        echo "c${C}[${I}] == ref"
+      else
+        echo "c${C}[${I}] != ref"
+        echo "  ref: $REF"
+        echo "  got: $ROW"
+        FAILS=$((FAILS + 1))
+      fi
+    done
+  done
+
+  CAP_LINE=$(grep -oE "$CAP_REGEX" "$SLOG" | head -1)
+  CAP=$(printf '%s\n' "$CAP_LINE" | grep -oE '[0-9]+' | tail -1)
+  if [ -n "$CAP" ] && [ "$CAP" -ge "$CAP_MIN" ]; then
+    echo "chunk cap $CAP >= $CAP_MIN OK"
+  else
+    echo "FAIL: decode chunk cap is '${CAP:-unset}' (< $CAP_MIN)"
+    FAILS=$((FAILS + 1))
+  fi
+  if grep -qE "$WALK_REGEX" "$SLOG"; then
+    echo "batched-walk evidence OK"
+  else
+    echo "FAIL: no batched-walk evidence matching $WALK_REGEX"
+    FAILS=$((FAILS + 1))
+  fi
+
+  echo "server log: $SLOG"
+  if [ "$FAILS" -eq 0 ]; then
+    echo "VERDICT: PASS (concurrent responses match c=1 and B>1 execution is proven)"
+    exit 0
+  fi
+  echo "VERDICT: FAIL ($FAILS failed assertions)"
+  exit 1
+) 9>"$LOCK"
+RC=$?
+
+rm -rf "$TMP"
+if [ "$CANARY" = 1 ]; then
+  if [ -f "$ASSERTIONS_RAN" ] && [ "$RC" -ne 0 ]; then
+    rm -f "$ASSERTIONS_RAN"
+    echo "$GATE_NAME: CANARY OK (the injected rollback broke a completed assertion run)"
+    exit 0
+  fi
+  rm -f "$ASSERTIONS_RAN"
+  if [ "$RC" = 0 ]; then
+    echo "$GATE_NAME: CANARY FAILED (all assertions passed under the rollback seam)"
+  else
+    echo "$GATE_NAME: CANARY FAILED (infrastructure failed before assertions ran)"
+  fi
+  exit 1
+fi
+rm -f "$ASSERTIONS_RAN"
+exit "$RC"

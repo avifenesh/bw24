@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Generated architecture gate wrapper. Re-run tools/generate-arch-gates.py to change it.
+set -uo pipefail
+
+GATE_NAME={{GATE_NAME}}
+ARTIFACT_ENV={{ARTIFACT_ENV}}
+DEFAULT_ARTIFACT={{DEFAULT_ARTIFACT}}
+MODEL="${!ARTIFACT_ENV:-}"
+[ -n "$MODEL" ] || MODEL="$DEFAULT_ARTIFACT"
+[ -f "$MODEL" ] || {
+  echo "$GATE_NAME: SKIP (no artifact at $MODEL; set $ARTIFACT_ENV)"
+  exit 0
+}
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$HERE"
+while [ "$ROOT" != / ] && [ ! -x "$ROOT/tools/chunk-invariance-gate.sh" ]; do
+  ROOT="$(dirname "$ROOT")"
+done
+[ -x "$ROOT/tools/chunk-invariance-gate.sh" ] || {
+  echo "$GATE_NAME: FAIL (cannot locate tools/chunk-invariance-gate.sh)"
+  exit 1
+}
+cd "$ROOT" || exit 1
+exec tools/chunk-invariance-gate.sh "$MODEL" \
+  --label {{LABEL}} \
+  --prompts {{PROMPTS}} \
+  --chunks {{CHUNKS}} \
+  --seam {{SEAM}} \
+  --steps {{STEPS}} \
+  "$@"
