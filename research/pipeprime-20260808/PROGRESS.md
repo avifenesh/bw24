@@ -203,3 +203,24 @@ Receipts:
 - `raw/pipeprime-tickinv35-summary-20260808T071227Z.log`
 - `raw/tickinv35c-raw-20260808T071227Z.log`
 - `raw/pipeprime-tickinv35c-summary-20260808T071227Z.log`
+
+## Increment 7 — target-rig acceptance battery
+
+Box2, one GPU-lock hold, PP-2 placement `0,1`:
+
+| Gate | Verdict |
+|---|---|
+| model-backed `kernel-check` | **ALL GREEN** |
+| `run-gen` PP-2 | **MATCH**: prefill/decode argmax 6776; batched-prime/tokenwise argmax 6776 |
+| `run-spec` K=1..8 | **8/8 self-consistency PASS** |
+
+Spec acceptance remained at the pinned values: K=1 `14/17 = 82.4%`; K=2..8 each
+accepted exactly 15 tokens (`15/32` through `15/128`). Thermal observations were
+31-37 C; the final clocks were 2370/2272 MHz and both cards returned to 0 MiB.
+
+Receipts:
+
+- `raw/acceptance-summary-20260808T072957Z.log`
+- `raw/kernel-check-20260808T072957Z.log`
+- `raw/run-gen-20260808T072957Z.log`
+- `raw/run-spec-20260808T072957Z.log`
