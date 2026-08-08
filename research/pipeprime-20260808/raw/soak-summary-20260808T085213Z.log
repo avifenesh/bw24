@@ -1,0 +1,46 @@
+=== pipeprime soak 20260808T085213Z commit=61c8d2f21ee2941040e158cba91ab97e31f819e8
+model=/data/models/step37/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+prompt=/tmp/pipeprime-prompt-pp4096.txt bytes=25036 sha256=23c1d8384a16c7c0bcb7736b412d43e64c0b4d8e238703864e928565f824ae11
+lock acquired 2026-08-08T08:52:13Z
+0, 31, 180 MHz, 0 MiB
+1, 30, 180 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppsplit: T=4096 steps=1 chunks=auto soak=200 door=OPEN devices=0,1 force_unsplit=false force_serial_pipe=false
+    soak 10/200: exact+live (exact_failures=0 live_failures=0)
+    soak 20/200: exact+live (exact_failures=0 live_failures=0)
+    soak 30/200: exact+live (exact_failures=0 live_failures=0)
+    soak 40/200: exact+live (exact_failures=0 live_failures=0)
+    soak 50/200: exact+live (exact_failures=0 live_failures=0)
+    soak 60/200: exact+live (exact_failures=0 live_failures=0)
+    soak 70/200: exact+live (exact_failures=0 live_failures=0)
+    soak 80/200: exact+live (exact_failures=0 live_failures=0)
+    soak 90/200: exact+live (exact_failures=0 live_failures=0)
+    soak 100/200: exact+live (exact_failures=0 live_failures=0)
+    soak 110/200: exact+live (exact_failures=0 live_failures=0)
+    soak 120/200: exact+live (exact_failures=0 live_failures=0)
+    soak 130/200: exact+live (exact_failures=0 live_failures=0)
+    soak 140/200: exact+live (exact_failures=0 live_failures=0)
+    soak 150/200: exact+live (exact_failures=0 live_failures=0)
+    soak 160/200: exact+live (exact_failures=0 live_failures=0)
+    soak 170/200: exact+live (exact_failures=0 live_failures=0)
+    soak 180/200: exact+live (exact_failures=0 live_failures=0)
+    soak 190/200: exact+live (exact_failures=0 live_failures=0)
+    soak 200/200: exact+live (exact_failures=0 live_failures=0)
+  chunk auto(512) | serial-vs-ref diff L/H/S/D=0/0/0/0 | pipe-vs-serial diff L/H/S/D=0/0/0/0 | split_chunks R/S/P=0/8/8 need S,P>=8 | pipe_overlaps R/S/P=0/0/7 need P>=7 | soak pipe_primes=200 exact_failures=0 live_failures=0 | EXACT+SPLIT-LIVE+PIPE-LIVE
+ppsplit verdict: UNSPLIT/SERIAL/PIPE BIT-IDENTICAL + LIVE (T=4096, chunks=auto, 1 decode steps, 200 pipelined primes per chunk)
+probe exit=0
+--- parsed soak verdict ---
+ppsplit: T=4096 steps=1 chunks=auto soak=200 door=OPEN devices=0,1 force_unsplit=false force_serial_pipe=false
+    soak 200/200: exact+live (exact_failures=0 live_failures=0)
+  chunk auto(512) | serial-vs-ref diff L/H/S/D=0/0/0/0 | pipe-vs-serial diff L/H/S/D=0/0/0/0 | split_chunks R/S/P=0/8/8 need S,P>=8 | pipe_overlaps R/S/P=0/0/7 need P>=7 | soak pipe_primes=200 exact_failures=0 live_failures=0 | EXACT+SPLIT-LIVE+PIPE-LIVE
+ppsplit verdict: UNSPLIT/SERIAL/PIPE BIT-IDENTICAL + LIVE (T=4096, chunks=auto, 1 decode steps, 200 pipelined primes per chunk)
+--- fault scan ---
+0, 44, 2422 MHz, 0 MiB
+1, 46, 2422 MHz, 0 MiB
+lock released 2026-08-08T09:26:45Z
+=== soak rc=0
+=== done 2026-08-08T09:26:45Z

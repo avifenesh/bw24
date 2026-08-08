@@ -37,6 +37,89 @@ pub struct PrimeSlabs {
     pub seg_t: usize,
 }
 
+// Split prime ranges cannot enter the full-range segment-graph arm, and every slab access
+// is serialized by its device mutex after binding that device's CUDA context on the thread.
+unsafe impl Send for PrimeSlabs {}
+
+fn empty_cache_layers<T>(n: usize) -> Vec<Option<T>> {
+    std::iter::repeat_with(|| None).take(n).collect()
+}
+
+/// Temporarily move a PP-2 cache's layer state into two independently-owned cache shells.
+/// The stage walkers then receive disjoint `&mut Cache` values and can run on separate host
+/// threads without aliasing. GPU buffers are moved, not copied; Drop restores every layer
+/// and publishes the last position completed by both stages.
+struct PrimeCacheStages<'a> {
+    parent: &'a mut Cache,
+    cut: usize,
+    stage0: Cache,
+    stage1: Cache,
+}
+
+impl<'a> PrimeCacheStages<'a> {
+    fn new(parent: &'a mut Cache, cut: usize) -> Self {
+        let n = parent.kv.len();
+        assert_eq!(parent.recur.len(), n, "cache layer vectors disagree");
+        assert!(cut <= n, "PP-2 cache cut {cut} exceeds {n} layers");
+        let mut kv0 = empty_cache_layers(n);
+        let mut kv1 = empty_cache_layers(n);
+        let mut recur0 = empty_cache_layers(n);
+        let mut recur1 = empty_cache_layers(n);
+        for i in 0..cut {
+            kv0[i] = parent.kv[i].take();
+            recur0[i] = parent.recur[i].take();
+        }
+        for i in cut..n {
+            kv1[i] = parent.kv[i].take();
+            recur1[i] = parent.recur[i].take();
+        }
+        let pos = parent.pos;
+        let max_ctx = parent.max_ctx;
+        Self {
+            parent,
+            cut,
+            stage0: Cache {
+                kv: kv0,
+                recur: recur0,
+                pos,
+                max_ctx,
+                last_logits_dev: None,
+                dflash_taps: None,
+            },
+            stage1: Cache {
+                kv: kv1,
+                recur: recur1,
+                pos,
+                max_ctx,
+                last_logits_dev: None,
+                dflash_taps: None,
+            },
+        }
+    }
+
+    fn parts(&mut self) -> (&mut Cache, &mut Cache) {
+        (&mut self.stage0, &mut self.stage1)
+    }
+}
+
+impl Drop for PrimeCacheStages<'_> {
+    fn drop(&mut self) {
+        let n = self.parent.kv.len();
+        for i in 0..n {
+            let source = if i < self.cut {
+                &mut self.stage0
+            } else {
+                &mut self.stage1
+            };
+            debug_assert!(self.parent.kv[i].is_none());
+            debug_assert!(self.parent.recur[i].is_none());
+            self.parent.kv[i] = source.kv[i].take();
+            self.parent.recur[i] = source.recur[i].take();
+        }
+        self.parent.pos = self.stage0.pos.min(self.stage1.pos);
+    }
+}
+
 
 /// task #18 (attn side): one sequence's pre-attention outputs (post-rope q/k, v, out-gate).
 pub(crate) struct AttnPre {
@@ -269,6 +352,29 @@ fn cpu_expert_profile_admit_enabled() -> bool {
 /// decode loop wins anyway (the batched path's GEMM dispatch needs m>=16, and the stateful conv
 /// kernel needs T >= d_conv-1). Callers: generate / generate_spec.
 pub const PRIME_MIN_T: usize = 16;
+const PRIME_PIPE_MICROBATCHES: usize = 8;
+const PRIME_PIPE_MIN_CHUNK: usize = 128;
+
+/// Effective internal prime chunk. An explicit MEMRA_PRIME_CHUNK is authoritative.
+/// Naked PP-2 primes use the measured pipeline geometry: up to eight microchunks, never
+/// below 128 tokens, while the legacy 4096-token cap remains the long-context bound.
+pub fn prime_chunk_tokens(t: usize, n_layers: usize) -> usize {
+    if let Ok(value) = std::env::var("MEMRA_PRIME_CHUNK") {
+        return value.parse().unwrap_or(4096);
+    }
+    let chunk = 4096usize;
+    let pp2 = crate::pp::prime_pp_on()
+        && !crate::pp::pp2_streams_off()
+        && crate::pp::pp_cuts(n_layers).is_some_and(|cuts| cuts.len() == 3);
+    if pp2 && t >= 2 * PRIME_PIPE_MIN_CHUNK {
+        chunk.min(
+            t.div_ceil(PRIME_PIPE_MICROBATCHES)
+                .max(PRIME_PIPE_MIN_CHUNK),
+        )
+    } else {
+        chunk
+    }
+}
 
 impl HybridModel {
     /// CHUNK-INVARIANCE BISECT SEAM (lane/chunk-invariance): `MEMRA_PRIME_TRACE=<path>`
@@ -461,8 +567,7 @@ impl HybridModel {
             // gemma4 v0: monolithic fresh-prompt prime (chunked/continuation arms later).
             return self.gemma4_prime(e, tokens, cache);
         }
-        let chunk: usize = std::env::var("MEMRA_PRIME_CHUNK").ok()
-            .and_then(|v| v.parse().ok()).unwrap_or(4096);
+        let chunk = prime_chunk_tokens(t, self.layers.len());
         // CHUNK-ORDER INVARIANCE (lane/chunk-invariance, 2026-08-05; vLLM #38561 shape).
         // MEMRA_PRIME_CHUNK is documented as a memory-transient knob, but it also decides
         // the prefill's ARITHMETIC, so two rigs with different values produced different
@@ -508,6 +613,29 @@ impl HybridModel {
         if chunk == 0 || t <= chunk {
             return self.prime_chunk(e, tokens, cache, seq_end);
         }
+        // PIPELINED PP-2 PRIME (lane/cx-pipeline-prime, 2026-08-08): overlap stage 0 of
+        // chunk N+1 with stage 1 of chunk N. The serial split stays reachable through
+        // MEMRA_PRIME_PIPE=0 and is the exactness oracle. N>2 keeps the serial walker;
+        // this lane owns the balanced two-stage schedule only.
+        if crate::pp::prime_pipe_on()
+            && crate::pp::prime_pp_on()
+            && !crate::pp::pp2_streams_off()
+        {
+            if let Some(fence) = crate::pp::pp_cuts(self.layers.len()).filter(|f| f.len() == 3) {
+                if crate::pp::pp_multi_stream_same_device() {
+                    return Err(
+                        "prime chunk pipeline refused with 2 stage streams on one device — \
+                         that concurrent-stream placement remains quarantined by the deferred \
+                         pp flake record. Use one device per stage or MEMRA_PRIME_PIPE=0 for \
+                         the serial split."
+                            .into(),
+                    );
+                }
+                return self.prime_cache_pp2_pipelined(
+                    e, tokens, cache, seq_end, chunk, &fence,
+                );
+            }
+        }
         let mut hiddens = e.uninit(t * n_embd)?;
         let mut last: Option<(Vec<f32>, CudaSlice<f32>)> = None;
         let mut start = 0usize;
@@ -520,6 +648,175 @@ impl HybridModel {
             last = Some((l, hs));
             start = end;
         }
+        let (logits, h_seed) = last.unwrap();
+        Ok((logits, h_seed, hiddens))
+    }
+
+    /// PP-2 chunk scheduler: stage 1 of chunk N and stage 0 of chunk N+1 are both queued
+    /// before N's epilogue D2H drains the last-stage stream. Arithmetic is unchanged:
+    /// every chunk still runs the same two `prime_layers` ranges, boundary copy, output
+    /// norm, lm head, and caller hidden-stack copy as the serial split.
+    fn prime_cache_pp2_pipelined(
+        &self,
+        e: &Engine,
+        tokens: &[u32],
+        cache: &mut Cache,
+        seq_end: usize,
+        chunk: usize,
+        fence: &[usize],
+    ) -> Result<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        debug_assert_eq!(fence.len(), 3);
+        let rt = crate::pp::PpNRt::get(e)?;
+        assert_eq!(rt.n_stages(), 2, "prime pipeline requires exactly two PP stages");
+        let n_embd = self.cfg.n_embd as usize;
+        let t = tokens.len();
+        let initial_base = cache.pos;
+        let caller_stream = e.stream();
+
+        let mut ranges = Vec::new();
+        let mut start = 0usize;
+        while start < t {
+            let mut end = (start + chunk).min(t);
+            if t - end > 0 && t - end < PRIME_MIN_T {
+                end = t;
+            }
+            ranges.push((start, end));
+            start = end;
+        }
+        debug_assert!(ranges.len() >= 2);
+
+        // #87 reverse publication before any new stage allocation, then prewarm both
+        // boundary slots while the stage streams are otherwise empty. Lazy-growing slot B
+        // after stage 1(N) is queued would synchronize that stream and erase the first
+        // overlap on a two-chunk prompt.
+        rt.fence_stages_behind(&caller_stream)?;
+        let max_payload = ranges
+            .iter()
+            .map(|(s, e)| (e - s) * n_embd)
+            .max()
+            .unwrap();
+        rt.prepare_overlap_slots(0, max_payload)?;
+
+        let mut hiddens = e.uninit(t * n_embd)?;
+        let mut last: Option<(Vec<f32>, CudaSlice<f32>)> = None;
+        let mut stage_caches = PrimeCacheStages::new(cache, fence[1]);
+        let (cache0, cache1) = stage_caches.parts();
+        let (first_start, first_end) = ranges[0];
+        let mut slot = self.prime_pp2_stage0_enqueue(
+            e,
+            rt,
+            &tokens[first_start..first_end],
+            cache0,
+            seq_end,
+            fence,
+            initial_base + first_start,
+            true,
+        )?;
+        cache0.pos = initial_base + first_end;
+
+        for (i, &(start, end)) in ranges.iter().enumerate() {
+            let base = initial_base + start;
+            debug_assert_eq!(
+                cache1.pos, base,
+                "stage 1 must drain chunks in original position order"
+            );
+            let (out, next_slot) = if let Some(&(next_start, next_end)) = ranges.get(i + 1) {
+                let next_base = initial_base + next_start;
+                debug_assert_eq!(
+                    cache0.pos, next_base,
+                    "stage 0 must issue chunks in original position order"
+                );
+                let cache0_stage = &mut *cache0;
+                // Step's MoE router readback synchronizes once per layer. Two CUDA streams
+                // on one host thread therefore serialize even if the calls are ordered as
+                // a pipeline. Drive the disjoint stage caches from two scoped host threads:
+                // stage 1 consumes slot N while stage 0 produces slot N+1.
+                std::thread::scope(
+                    |scope| -> Result<_, Box<dyn std::error::Error>> {
+                        let stage0 = scope.spawn(move || -> Result<usize, String> {
+                            let next = self
+                                .prime_pp2_stage0_enqueue(
+                                    e,
+                                    rt,
+                                    &tokens[next_start..next_end],
+                                    cache0_stage,
+                                    seq_end,
+                                    fence,
+                                    next_base,
+                                    true,
+                                )
+                                .map_err(|err| err.to_string())?;
+                            cache0_stage.pos = initial_base + next_end;
+                            Ok(next)
+                        });
+                        let x = self.prime_pp2_stage1_enqueue(
+                            e,
+                            rt,
+                            slot,
+                            end - start,
+                            cache1,
+                            seq_end,
+                            fence,
+                            base,
+                            true,
+                        )?;
+                        let out = {
+                            rt.bind_stage(1)?;
+                            let _st1 = rt.enter(1);
+                            let e1 = rt.engine(1, e);
+                            self.prime_chunk_epilogue(e1, x, end - start, cache1)?
+                        };
+                        let next = stage0
+                            .join()
+                            .map_err(|_| "pipeprime stage-0 host walker panicked")?
+                            .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+                        Ok((out, Some(next)))
+                    },
+                )?
+            } else {
+                let x = self.prime_pp2_stage1_enqueue(
+                    e,
+                    rt,
+                    slot,
+                    end - start,
+                    cache1,
+                    seq_end,
+                    fence,
+                    base,
+                    true,
+                )?;
+                let out = {
+                    rt.bind_stage(1)?;
+                    let _st1 = rt.enter(1);
+                    let e1 = rt.engine(1, e);
+                    self.prime_chunk_epilogue(e1, x, end - start, cache1)?
+                };
+                (out, None)
+            };
+
+            rt.publish_to(1, &caller_stream)?;
+            e.copy_into(
+                &mut hiddens,
+                start * n_embd,
+                &out.2,
+                (end - start) * n_embd,
+            )?;
+            last = Some((out.0, out.1));
+            crate::pp::PRIME_SPLIT_CHUNKS
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+            if let Some(next) = next_slot {
+                // The caller copy above reads a stage-1 allocation. Before stage 1 of the
+                // next chunk can allocate/reuse blocks, mirror #87's body-entry fence.
+                // Stage 0(N+1) is already queued before this wait is appended, so its
+                // overlap with stage 1(N) is preserved.
+                rt.fence_stages_behind(&caller_stream)?;
+                slot = next;
+            }
+        }
+
+        debug_assert_eq!(cache0.pos, initial_base + t);
+        debug_assert_eq!(cache1.pos, initial_base + t);
         let (logits, h_seed) = last.unwrap();
         Ok((logits, h_seed, hiddens))
     }
@@ -558,13 +855,21 @@ impl HybridModel {
     /// its OWN slabs on its own device (a dev0 slab dereferenced by a dev1 kernel would be
     /// a peer read per GEMM operand, the exact class Lever B removes). Single-device rigs
     /// see one entry, byte-identical behavior.
-    pub fn prime_slabs_get(&self, e: &Engine, t: usize, n_embd: usize, n_ff_max: usize)
-                           -> Result<std::sync::MutexGuard<'_, std::collections::HashMap<usize, PrimeSlabs>>, Box<dyn std::error::Error>> {
-        let mut g = self.prime_slabs.lock().unwrap();
+    pub fn prime_slabs_get(
+        &self,
+        e: &Engine,
+        t: usize,
+        n_embd: usize,
+        n_ff_max: usize,
+    ) -> Result<std::sync::Arc<std::sync::Mutex<PrimeSlabs>>, Box<dyn std::error::Error>> {
+        let mut slabs = self.prime_slabs.lock().unwrap();
         let dev = e.ctx().ordinal();
-        let need_new = match g.get(&dev) { None => true, Some(sl) => sl.t_cap < t };
+        let need_new = match slabs.get(&dev) {
+            None => true,
+            Some(sl) => sl.lock().unwrap().t_cap < t,
+        };
         if need_new {
-            g.insert(dev, PrimeSlabs {
+            slabs.insert(dev, std::sync::Arc::new(std::sync::Mutex::new(PrimeSlabs {
                 t_cap: t,
                 h: e.uninit(t * n_embd)?,
                 x1: e.uninit(t * n_embd)?,
@@ -581,9 +886,9 @@ impl HybridModel {
                 mixed: e.uninit(t * n_embd)?,
                 seg_mid: Vec::new(),
                 seg_t: 0,
-            });
+            })));
         }
-        Ok(g)
+        Ok(slabs.get(&dev).expect("prime slab inserted").clone())
     }
 
     /// `seq_end` = the whole REQUEST's absolute end position (`cache.pos + prompt_len` at
@@ -614,7 +919,9 @@ impl HybridModel {
         let pos_d = e.htod_i32(&pos)?;
 
         let x_embed = self.embed(e, tokens)?;   // [T, n_embd]
-        let x = self.prime_layers(e, x_embed, 0, self.layers.len(), &pos_d, t, cache, seq_end)?;
+        let x = self.prime_layers(
+            e, x_embed, 0, self.layers.len(), &pos_d, t, base, cache, seq_end,
+        )?;
         self.prime_chunk_epilogue(e, x, t, cache)
     }
 
@@ -635,12 +942,12 @@ impl HybridModel {
     ///     `self.layers[il+1]` unconditionally) — `use_seg` gains `lo == 0 && hi == n_layers`.
     #[allow(clippy::too_many_arguments)]
     fn prime_layers(&self, e: &Engine, x_in: CudaSlice<f32>, lo: usize, hi: usize,
-                    pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, seq_end: usize)
+                    pos_d: &CudaSlice<i32>, t: usize, base: usize, cache: &mut Cache,
+                    seq_end: usize)
                     -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let eps = cfg.rms_eps;
-        let base = cache.pos;
         // task #14: fuse the fp16 GEMM-operand emission into the trunk norms (kills the
         // standalone convert launches). Only when the f16 lane serves and T reaches the
         // GEMM tier; bit-identical either way.
@@ -655,11 +962,12 @@ impl HybridModel {
             _ => n_embd,
         }).max().unwrap_or(n_embd).max(n_embd);
         let use_slabs = std::env::var("MEMRA_PRIME_SLABS").as_deref() != Ok("0");
-        let mut slab_guard = if use_slabs {
+        let slab = if use_slabs {
             Some(self.prime_slabs_get(e, t, n_embd, n_ff_max)?)
         } else {
             None
         };
+        let mut slab_guard = slab.as_ref().map(|sl| sl.lock().unwrap());
         let mut x_own;   // fallback storage when slabs are off
         type SlabRefs<'a> = (&'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<u8>, &'a mut CudaSlice<u8>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>);
         let (mut x_cur, mut x_nxt, sl): (&mut CudaSlice<f32>, &mut CudaSlice<f32>, Option<SlabRefs>);
@@ -667,9 +975,7 @@ impl HybridModel {
         let mut x_own2;
         match slab_guard.as_mut() {
             Some(g) => {
-                // per-device map (lane/pp-leverb): the getter above populated this engine's
-                // entry; a missing key here is a getter contract bug, fail loudly.
-                let slabs = g.get_mut(&e.ctx().ordinal()).expect("prime slabs for this device");
+                let slabs = &mut **g;
                 e.copy_into(&mut slabs.xa, 0, &x_in, t * n_embd)?;
                 let PrimeSlabs { xa, xb, h, x1, z, act, h16, z16, gate, up, ffn_out, seg_glue, mixed, seg_mid, seg_t, .. } = slabs;
                 x_cur = xa;
@@ -1002,6 +1308,26 @@ impl HybridModel {
         // self-order into a no-op) — the decode_step_t_core_ppn pattern.
         let caller_stream = e.stream();
         rt.fence_stages_behind(&caller_stream)?;
+
+        if n_st == 2 {
+            let slot = self.prime_pp2_stage0_enqueue(
+                e, rt, tokens, cache, seq_end, fence, base, false,
+            )?;
+            let x = self.prime_pp2_stage1_enqueue(
+                e, rt, slot, t, cache, seq_end, fence, base, false,
+            )?;
+            let out = {
+                rt.bind_stage(1)?;
+                let _st1 = rt.enter(1);
+                let e1 = rt.engine(1, e);
+                self.prime_chunk_epilogue(e1, x, t, cache)?
+            };
+            rt.publish_to(1, &caller_stream)?;
+            crate::pp::PRIME_SPLIT_CHUNKS
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Ok(out);
+        }
+
         let pos: Vec<i32> = (base as i32..(base + t) as i32).collect();
 
         // ---- STAGE 0: embed + layers [0, fence[1]) + boundary-0 TX ----
@@ -1010,7 +1336,9 @@ impl HybridModel {
             let e0 = rt.engine(0, e);
             let pos_d = e0.htod_i32(&pos)?;
             let x = self.embed(e0, tokens)?;
-            let x = self.prime_layers(e0, x, fence[0], fence[1], &pos_d, t, cache, seq_end)?;
+            let x = self.prime_layers(
+                e0, x, fence[0], fence[1], &pos_d, t, base, cache, seq_end,
+            )?;
             rt.tx(0, &x, payload)?
             // x + pos_d drop here: freed stream-ordered on stage-0's stream after use.
         };
@@ -1021,7 +1349,9 @@ impl HybridModel {
             let es = rt.engine(s, e);
             let pos_d = es.htod_i32(&pos)?;
             let x = rt.rx(s - 1, slot, payload)?;
-            let x = self.prime_layers(es, x, fence[s], fence[s + 1], &pos_d, t, cache, seq_end)?;
+            let x = self.prime_layers(
+                es, x, fence[s], fence[s + 1], &pos_d, t, base, cache, seq_end,
+            )?;
             slot = rt.tx(s, &x, payload)?;
         }
 
@@ -1030,7 +1360,9 @@ impl HybridModel {
         let el = rt.engine(n_st - 1, e);
         let pos_d = el.htod_i32(&pos)?;
         let x = rt.rx(n_st - 2, slot, payload)?;
-        let x = self.prime_layers(el, x, fence[n_st - 1], fence[n_st], &pos_d, t, cache, seq_end)?;
+        let x = self.prime_layers(
+            el, x, fence[n_st - 1], fence[n_st], &pos_d, t, base, cache, seq_end,
+        )?;
         let out = self.prime_chunk_epilogue(el, x, t, cache)?;
         // EXIT PUBLICATION: h_seed + the hidden stack are device-resident on the last
         // stage's stream; the caller resumes on its own stream (chunk-loop copy_into /
@@ -1040,6 +1372,61 @@ impl HybridModel {
         rt.publish_to(n_st - 1, &caller_stream)?;
         crate::pp::PRIME_SPLIT_CHUNKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(out)
+    }
+
+    fn prime_pp2_stage0_enqueue(
+        &self,
+        e: &Engine,
+        rt: &crate::pp::PpNRt,
+        tokens: &[u32],
+        cache: &mut Cache,
+        seq_end: usize,
+        fence: &[usize],
+        base: usize,
+        pipelined: bool,
+    ) -> Result<usize, Box<dyn std::error::Error>> {
+        let t = tokens.len();
+        let n_embd = self.cfg.n_embd as usize;
+        let pos: Vec<i32> = (base as i32..(base + t) as i32).collect();
+        rt.bind_stage(0)?;
+        let _st0 = rt.enter(0);
+        let e0 = rt.engine(0, e);
+        let pos_d = e0.htod_i32(&pos)?;
+        let x = self.embed(e0, tokens)?;
+        let _overlap = pipelined.then(crate::pp::enter_prime_pipe_stage);
+        let x = self.prime_layers(
+            e0, x, fence[0], fence[1], &pos_d, t, base, cache, seq_end,
+        )?;
+        if pipelined {
+            rt.tx_pipelined(0, &x, t * n_embd)
+        } else {
+            rt.tx(0, &x, t * n_embd)
+        }
+    }
+
+    fn prime_pp2_stage1_enqueue(
+        &self,
+        e: &Engine,
+        rt: &crate::pp::PpNRt,
+        slot: usize,
+        t: usize,
+        cache: &mut Cache,
+        seq_end: usize,
+        fence: &[usize],
+        base: usize,
+        pipelined: bool,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let pos: Vec<i32> = (base as i32..(base + t) as i32).collect();
+        rt.bind_stage(1)?;
+        let _st1 = rt.enter(1);
+        let e1 = rt.engine(1, e);
+        let pos_d = e1.htod_i32(&pos)?;
+        let x = rt.rx(0, slot, t * n_embd)?;
+        let _overlap = pipelined.then(crate::pp::enter_prime_pipe_stage);
+        self.prime_layers(
+            e1, x, fence[1], fence[2], &pos_d, t, base, cache, seq_end,
+        )
     }
 
     /// CAPTURE-SAFE prime trunk (task #14 increment 1, ARCHITECTURE-H100.md design v2):

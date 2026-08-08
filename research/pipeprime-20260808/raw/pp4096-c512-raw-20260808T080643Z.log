@@ -1,0 +1,15 @@
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+pppipeperf: T=4096 chunk=512 chunks=8 expected_overlaps=7 reps=3 warmup=1 devices=0,1
+  warmup 1 arm=SERIAL: 4096 tok in 15.9536s = 256.7 tok/s split=8 overlaps=0
+  warmup 1 arm=PIPE: 4096 tok in 9.8152s = 417.3 tok/s split=8 overlaps=7
+  rep 1 arm=SERIAL: 4096 tok in 15.8299s = 258.8 tok/s split=8 overlaps=0
+  rep 1 arm=PIPE: 4096 tok in 9.8119s = 417.5 tok/s split=8 overlaps=7
+  rep 2 arm=PIPE: 4096 tok in 9.8243s = 416.9 tok/s split=8 overlaps=7
+  rep 2 arm=SERIAL: 4096 tok in 15.8081s = 259.1 tok/s split=8 overlaps=0
+  rep 3 arm=SERIAL: 4096 tok in 15.8792s = 257.9 tok/s split=8 overlaps=0
+  rep 3 arm=PIPE: 4096 tok in 9.7978s = 418.1 tok/s split=8 overlaps=7
+pppipeperf MEDIAN: SERIAL 258.8 tok/s (15.8299s) | PIPE 417.5 tok/s (9.8119s) | speedup 1.613x | N=3 alternating order, chunk=512, chunks=8

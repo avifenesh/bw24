@@ -296,6 +296,14 @@ pub fn prime_pp_on() -> bool {
     std::env::var("MEMRA_PRIME_PP").as_deref() != Ok("0")
 }
 
+/// MEMRA_PRIME_PIPE=0: rollback/A-B seam for the PP-2 PRIME CHUNK PIPELINE
+/// (lane/cx-pipeline-prime 2026-08-08). Default ON when the prime stage split is live;
+/// setting 0 keeps the serial per-chunk stage walk. Read per prime call so the exactness
+/// gate can replay both schedules against one loaded model.
+pub fn prime_pipe_on() -> bool {
+    std::env::var("MEMRA_PRIME_PIPE").as_deref() != Ok("0")
+}
+
 /// SPLIT-LIVENESS COUNTER for the prime stage split: bumped ONCE per prime chunk that
 /// actually executed the per-stage walk. The `prime-split-gate` requires this to ADVANCE
 /// during its split arm — bit-identity of two identical UNSPLIT walks is vacuous, so a gate
@@ -307,6 +315,38 @@ pub static PRIME_SPLIT_CHUNKS: AtomicUsize = AtomicUsize::new(0);
 /// Read the split-liveness counter (gate-side).
 pub fn prime_split_chunks() -> usize {
     PRIME_SPLIT_CHUNKS.load(Ordering::Relaxed)
+}
+
+/// PIPELINE-LIVENESS COUNTER: bumped only when a second PP-2 prime stage enters its layer
+/// walker while the other stage's walker is still active. Step's per-layer router readback
+/// synchronizes the host, so enqueue order alone is not liveness: a single host thread can
+/// call stage 0(N+1) before the stage-1 epilogue and still serialize all trunk computation.
+pub static PRIME_PIPE_OVERLAPS: AtomicUsize = AtomicUsize::new(0);
+
+/// Read the prime-pipeline overlap counter (gate-side).
+pub fn prime_pipe_overlaps() -> usize {
+    PRIME_PIPE_OVERLAPS.load(Ordering::Relaxed)
+}
+
+static PRIME_PIPE_ACTIVE_STAGES: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) struct PrimePipeStageGuard;
+
+/// Mark one host-driven stage walker active. With PP-2, a transition 1 -> 2 proves the
+/// two device walkers overlap in wall time; exactly one transition is counted per pair.
+pub(crate) fn enter_prime_pipe_stage() -> PrimePipeStageGuard {
+    let active = PRIME_PIPE_ACTIVE_STAGES.fetch_add(1, Ordering::AcqRel);
+    if active > 0 {
+        PRIME_PIPE_OVERLAPS.fetch_add(1, Ordering::Relaxed);
+    }
+    PrimePipeStageGuard
+}
+
+impl Drop for PrimePipeStageGuard {
+    fn drop(&mut self) {
+        let active = PRIME_PIPE_ACTIVE_STAGES.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(active > 0, "prime pipeline active-stage counter underflow");
+    }
 }
 
 /// MEMRA_SPEC_PP=0: rollback/A-B seam for the SPEC VERIFY stage split (pp2-spec 2026-08-06).
@@ -683,10 +723,39 @@ impl PpNRt {
         self.stages[s].engine.as_ref().unwrap_or(primary)
     }
 
+    /// Bind this OS thread to stage `s`'s CUDA context before issuing work there.
+    pub fn bind_stage(&self, s: usize) -> Result<(), Box<dyn std::error::Error>> {
+        self.stages[s].ctx.bind_to_thread()?;
+        Ok(())
+    }
+
     /// Enter stage `s`: until the guard drops, every engine op on this thread launches on
     /// the stage's stream (memra_runtime ambient-stream override).
     pub fn enter(&self, s: usize) -> memra_runtime::StreamOverride {
         memra_runtime::push_stream_override(self.stages[s].stream.clone())
+    }
+
+    /// Allocate/grow BOTH slots for a boundary before pipelined issue starts. `tx()` can
+    /// grow a slot lazily, but first-use ordering requires synchronizing the RX stream
+    /// after that allocation. If slot 1 first grows after stage 1 of chunk N has already
+    /// been queued, that sync drains chunk N and erases the only overlap in a two-chunk
+    /// prime. Prewarming both slots pays the same one-time sync before either stage starts.
+    pub fn prepare_overlap_slots(&self, b: usize, n: usize)
+                                 -> Result<(), Box<dyn std::error::Error>> {
+        let bd = &self.boundaries[b];
+        let s_rx = &self.stages[b + 1].stream;
+        let mut grew = false;
+        for sl in &bd.slots {
+            let mut guard = sl.buf.lock().unwrap();
+            if guard.as_ref().map(|bf| bf.len() < n).unwrap_or(true) {
+                *guard = Some(s_rx.alloc_zeros::<f32>(n)?);
+                grew = true;
+            }
+        }
+        if grew {
+            s_rx.synchronize()?;
+        }
+        Ok(())
     }
 
     /// Boundary TX at boundary `b` (call within the stage-`b` scope; `x` = the
@@ -711,6 +780,23 @@ impl PpNRt {
         } else {
             0
         };
+        self.tx_slot(b, x, n, slot_idx)
+    }
+
+    /// Pipelined boundary TX: always alternate the shared double-buffer slots, independent
+    /// of the decode-side `MEMRA_PP_OVERLAP` experiment flag. The boundary-local atomic
+    /// keeps concurrent callers on one slot sequence rather than each restarting at A.
+    pub fn tx_pipelined(&self, b: usize, x: &CudaSlice<f32>, n: usize)
+                        -> Result<usize, Box<dyn std::error::Error>> {
+        assert_eq!(x.len(), n, "pp tx: residual length mismatch");
+        let slot_idx = self.boundaries[b].step.fetch_add(1, Ordering::Relaxed) % 2;
+        self.tx_slot(b, x, n, slot_idx)
+    }
+
+    fn tx_slot(&self, b: usize, x: &CudaSlice<f32>, n: usize, slot_idx: usize)
+               -> Result<usize, Box<dyn std::error::Error>> {
+        debug_assert!(slot_idx < 2);
+        let bd = &self.boundaries[b];
         let sl = &bd.slots[slot_idx];
         let s_tx = &self.stages[b].stream;
         s_tx.wait(&sl.ev_rx)?;
