@@ -29,6 +29,37 @@ below is dated; projections are stated against OUR receipts, never against vendo
 
 (Sections below are filled per-basket; the ranked top-8 closes the file.)
 
+## Basket 1 — BRING HOME (engines)
+
+### Prior-sweep delta first (per the do-not-re-report rule)
+
+Status changes against `research/upstream-sweeps.md` (08-05/08-07 shortlists) with THIS
+week's numbers:
+
+- **Chunk-boundary invariance (vLLM #38561/#40372/#51113)** — ADOPTED AND EXCEEDED. The
+  tick-seg + chunkfix lanes shipped bit-exact segmentation invariance incl. off-grid
+  resume, with canary teeth. Drop from the queue; the residual is the extent-class item
+  (own lane, basket 3 note under 3.d).
+- **PP relay-starvation laws (TRT-LLM #16170)** — RESOLVED here: #87 closed 2026-08-08
+  (reverse-publication fence). The checklist entry stands as PP-2 regression armor only.
+- **TMA OOB odd-M (FlashInfer #4210)** — verdicted N/A 2026-08-05 (memra never stages;
+  `research/tma-oddm-20260805/VERDICT.md`). Stays closed.
+- **W4A8 (llama.cpp #24364/#26675)** — actioned better than the ask: the w4a8-prefill
+  lane found the mxf8f6f4 one-line PTX form swap (1.2153x pp512 q27) for one day of work
+  (`research/w4a8-prefill-20260806/VERDICT.md`). Track #26675 (ggml_prec contract) as
+  FP8-ST convergence signal only.
+- **Spec acceptance telemetry (llama.cpp #26389)** — SHIPPED (per-position counters +
+  accept-gate battery). The follow-on is now the K-policy that CONSUMES it (basket 3.3).
+- **PRIORITY RAISED: vLLM #48341 (async scheduling default-on for draft-model spec) and
+  the DSpark/EAGLE-3.1 serving receipts** — the specplace verdict (PP-2 spec OFF
+  everywhere; single-card flat-in-c) makes "spec that survives batching" the largest
+  known gap vs upstream. Upstream holds 1.71x at c=4; we hold 0.61x. This is the week's
+  headline diff and it feeds baskets 2A.1/2A.4 and 3.1.
+
+### Engine mechanism diffs (four axes) — see engines survey
+
+(Filled after the engines sweep lands.)
+
 ## Basket 2 — BRING HOME (papers, last ~6 months)
 
 ### 2A. Speculative decoding beyond fixed-K MTP
