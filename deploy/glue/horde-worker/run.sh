@@ -107,7 +107,9 @@ if [[ "$mode" == "dry-run" ]]; then
     exit 0
 fi
 
-load_env_file "$ENV_FILE"
+if [[ -z "${AI_HORDE_API_KEY:-}" || -z "${MEMRA_HORDE_BACKEND_KEY:-}" ]]; then
+    load_env_file "$ENV_FILE"
+fi
 
 if [[ "$mode" == "check" ]]; then
     verify_install
