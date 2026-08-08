@@ -382,3 +382,32 @@ Receipts:
 - `raw/kernel-check-20260808T084654Z.log`
 - `raw/run-gen-20260808T084654Z.log`
 - `raw/run-spec-20260808T084654Z.log`
+
+## Increment 12 - pp4096 pipeline soak
+
+Box2 ran 200 fresh naked-auto pp4096 pipeline primes under one GPU-lock hold. Auto
+geometry resolved to chunk 512: eight chunks and seven required concurrent stage
+transitions per prime.
+
+| Soak surface | Result |
+|---|---:|
+| pipelined primes | 200/200 |
+| exactness failures | 0 |
+| overlap-liveness failures | 0 |
+| minimum verified active-walker transitions | 1,400 |
+| CUDA / illegal-address / MMU / mismatch fault-scan hits | 0 |
+
+Each fresh pipeline cache was compared bit-for-bit with the serial split over logits,
+h_seed, the full hidden stack, and one teacher-forced continuation step. The summary
+verdict was **EXACT+SPLIT-LIVE+PIPE-LIVE**. The run started at 31/30 C and ended at
+44/46 C, 2422/2422 MHz, with both GPUs back at 0 MiB.
+
+This zero-fault soak is consistent with the ordering verdict: the old allocator
+reverse-publication mechanism is closed by `fence_stages_behind`, while boundary-slot
+reuse retains its separate TX-waits-RX event edge. It does not make a statistical claim
+stronger than the 200-prime sample.
+
+Receipts:
+
+- `raw/soak-summary-20260808T085213Z.log`
+- `raw/soak-raw-20260808T085213Z.log`
