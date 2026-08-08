@@ -112,6 +112,19 @@ chunkinv35c	cmd	tools/chunk-invariance-gate.sh	--label step35-swa --prompts rese
 # MEMRA_PRIME_CALLLOCAL = rollback to per-call seq_end (tick-variant by construction — teeth).
 tickinv35	cmd	tools/tick-invariance-gate.sh	--label step35-tick --prompts research/chunk-invariance-20260805/prompt-pp6257.txt --budgets 0,1024,513,512,256,64 --splits 64,256,512 --seam MEMRA_PRIME_CALLLOCAL --steps 24	-	-
 tickinv35c	cmd	tools/tick-invariance-gate.sh	--label step35-tick --prompts research/chunk-invariance-20260805/prompt-pp6257.txt --budgets 0,1024,513,512,256,64 --splits 64,256,512 --seam MEMRA_PRIME_CALLLOCAL --steps 24 --canary	-	-
+# b2geo35/b2geo35c: batched-decode GEOMETRY on the launch SKU — step35 served at c=2/c=4 on the
+# DEFAULT batched scheduler over PP-2 must return byte-identical greedy text to the c=1 reference
+# AND prove a B>1 batched step35 tick actually ran (spawn-log chunk cap >= 2 + the engine's
+# one-shot [step35-batch] first-B>1 line). The second assertion is what keeps the gate from going
+# vacuously green under the fail-closed B=1 pin (chunk_cap_for=1 makes identity hold trivially).
+# The pre-fix failure was HTTP-200 GARBAGE: over PP-2 a B>1 tick walked the generic Full arm —
+# global n_head=96 over-reading wq on the 12 full-attn layers, 128-dim rope on all 45 layers, no
+# SWA window, no head-wise gate (research/step-sku-20260807/raw/b2ab-pre-20260807T091553Z.log).
+# REGISTERED RED by lane/step35-batched-decode 2026-08-08; the batched arm's commits turn it
+# green. Canary: MEMRA_STEP35_BATCH=0 re-pins B=1 chunks — the evidence assertion must fail.
+# Needs 2 GPUs + the staged artifact; SKIPs cleanly when absent.
+b2geo35	cmd	tools/step35-b2-geometry-gate.sh	-	-	-
+b2geo35c	cmd	tools/step35-b2-geometry-gate.sh	--canary	-	-
 # gwstress: the MEMRA_GRAPH_WARMUPS=1 pool-growth adversarial gate (lane/graph-warmups) —
 # large<->small session cycles + overlap arm force captures over freed async-pool blocks;
 # bit-identity vs eager is the arbiter (#68's class corrupts without faulting) and the
