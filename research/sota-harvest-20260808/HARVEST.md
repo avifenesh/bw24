@@ -61,9 +61,121 @@ week's numbers:
   known gap vs upstream. Upstream holds 1.71x at c=4; we hold 0.61x. This is the week's
   headline diff and it feeds baskets 2A.1/2A.4 and 3.1.
 
-### Engine mechanism diffs (four axes) — see engines survey
+### Engine mechanism diffs (four axes)
 
-(Filled after the engines sweep lands.)
+Engine versions verified live 2026-08-08: vLLM v0.26.0, SGLang v0.5.17, TRT-LLM 1.2.1
+stable / 1.3.0rc23, llama.cpp master. Each item: their mechanism, our receipt as the diff
+base, the axis, the projected floor-raise, cost class.
+
+**1.1 Chunked-prefill scheduling vs our pipeline.** vLLM v1 has NO phases at all — one
+token budget per step (default 8192 on a 96GB card), running decodes scheduled first,
+head-of-line prefill truncated to the leftover; SGLang keeps prefill/decode batches
+separate (prefill-priority, GPU-tiered chunk 8192 at 96GB) and ships `enable_dynamic_
+chunking` (off, PP-only) — chunk sizes fitted to EQUAL EXECUTION TIME per chunk, the only
+shipped dynamic chunking anywhere and exactly the pipeprime stage-balance problem;
+TRT-LLM's chunk = leftover budget rounded to the KV page (no separate knob). OUR diff
+base: fixed `MEMRA_PREFILL_TICK=1024` interactive / 256 dark, SLO-capped dark budgets,
+and pipeprime's auto policy of ≤8 EQUAL microchunks. Axis: faster (TTFT) + more-load.
+The two liftable mechanisms: (a) equal-TIME (not equal-token) microchunk sizing for the
+PP-2 pipeline — same target as 2B.1's shrinking schedule, adopt as one lane; (b)
+decode-first-then-leftover budgeting for the tick, which our phase (d) dark-lane
+adaptive budget already half-implements — the delta is applying it to the INTERACTIVE
+prefill phase too, so a decode-heavy tick automatically shrinks the prime chunk. Cost:
+days, scheduler-only, tickinv gates make segmentation freedom safe. *Projected:* TTFT
+tail under mixed load (the serve-ready axis metric we don't yet board).
+
+**1.2 Continuous batching vs our round-robin+batched-arm.** vLLM v1: single unified
+scheduler, `num_computed_tokens` catch-up model, admit-on-(token-budget AND KV-blocks),
+preempt-last on KV exhaustion, `scheduler_reserve_full_isl=True` default (admission
+requires FULL input length to fit); async scheduling default-on since v0.14 AND composes
+with EAGLE/MTP spec. SGLang: PrefillAdder with adaptive `new_token_ratio` after
+retractions; overlap scheduler default-on (CPU schedules batch n+1 while GPU runs n) but
+AUTO-DISABLED under PP. TRT-LLM: GUARANTEED_NO_EVICT default capacity scheduler +
+prefix-aware admission credit + overlap scheduler default-on. OUR diff base: three-phase
+tick, admission with SPEC_SHRINK_RESERVE + pool-aware free gate (admit-oom lane, c=64
+green), step-OOM park with front-requeue. Verdict: our admission is at parity with
+GUARANTEED_NO_EVICT doctrine (theirs validates ours at scale). The REAL gaps, both
+one-tick-ahead overlap class: (a) our tick is fully serial host-then-GPU — no
+batch-prep-overlaps-forward (SGLang's is +1.1x-class and default; their WAR-fence
+receipts from the 08-07 sweep are the hazard map); (b) upstream spec composes with async
+scheduling and batching — ours excludes spec sessions from batched decode (worker.rs
+phase (a) comment IS the receipt). Axis: more-load + faster. Cost: overlap = weeks
+(hazard-heavy, snapshot-at-prep discipline); spec×batch = basket 3.1's lane. *Projected:*
+overlap alone is the 5-10% host-bound class at high c; spec×batch is the big one (3.1).
+
+**1.3 CUDA-graph decode vs our graph promotion.** Convergent industry shape: FULL graphs
+for uniform-decode batches ONLY (incl. spec K+1 shapes as first-class graph keys —
+vLLM `BatchDescriptor(num_tokens, uniform)`, TRT-LLM per-`draft_len_schedule` graphs,
+SGLang denser spec ladder 1..8 step 1), piecewise/breakable for prefill/mixed, and
+NOBODY defaults to full mixed-batch graphs. Capture ladders are dense-small-then-strided
+(vLLM [1,2,4]+8..256/8; TRT-LLM 1..31 every 1 then 32/64/128). llama.cpp: whole-graph,
+no bucketing, MoE graphs capped at mmvq batch ~4-11. OUR diff base: GraphSession replay
+for the SOLO greedy session (+34% B=1) with step35 a named exclusion; batched decode
+c>1 runs EAGER chunks; qwen dc-eager measured graphs LOSING (-24% per-bucket recapture,
+-4.5% exec-update — the 07-15 receipts). The honest diff: upstream's full-decode-graph
+win depends on uniform batches + dense ladders + preallocated padding dummies (TRT-LLM
+#16072 law from the 08-05 sweep); our eager batched arm just took step35 from 34-flat to
+130 agg WITHOUT graphs, so the marginal graph win at B≤8 is the launch-overhead share
+only. Axis: faster. Cost: a B-bucketed decode-graph arm for the batched tick is
+weeks-class and was already measured negative once on qwen — re-sweep only when the
+batched arm's launch overhead shows up in nsys as the wall (stale-verdict law applies:
+the batched core is NEW since that verdict). *Projected:* unknown until the nsys receipt;
+do not build first.
+
+**1.4 Prefix caching vs our LCP cache.** vLLM: hash-block chains (sha256, full blocks
+only, O(1) LRU), KV offloading to CPU-pinned tier shipped (blog 2026-01-08), NO
+cache-aware queue ordering. SGLang: RadixAttention + HiCache L2/L3 (GPU/CPU/storage;
+up to 6x throughput and −80% TTFT multi-turn, hit 40%→80% at Novita), `lpm` waiting-queue
+sort + in-batch same-prefix dedup (≥32 shared tokens: one request computes the shared
+prefix, siblings wait) — but default schedule policy is fcfs today. TRT-LLM: radix reuse
+default-on + priority-tiered LRU (pin system prompts, priority 0-100) + prefix-aware
+ADMISSION credit. OUR diff base: LCP cache with linear-scan lookup, BTreeMap LRU (the
+#50992 audit already fixed the rescan shape), 256MB default, PC-ISO namespacing, and the
+metering lane's LCP histogram. Axes: more-load + serve-ready. Three liftable mechanisms
+ranked: (a) **in-batch same-prefix dedup** — the multi-agent fanout pattern our own
+dogfood produces; primebatch just built cross-request batched prime, so N same-prefix
+requests currently prime the SHARED prefix N times in one batch — the dedup rule
+(prime one, LCP-hit the rest) rides the machinery we shipped THIS WEEK; days-class,
+measurable on the cache-meter receipts. (b) **entry priority/pinning** (TRT-LLM shape) —
+marketplace system prompts should never LRU out; days. (c) CPU-tier spill of evicted
+entries (HiCache L2) — medium; only after (a)/(b) receipts and the extent-class fix,
+since resumes across numeric classes are the tick-seg residual hazard. *Projected:* (a)
+is a direct TTFT×N win on fanout traffic; (b) protects the earning multiplier the
+cache-meter lane exists to bill.
+
+**1.5 Quantized KV beyond q8_0/q5_1.** Upstream state: FP8 e4m3 KV is the modern default
+elsewhere (vLLM receipts: ITL slope 54% of BF16, +14.9% throughput at c=8, 97-99%
+accuracy recovery); NVFP4 KV ships in SGLang WITH sm_120 support (the one engine;
+E2M1 + per-16 e4m3 scales, dequant-to-FP8 attention math — nobody does FP4-domain
+attention), TRT-LLM sm_120 unsupported (issue #10241 open), vLLM sm_120 shipped-broken
+(V-scale swizzle bug #50084 open). Quality receipts both ways: <1% loss on standard
+evals BUT KV4 collapses on hard reasoning (Qwen3-235B aime25 0.773→0.600; GPT-OSS-120B
+0.753→0.353). OUR diff base: q8_0/q5_1 with fp8-K FLIP-BLOCKED on acceptance collapse
+(74%→20.5%) — our own receipt anticipated upstream's reasoning-eval collapses. The
+asymmetric split (K high, V low — KVTuner; community q8K/q4V) is the direction our
+receipts endorse: q8_0 K stays, V moves to fp8/nvfp4 with the acceptance gate as
+detector. Axis: more-load (session capacity at long context on the big-trunk SKUs).
+Cost: ~1-2 weeks incl. FA-twin variants + calibration-before-capture (the SGLang
+replication's law) + the spec-acceptance battery. *Projected:* V at 4.5 bits vs q5_1's
+5.16 ≈ +13% V-side capacity; fp8-V ≈ q5_1 capacity (skip); nvfp4-V is the only move
+worth the lane and only on KV-capped SKUs.
+
+**1.6 MoE serving on 1-2 GPUs.** (a) Residency: our SLRU/staged/pinned-host machinery is
+AHEAD of mainline llama.cpp (expert caching still an open PR #26563) and vLLM (LFRU RFC
+#38256 open); KTransformers is the only shipped routing-aware residency and its receipts
+are CPU-heavy rigs, not ours. Liftable: the RFC's persistent expert→slot mapping tensor
+(fixed addresses so CUDA graphs survive residency changes) if we ever graph the spill
+path. (b) Small-m expert GEMM: TRT-LLM's published batch-1 trick is "sparse experts as
+GEMMs" (send all tokens through activated experts as masked dense GEMM — dispatch
+bookkeeping costs more than redundant FLOPs at tiny m) + shared-expert on a second
+stream; llama.cpp's fusion stack hits 352 t/s on Qwen3-30B-A3B Q4_K_M on a 5090 — a
+concrete same-silicon-class bar for our q-family cells. Feeds basket 3.4. (c) Topology:
+every engine's guidance converges on PP for PCIe-only pairs (TP2 ≈ 120 latency-bound
+allreduces/token ≈ 1-3ms/token pure collective tax on measured PRO 6000 P2P numbers:
+54-56 GB/s uni, 0.36-0.45 µs latency) — our PP-2 choice is validated, no EP2/TP2
+head-to-head exists anywhere on this hardware class (we could PUBLISH one; see basket 3
+note). Axes: faster + faster-onboarding (the day-one MoE bring-up path rides these
+defaults).
 
 ## Basket 2 — BRING HOME (papers, last ~6 months)
 
@@ -248,6 +360,56 @@ long-context research files. YOCO/CLA cross-layer sharing is a training-time cho
 model-selection intelligence only. *Cost:* zero now. *Lane:* none.
 
 
+
+### 2C. MoE serving + spec×MoE papers
+
+**2C.1 Spec×MoE — the drafter's routing is a free prefetch oracle.** The 2026 wave split
+cleanly: verifier-side expert budgeting is NOT output-exact (MoE-Spec, arXiv 2602.16052;
+AcceptMoE, arXiv 2608.02989 — both blocked by our argmax gate), but the drafter-side
+family IS exact: SP-MoE (arXiv 2510.10302 v2) uses draft-model routing to prefetch target
+experts DURING drafting, ahead of verify — output-exact, 1.07-3.5x TPOT over SOTA offload;
+DraftExpert (arXiv 2607.24434, 2026-07-27) same insight, 86-88% prefetch hit rate, 1.45x
+decode. Cascade (NVIDIA/GaTech, arXiv 2506.20675) supplies the caution: K draft tokens
+activate the expert UNION, so verify weight movement is 2-3x one token — spec can SLOW
+MoE up to 1.5x under offload; their near-free "speculation utility" gauge belongs in our
+K battery. *Projected on our numbers:* relevant exactly when a spilled/spill-adjacent MoE
+SKU is served with spec (the Hy3-class lane, and any future >VRAM SKU) — the drafter we
+already run first is an untapped prefetch signal; on fully-resident SKUs it is a no-op.
+*Cost:* the utility gauge = days; SP-MoE-style prefetch = ~2 weeks inside the existing
+prefetch machinery. *Lane:* codex for the gauge now, the prefetch rides the next spill SKU.
+
+**2C.2 Expert-cache eviction — LRU is the wrong prior, receipts now abundant.** SpecMD /
+"Least-Stale" (Apple+UT Austin, arXiv 2602.03921, 2026-02-03): expert access is
+deterministic layer-SEQUENTIAL, not temporal — a Belady-flavored layer-position-aware
+policy gets 85x fewer collision misses than LRU, >88% hit at 5% VRAM (OLMoE). FlashMoE
+(arXiv 2601.17063): learned recency+frequency blend +51% hit vs LRU/LFU on the NVMe tier.
+vLLM RFC #38256: hub experts carry 50%+ traffic and pure LRU evicts them on domain shift.
+Local-Routing-Consistency (arXiv 2505.16056 v4): run SRP/SCH metrics on the target MoE
+FIRST — they predict any cache scheme's ceiling; sweet spot ≈ 2x active-expert count.
+*Projected on our numbers:* a layer-position-aware eviction A/B inside our existing SLRU
+is the cheapest high-evidence experiment this survey found — days, fully instrumented
+already, and it feeds the Hy3 spill deliverable directly. *Lane:* codex A/B.
+
+**2C.3 Dynamic per-expert precision — the five-arm study's runtime endgame.** Three
+independent groups converged on hot-resident-high / cold-fallback-low with async
+re-tiering: DynaExq (arXiv 2511.15015 v3: +4.5pp accuracy vs static PTQ at equal memory,
+2.73x throughput), HOBBIT (arXiv 2411.01433: substitute a low-precision expert copy on
+cache miss, upgrade in background — 9.93x decode under offload), PagedWeight (arXiv
+2607.16184: bit-plane precision demotion to reclaim memory for KV). *Projected:* this is
+the mix_quant arms made adaptive — the five-arm lane's calibration machinery + the
+mixed-layout dispatch paths (metadata-aware staged/SLRU/grouped) are exactly the
+substrate; HOBBIT's miss-time substitution composes with our Q2_K/Q3_K/NVFP4 tiers
+naturally. Research-file until the five-arm study reports; then it is the follow-on lane
+shape. *Cost:* weeks-class, gated on the study. *Lane:* fable, post-study.
+
+**2C.4 Prefill should stream experts, not cache-manage them.** DuoServe-MoE (arXiv
+2509.07379 v2) and the OSDI'26 hybrid-design paper (arXiv 2606.10493 — 2x RTX 5090,
+the closest published cousin to our rig class) both phase-split: prefill streams the
+full expert bank through the GPU (dense activation makes caching pointless), decode uses
+prediction/residency. *Check on our numbers:* one-day audit — does our prefill pollute
+the SLRU that decode depends on? (The leverB slab receipts suggest the resident-slab arm
+already isolates this on Step; the spill-path SKUs are where the audit pays.) *Lane:*
+codex audit item.
 
 ## Basket 3 — CREATE AT HOME (original research proposals)
 
@@ -442,4 +604,57 @@ week-one receipt is a one-shot offline distill on logged traffic before any onli
 
 **Lane shape.** Fable lane for v1 (training-loop judgment + gate design), handing the
 steady-state job to codex lanes once the recipe is frozen.
+
+### 3.6 (bonus, publication-shaped) The missing dual-workstation-Blackwell benchmark
+
+The engines survey could not find ANY published EP2/TP2/PP2 head-to-head on dual
+workstation Blackwell — the closest is a community P2P microbenchmark repo. We own two
+PRO 6000 pairs, a PP-2 engine with bit-exactness gates, and the measurement discipline.
+A published head-to-head (with the collective-tax arithmetic: ~120 latency-bound
+allreduces/token at TP2 on measured 0.36-0.45 µs P2P latency) is create-at-home SOTA in
+the evidence sense: the reference numbers for the hardware class we sell on. Low
+engineering cost (the arms mostly exist), high distribution value for the darklanes
+launch. *Cost:* days of measurement + writeup. *Lane:* codex measurement, fable writeup.
+
+## Ranked top-8 (across all baskets, by projected floor-raise per engineering-week)
+
+1. **Cross-request batched draft/verify rounds** (basket 3.1; evidence: our flat-in-c
+   receipt + arXiv 2510.22876 + EAGLE-3.1 holding 1.71x at c=4 upstream). Multiplies the
+   measured 1.67x spec win by the measured 3.8x batch-scaling mechanism; reopens
+   single-card c=4/c=8 spec cells. Weeks-class (2-3). The week's headline gap vs upstream.
+2. **Full-information K policy, cache/prompt-conditioned** (baskets 3.3 + 2A.1/2A.2;
+   evidence: Not-a-Bandit ICLR 2026, DSpark prod receipts, our accept-gate law + live LCP
+   histogram). Days-class, moves every spec cell, K→0 subsumes the binary gate; the
+   prerequisite policy layer for #1's wins to survive load.
+3. **Dynamic (equal-time / shrinking) microchunk schedule for PP-2 pipelined prefill**
+   (baskets 2B.1 + 1.1; evidence: LMSYS chunked-PP blog 2026-01-15, SGLang PP-only
+   dynamic chunking, our own 16-vs-8-chunk sweep hint). Days-class, scheduler-only,
+   attacks the 697.6 tok/s and 11.0 s TTFT receipts directly; tickinv gates make it safe.
+4. **In-batch same-prefix dedup + prefix-entry pinning** (basket 1.4; evidence: SGLang
+   in-batch dedup rule, TRT-LLM priority-tiered reuse; rides THIS WEEK's primebatch
+   machinery + cache-meter receipts). Days-class; TTFT×N on agent-fanout traffic and
+   protects the billing multiplier — the serve-ready axis's cheapest win.
+5. **Suffix/ngram CPU-side draft source** (basket 2A.3; evidence: Snowflake/vLLM suffix
+   decoding, SSSD roofline). ~1 week; batch-safe and placement-blind — the one spec form
+   whose mechanism is untouched by the PP-2 OFF verdict; strongest on the owner's own
+   agentic dogfood traffic.
+6. **Layer-position-aware SLRU eviction A/B + spec-utility gauge** (baskets 2C.2 + 2C.1;
+   evidence: SpecMD 85x collision-miss receipt, Cascade's 2-3x verify expert-union
+   inflation). Days-class each, fully instrumented already; feeds the Hy3 spill
+   deliverable and the K battery.
+7. **Placement-aware hybrid spec — drafter in the pipeline valleys** (basket 3.2;
+   evidence: our specplace matrix + darktrain machinery + SpecPipe/PipeSpec class).
+   Weeks-class (3-4) with a week-one kill criterion; the create-at-home flagship if #1
+   lands first.
+8. **NVFP4-V KV arm on KV-capped SKUs** (baskets 2B.4 + 1.5; evidence: SGLang PR #21601 +
+   the sm_120/PRO-6000/SWA-512 replication; our fp8-K acceptance-collapse receipt defines
+   the gate). ~2 weeks; +session-capacity on big-trunk SKUs; only worth it where KV is
+   the admission ceiling — measure that first via the admission receipts.
+
+Deliberately NOT in the top-8: FA4 conditional rescaling and the CUTLASS #3030 warp-spec
+template (real, but our prefill wall is MoE+scheduling, not attention — re-rank when the
+anatomy says otherwise); POD-Attention (biggest kernel spend, unproven tick-hybridity);
+decode-graph bucketing for the batched arm (measured negative once; re-sweep on nsys
+evidence only); drafter self-distillation (3.5 — strategic, but its v1 receipt is
+cheap to get and its ranking depends on it); TriAttention/sub-4-bit KV (lossy, watch).
 
