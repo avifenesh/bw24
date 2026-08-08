@@ -147,20 +147,71 @@ isolation holds by construction. `pos_d` is per-row (each session's own pos), ma
   step35's 512 window, so the per-session view-offset arm never fired — the chunkinv35
   vacuous-coverage class again. The battery runs --plen 520.
 
+## Results — ALL GREEN on BOTH PRO 6000 pairs (raw/ box1 + box2)
+
+### The c-scaling table (the number that matters — was 34-FLAT at every c)
+
+Decode aggregate tok/s, DEFAULT batched serve (naked config + spec OFF per #87, drafter
+attached, PP-2 dev01, 128 tok/req, N=3 medians per cell, warm steady-state, one flock hold
+per box; points JSONL committed):
+
+| c | box1 median (min-max) | box2 median (min-max) | vs 34-flat |
+|---|---|---|---|
+| 1 | 83.7 (72.8-83.9) | 81.0 (70.8-81.1) | 2.4x |
+| 2 | 99.4 (94.7-99.4) | 96.3 (91.8-96.4) | 2.9x |
+| 4 | 118.2 (117.5-118.2) | 116.2 (116.2-116.9) | 3.4x |
+| 8 | **130.3** (130.1-130.5) | **129.4** (129.4-129.4) | **3.8x** |
+
+(The c=1 gain over the old 34 is NOT this lane's arm — it is the b1_stage_fast eager walk
+measured under this battery's server build; the arm's own contribution is the SCALING,
+c=8/c=1 = 1.56x where it was 1.00x, and the absolute 129-130 agg at c=8 = 3.8x the pinned
+baseline's 34.15. Cross-run vs the 2d2eb676 receipt is clock-drift-caveated per the H100
+law; the 34-flat SHAPE vs rising-in-c shape is the claim, and both are same-box receipts.)
+
+### Gate verdicts
+
+| gate | verdict | receipt |
+|---|---|---|
+| G1 kernel-check | **ALL GREEN, 0 FAIL** (fresh fatbin) | box1/kernel-check-20260808T045135Z.log |
+| G2 decode-batch-gate --mode pp, B=1,2,4,8 x2 reps, --plen 520 | **ALL GREEN, 0 failing arms** — split + unsplit@ppncache + b1-stagefast + epilogue, 24 steps x 128896 f32 per row, **0 differing bits at every width** (B=8: 24,748,032 f32 x3 arms) | box1/dbg-pp-step35-20260808T045135Z.log |
+| G3 run-gen argmax | **MATCH x2** (prefill==decode 6776; batched-prime==tokenwise 6776) | box1/rungen-20260808T034540Z.log |
+| G4 run-spec K=1..8 + drafter | **PASS 8/8**, acceptance **digit-identical** to the pinned baseline (14/18, 15/34..15/136) | box1/runspec-20260808T034540Z.log |
+| G5 chunkinv35 | **CHUNK-INVARIANT** (no regress) | box1/chunkinv35-20260808T034540Z.log |
+| G5 tickinv35 | FAIL — **PRE-EXISTING**: the fix is lane/tick-seg f01710ca, NOT an ancestor of base a131e8c7 (verified by git ancestry; 1.813e0@6 = the exact pre-fix signature). Resolves at merge time when both lanes land on train | box1/tickinv35-20260808T034540Z.log |
+| G6 b2geo35 naked | **PASS on both boxes** — c=2/c=4 byte-identical to c=1, chunk cap 8, batched-walk line present | box1/b2geo35-naked-20260808T051110Z.log, box2/b2geo35-naked-20260808T050301Z.log |
+| G6c b2geo35 canary | **CANARY OK on both boxes** — MEMRA_STEP35_BATCH=0 re-pin breaks the evidence assertion (chunk cap 1, no walk line) | box1/b2geo35-canary-20260808T051201Z.log, box2/b2geo35-canary-20260808T050358Z.log |
+| S2 serve c=8 byte-vs-serial | **PASS** — 8/8 byte-identical + batched evidence at B=8 | box2/battery-box2-20260808T050301Z.log |
+
+Cards verified 0 MiB on both boxes at battery exit.
+
+### Round-1 traps (receipted, box1/)
+
+1. **Stale fatbin from a seeded target dir**: round 1 seeded `target/` from another lane's
+   build cache; the .cu mtimes predated it so nvcc never reran — `kernel
+   fa_prefill_qw_db_w_hd128 not in any fatbin` panicked G1/G2 while every OTHER gate
+   passed. touch *.cu + rebuild; the binary now greps the kernel string (113 hits).
+2. **Bare `wait` in the gate script** also waited on the never-exiting server job — the
+   gate hung AFTER producing fully-correct c=2 responses. Fixed: wait on the curl PIDs.
+3. **`[prime-batch] failed ... single primes serve`** in the serve logs: expected — step35
+   still has no batched prime core (`prime_cache_batch` refuses); prefill concurrency rides
+   single primes. Decode batching is untouched by it. Named follow-up, not this lane.
+
 ## Ledger
 
 | item | state |
 |---|---|
-| read conclusions + arm shape | DONE (this file) |
-| red b2geo35 standing gate | DONE — registered red (commit 9a12b53a) |
-| engine arm (step35_decode_batch_layers) | DONE (commit c5cd6a35) |
+| read conclusions + arm shape | DONE |
+| red b2geo35 standing gate | DONE — registered red 9a12b53a, GREEN post-arm on both boxes |
+| engine arm (step35_decode_batch_layers) | DONE (c5cd6a35) |
 | unsplit + ppn routing | DONE (same commit) |
-| chunk_cap_for pin lift | DONE (same commit) |
-| bit-identity gate B∈{1,2,4,8} (pp battery, plen 520) | RUNNING on box1 (battery-20260808T034540Z) |
-| serve gates (b2geo35 GREEN + canary, c=1..8) | RUNNING (same battery) |
-| kernel-check / run-gen / run-spec / chunkinv / tickinv | RUNNING (same battery) |
-| perf c-scaling vs 34-flat | RUNNING (same battery, P1 phase) |
+| chunk_cap_for pin lift (cap 8) | DONE (same commit) |
+| graph-promotion step35 exclusion (found on the walk) | DONE (same commit) |
+| bit-identity battery B∈{1,2,4,8} over PP-2, plen 520 | **ALL GREEN, 0 differing bits** |
+| serve gates (b2geo35 + canary both boxes, c=8 byte-vs-serial) | **ALL GREEN** |
+| kernel-check / run-gen / run-spec / chunkinv35 | **ALL GREEN**; tickinv35 pre-existing red (lane/tick-seg fixes it, not an ancestor here) |
+| perf c-scaling | **DONE: 34-flat -> 130 agg at c=8 (3.8x), both boxes agree within 1%** |
+| FLAGS.md (MEMRA_STEP35_BATCH) | DONE |
 
-Boxes: box1 lane workspace `~/stepbatch-memra` (rsync tree, binaries verified to carry the
-arm), raw at `~/step37/raw-stepbatch/`. Box2 clone `~/step35-batch` @ lane tip (own clone —
-the shared `~/memra` untouched), built; Step shard 3/3 still in transit at battery time.
+Boxes: box1 lane workspace `~/stepbatch-memra` (rsync tree), raw mirrored to raw/box1/.
+Box2 lane clone `~/step35-batch` @ 57fc87d3 (own clone — the shared `~/memra` untouched),
+raw mirrored to raw/box2/. Both released 0 MiB.

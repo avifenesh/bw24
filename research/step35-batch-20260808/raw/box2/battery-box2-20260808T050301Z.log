@@ -1,0 +1,142 @@
+=== step35-batch box2 battery 20260808T050301Z tip=57fc87d3
+
+########## S1: b2geo35 naked (GREEN expected) ##########
+=== step35-b2-geometry-gate tag=naked ts=20260808T050301Z model=/data/models/step37/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf draft=/data/models/step37/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf ===
+lock acquired 2026-08-08T05:03:01Z
+0, 0 MiB
+1, 0 MiB
+--- c=1 reference (greedy) ---
+{"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+--- c=2 concurrent identical requests ---
+{"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+{"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+--- c=4 concurrent identical requests ---
+{"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+{"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+{"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+{"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+0, 0 MiB
+1, 0 MiB
+lock released 2026-08-08T05:03:58Z
+c2[1] == ref
+c2[2] == ref
+c4[1] == ref
+c4[2] == ref
+c4[3] == ref
+c4[4] == ref
+chunk cap 8 >= 2 OK
+batched-walk evidence OK: [step35-batch] first B>1 batched step35 walk: B=2 layers=[0,22)
+server log: research/step35-batch-20260808/raw/b2geo35-server-naked-20260808T050301Z.log
+VERDICT: PASS (c=2/c=4 byte-identical to c=1, batched ticks proven)
+b2geo35 exit=0
+
+########## S1c: b2geo35 canary (teeth) ##########
+=== step35-b2-geometry-gate tag=canary ts=20260808T050358Z model=/data/models/step37/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf draft=/data/models/step37/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf ===
+lock acquired 2026-08-08T05:03:58Z
+0, 0 MiB
+1, 0 MiB
+--- c=1 reference (greedy) ---
+ERROR {"message": "batch step: step35 batched decode is disabled (MEMRA_STEP35_BATCH=0) \u2014 serve step35 with B=1 chunks (chunk_cap_for re-pins under the same seam)", "type": "server_error", "param": null, "code": "engine_error"}
+--- c=2 concurrent identical requests ---
+ERROR {"message": "batch step: step35 batched decode is disabled (MEMRA_STEP35_BATCH=0) \u2014 serve step35 with B=1 chunks (chunk_cap_for re-pins under the same seam)", "type": "server_error", "param": null, "code": "engine_error"}
+ERROR {"message": "batch step: step35 batched decode is disabled (MEMRA_STEP35_BATCH=0) \u2014 serve step35 with B=1 chunks (chunk_cap_for re-pins under the same seam)", "type": "server_error", "param": null, "code": "engine_error"}
+--- c=4 concurrent identical requests ---
+ERROR {"message": "batch step: step35 batched decode is disabled (MEMRA_STEP35_BATCH=0) \u2014 serve step35 with B=1 chunks (chunk_cap_for re-pins under the same seam)", "type": "server_error", "param": null, "code": "engine_error"}
+ERROR {"message": "batch step: step35 batched decode is disabled (MEMRA_STEP35_BATCH=0) \u2014 serve step35 with B=1 chunks (chunk_cap_for re-pins under the same seam)", "type": "server_error", "param": null, "code": "engine_error"}
+ERROR {"message": "batch step: step35 batched decode is disabled (MEMRA_STEP35_BATCH=0) \u2014 serve step35 with B=1 chunks (chunk_cap_for re-pins under the same seam)", "type": "server_error", "param": null, "code": "engine_error"}
+ERROR {"message": "batch step: step35 batched decode is disabled (MEMRA_STEP35_BATCH=0) \u2014 serve step35 with B=1 chunks (chunk_cap_for re-pins under the same seam)", "type": "server_error", "param": null, "code": "engine_error"}
+0, 0 MiB
+1, 0 MiB
+lock released 2026-08-08T05:04:46Z
+FAIL: empty/error c=1 reference
+c2[1] == ref
+c2[2] == ref
+c4[1] == ref
+c4[2] == ref
+c4[3] == ref
+c4[4] == ref
+FAIL: step35 decode chunk cap is '1' (< 2) — the B=1 pin is live, nothing batched was tested
+FAIL: no '[step35-batch] first B>1' line in the server log — no B>1 step35 tick ran
+server log: research/step35-batch-20260808/raw/b2geo35-server-canary-20260808T050358Z.log
+VERDICT: FAIL (3 failed assertions)
+step35-b2-geometry-gate: CANARY OK (B=1 re-pin broke the batched-evidence assertion as required)
+b2geo35c exit=0
+
+########## S2: serve c=1..8 byte-vs-serial (c=8 arm on top of the gate's 2/4) ##########
+lock acquired 2026-08-08T05:04:46Z
+0, 34, 337 MHz, 0 MiB
+1, 33, 337 MHz, 0 MiB
+ref: {"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19
+c8[1] == ref
+c8[2] == ref
+c8[3] == ref
+c8[4] == ref
+c8[5] == ref
+c8[6] == ref
+c8[7] == ref
+c8[8] == ref
+[step35-batch] first B>1 batched step35 walk: B=8 layers=[0,22)
+S2 verdict: PASS
+0, 35, 315 MHz, 0 MiB
+1, 34, 307 MHz, 0 MiB
+lock released 2026-08-08T05:05:44Z
+=== s2 rc=0
+
+########## P1: decode aggregate c-sweep, DEFAULT batched serve, N=3 ##########
+lock acquired 2026-08-08T05:05:44Z
+0, 35, 315 MHz, 0 MiB
+1, 34, 307 MHz, 0 MiB
+[worker] step35: decode chunk cap 8
+--- P1 c=1 rep=1 ---
+{"ts": "2026-08-08T05:06:36+0000", "label": "sb2-c1-r1", "base": "http://127.0.0.1:8095", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 7.23155558200051, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 512, "prompt_tokens_total": 912, "agg_tok_s": 70.80081100038538, "req_per_s": 0.5531313359405108, "lat_p50_s": 1.646104932999151, "lat_p95_s": 2.3190554449993215, "lat_mean_s": 1.8077476574994762, "lat_max_s": 2.3190554449993215, "errors_sample": []}
+0, 39, 2325 MHz, 87921 MiB
+1, 37, 2235 MHz, 89649 MiB
+--- P1 c=1 rep=2 ---
+{"ts": "2026-08-08T05:06:43+0000", "label": "sb2-c1-r2", "base": "http://127.0.0.1:8095", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 6.318331186999785, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 512, "prompt_tokens_total": 912, "agg_tok_s": 81.03405548817386, "req_per_s": 0.6330785585013583, "lat_p50_s": 1.5882258839992573, "lat_p95_s": 1.6026534580014413, "lat_mean_s": 1.5794601904999581, "lat_max_s": 1.6026534580014413, "errors_sample": []}
+0, 41, 2325 MHz, 87921 MiB
+1, 40, 2235 MHz, 89649 MiB
+--- P1 c=1 rep=3 ---
+{"ts": "2026-08-08T05:06:50+0000", "label": "sb2-c1-r3", "base": "http://127.0.0.1:8095", "concurrency": 1, "requests": 4, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 6.314929178999591, "n_ok": 4, "n_shed": 0, "n_err": 0, "completion_tokens_total": 512, "prompt_tokens_total": 912, "agg_tok_s": 81.07771053120676, "req_per_s": 0.6334196135250528, "lat_p50_s": 1.5866249929986225, "lat_p95_s": 1.6029503079989809, "lat_mean_s": 1.5786091234995183, "lat_max_s": 1.6029503079989809, "errors_sample": []}
+0, 41, 2317 MHz, 87921 MiB
+1, 41, 2235 MHz, 89649 MiB
+--- P1 c=2 rep=1 ---
+{"ts": "2026-08-08T05:07:01+0000", "label": "sb2-c2-r1", "base": "http://127.0.0.1:8095", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 11.151864799001487, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1024, "prompt_tokens_total": 1824, "agg_tok_s": 91.8232079079444, "req_per_s": 0.7173688117808156, "lat_p50_s": 2.7965197859994078, "lat_p95_s": 3.037158546001592, "lat_mean_s": 2.785891433125016, "lat_max_s": 3.037158546001592, "errors_sample": []}
+0, 41, 2332 MHz, 88241 MiB
+1, 40, 2242 MHz, 89969 MiB
+--- P1 c=2 rep=2 ---
+{"ts": "2026-08-08T05:07:12+0000", "label": "sb2-c2-r2", "base": "http://127.0.0.1:8095", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 10.638060488998235, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1024, "prompt_tokens_total": 1824, "agg_tok_s": 96.25814790760116, "req_per_s": 0.752016780528134, "lat_p50_s": 2.6633271200007584, "lat_p95_s": 2.7009083419998205, "lat_mean_s": 2.6575671327502732, "lat_max_s": 2.7009083419998205, "errors_sample": []}
+0, 43, 2325 MHz, 88241 MiB
+1, 43, 2242 MHz, 89969 MiB
+--- P1 c=2 rep=3 ---
+{"ts": "2026-08-08T05:07:23+0000", "label": "sb2-c2-r3", "base": "http://127.0.0.1:8095", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 10.620162979999805, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1024, "prompt_tokens_total": 1824, "agg_tok_s": 96.42036585770164, "req_per_s": 0.7532841082632941, "lat_p50_s": 2.6844218480000563, "lat_p95_s": 2.7501748930008034, "lat_mean_s": 2.6530244368750573, "lat_max_s": 2.7501748930008034, "errors_sample": []}
+0, 44, 2347 MHz, 88241 MiB
+1, 44, 2235 MHz, 89969 MiB
+--- P1 c=4 rep=1 ---
+{"ts": "2026-08-08T05:07:41+0000", "label": "sb2-c4-r1", "base": "http://127.0.0.1:8095", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 17.623414741001397, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 2048, "prompt_tokens_total": 3648, "agg_tok_s": 116.20903383924043, "req_per_s": 0.9078830768690659, "lat_p50_s": 4.409714097000688, "lat_p95_s": 4.508788242999799, "lat_mean_s": 4.403878059125077, "lat_max_s": 4.511343769001542, "errors_sample": []}
+0, 43, 2385 MHz, 88881 MiB
+1, 43, 2407 MHz, 90641 MiB
+--- P1 c=4 rep=2 ---
+{"ts": "2026-08-08T05:07:59+0000", "label": "sb2-c4-r2", "base": "http://127.0.0.1:8095", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 17.630039109999416, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 2048, "prompt_tokens_total": 3648, "agg_tok_s": 116.16536907387881, "req_per_s": 0.9075419458896782, "lat_p50_s": 4.420323529999223, "lat_p95_s": 4.455920825999783, "lat_mean_s": 4.40550758518782, "lat_max_s": 4.4581544310003665, "errors_sample": []}
+0, 43, 2385 MHz, 88881 MiB
+1, 43, 2407 MHz, 90641 MiB
+--- P1 c=4 rep=3 ---
+{"ts": "2026-08-08T05:08:17+0000", "label": "sb2-c4-r3", "base": "http://127.0.0.1:8095", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 17.523801772998922, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 2048, "prompt_tokens_total": 3648, "agg_tok_s": 116.86961690902059, "req_per_s": 0.9130438821017234, "lat_p50_s": 4.382539053998698, "lat_p95_s": 4.431339120999837, "lat_mean_s": 4.378955875062388, "lat_max_s": 4.431406470999718, "errors_sample": []}
+0, 46, 2392 MHz, 88881 MiB
+1, 45, 2377 MHz, 90641 MiB
+--- P1 c=8 rep=1 ---
+{"ts": "2026-08-08T05:08:49+0000", "label": "sb2-c8-r1", "base": "http://127.0.0.1:8095", "concurrency": 8, "requests": 32, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 31.644983748999948, "n_ok": 32, "n_shed": 0, "n_err": 0, "completion_tokens_total": 4096, "prompt_tokens_total": 7296, "agg_tok_s": 129.4359963174082, "req_per_s": 1.0112187212297516, "lat_p50_s": 7.925132312999267, "lat_p95_s": 7.946688002000883, "lat_mean_s": 7.909033372624947, "lat_max_s": 7.947048261999953, "errors_sample": []}
+0, 43, 2400 MHz, 90161 MiB
+1, 44, 2415 MHz, 91985 MiB
+--- P1 c=8 rep=2 ---
+{"ts": "2026-08-08T05:09:21+0000", "label": "sb2-c8-r2", "base": "http://127.0.0.1:8095", "concurrency": 8, "requests": 32, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 31.66071527799977, "n_ok": 32, "n_shed": 0, "n_err": 0, "completion_tokens_total": 4096, "prompt_tokens_total": 7296, "agg_tok_s": 129.37168235255274, "req_per_s": 1.0107162683793183, "lat_p50_s": 7.9096371960004035, "lat_p95_s": 7.970766009000727, "lat_mean_s": 7.912977998718986, "lat_max_s": 7.972456911000336, "errors_sample": []}
+0, 44, 2407 MHz, 90161 MiB
+1, 47, 2415 MHz, 91985 MiB
+--- P1 c=8 rep=3 ---
+{"ts": "2026-08-08T05:09:53+0000", "label": "sb2-c8-r3", "base": "http://127.0.0.1:8095", "concurrency": 8, "requests": 32, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 128, "greedy": false, "wall_s": 31.659475399001167, "n_ok": 32, "n_shed": 0, "n_err": 0, "completion_tokens_total": 4096, "prompt_tokens_total": 7296, "agg_tok_s": 129.37674893151342, "req_per_s": 1.0107558510274486, "lat_p50_s": 7.90748488600002, "lat_p95_s": 7.9737344669993035, "lat_mean_s": 7.912683835749817, "lat_max_s": 7.975560533001044, "errors_sample": []}
+0, 44, 2400 MHz, 90161 MiB
+1, 45, 2415 MHz, 91985 MiB
+0, 39, 315 MHz, 0 MiB
+1, 39, 315 MHz, 0 MiB
+lock released 2026-08-08T05:09:58Z
+=== perf rc=0
+=== done 2026-08-08T05:09:58Z
