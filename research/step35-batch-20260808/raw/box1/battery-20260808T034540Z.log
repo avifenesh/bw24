@@ -1,0 +1,48 @@
+=== step35-batch battery 20260808T034540Z tree=rsync
+lock acquired 2026-08-08T03:56:41Z
+0, 36, 2400 MHz, 0 MiB
+1, 40, 2317 MHz, 0 MiB
+
+########## G1: kernel-check ##########
+kernel-check FAIL-lines=0 exit=101
+kernel fa_prefill_qw_db_w_hd128 not in any fatbin
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+########## G2: decode-batch-gate --mode pp, step35, B=1,2,4,8, plen 520 ##########
+decode-batch-gate exit=101
+0, 33, 2415 MHz, 0 MiB
+1, 34, 2325 MHz, 0 MiB
+
+########## G3: run-gen argmax ##########
+run-gen exit=0
+prefill argmax=6776  decode argmax=6776  logit maxdiff=1.444e0  MATCH
+batched-prime argmax=6776  tokenwise argmax=6776  logit maxdiff=1.097e0  MATCH
+
+########## G4: run-spec K=1..8 with drafter (full sweep in one process) ##########
+run-spec exit=0
+  acceptance: 14/18 = 77.8%   self-consistency: PASS (identical to generate)
+  acceptance: 15/34 = 44.1%   self-consistency: PASS (identical to generate)
+  acceptance: 15/51 = 29.4%   self-consistency: PASS (identical to generate)
+  acceptance: 15/68 = 22.1%   self-consistency: PASS (identical to generate)
+  acceptance: 15/85 = 17.6%   self-consistency: PASS (identical to generate)
+  acceptance: 15/102 = 14.7%   self-consistency: PASS (identical to generate)
+  acceptance: 15/119 = 12.6%   self-consistency: PASS (identical to generate)
+  acceptance: 15/136 = 11.0%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
+
+########## G5: chunkinv35 + tickinv35 ##########
+chunkinv35 exit=0 (CHUNK-INVARIANT)
+tickinv35 exit=1 ()
+0, 38, 2392 MHz, 0 MiB
+1, 32, 2325 MHz, 0 MiB
+lock released 2026-08-08T04:09:45Z
+=== gates rc=0
+
+########## G6: b2geo35 naked (GREEN expected) ##########
+=== step35-b2-geometry-gate tag=naked ts=20260808T040945Z model=/home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf draft=/home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf ===
+lock acquired 2026-08-08T04:15:14Z
+0, 0 MiB
+1, 0 MiB
+--- c=1 reference (greedy) ---
+{"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+--- c=2 concurrent identical requests ---

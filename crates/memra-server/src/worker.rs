@@ -2006,8 +2006,17 @@ pub fn run(
                 // step-wise capture body (decode_step_dc_cap_masked) walks the GENERIC
                 // qwen-class layer stack — over gemma4 weights that is silently wrong
                 // logits (the round-45 g12 argmax-INIT class), not an error.
+                // step35 never graph-promotes either (lane/step35-batched-decode): the
+                // capture walks full_attn_decode_dc_inner, which REFUSES step35 by design
+                // (the SWA offset KV view is inexpressible in the len_d-derived dc kernels,
+                // plus per-layer n_head capture) — and a capture-time refusal lands on the
+                // degrade-with-cache-consumed path, which kills the request. So a solo
+                // greedy step35 session with budget >= gs_min died with "graph promote
+                // failed" instead of decoding eagerly. Named exclusion; the dc gap itself
+                // stays a named refusal in decode.rs.
                 if s.graph.is_none() && s.spec.is_none() && s.sampler.is_greedy()
                     && !eager_only.contains(&s.model)
+                    && loaded[&s.model].model.cfg.step35.is_none()
                     && constr_graph_ok
                     && s.lane == crate::lanes::Lane::Interactive
                     && s.budget >= gs_min
@@ -3920,16 +3929,23 @@ fn devsample_meta(s: &Session) -> Option<(f32, u64, u32)> {
 /// real MIXED checkpoints. Before that, one missing class refused the whole model, so
 /// chunk 16 was unreachable for every shipped artifact, GGUF and FP8-ST alike.
 fn chunk_cap_for(lm: &LoadedModel) -> usize {
-    // step35 has no B>1 decode arm ANYWHERE (per-layer n_head / partial rope / SWA offset
-    // view / head-wise gate): the unsplit batched body asserts it away, and the ppn body
-    // fails closed since the b2ab receipt (research/step-sku-20260807/raw/b2ab-pre-*.log —
-    // a c=4 serve over PP-2 walked the generic arm and emitted garbage). Cap its chunks at
-    // 1: each session still decodes every tick (B=1 chunks ride decode_layers_eager, the
-    // supported step35 mixer), so concurrency works and only the cross-session launch fusion
-    // is forfeited. Not overridable upward by MEMRA_DECODE_BATCH_CAP — a wider chunk is not
-    // a measurement door here, it is wrong logits.
+    // step35 (lane/step35-batched-decode, 2026-08-08): the REAL batched arm exists —
+    // `step35_decode_batch_layers` carries the per-layer n_head / partial rope / per-session
+    // SWA views / head-wise gate the generic body lacked (the b2ab garbage receipt,
+    // research/step-sku-20260807/raw/b2ab-pre-*.log, was the GENERIC arm running past the
+    // ppn door; that arm is now unreachable for this arch at any B). Chunk cap 8: the
+    // exactness-tier width (IQ4_XS trunk + 288-expert MoE refuse exact16 by predicate —
+    // `decode_batch_exact16_ok` requires non-MoE — so 16 is structurally out). The
+    // MEMRA_STEP35_BATCH=0 rollback seam re-pins B=1 fail-closed (the engine bodies Err on
+    // B>1 under it; this cap is what keeps the scheduler from forming chunks that would
+    // only bounce). MEMRA_DECODE_BATCH_CAP may still narrow BELOW 8, never widen past it.
     if lm.model.cfg.step35.is_some() {
-        return 1;
+        if !HybridModel::step35_batch_on() {
+            return 1;
+        }
+        let cap = std::env::var("MEMRA_DECODE_BATCH_CAP").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(8usize);
+        return cap.clamp(1, 8);
     }
     if let Some(c) = std::env::var("MEMRA_DECODE_BATCH_CAP").ok().and_then(|v| v.parse().ok()) {
         return usize::clamp(c, 1, 32);

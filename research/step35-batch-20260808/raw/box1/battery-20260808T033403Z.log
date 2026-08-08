@@ -1,0 +1,11 @@
+=== step35-batch battery 20260808T033403Z tree=rsync
+lock acquired 2026-08-08T03:41:27Z
+0, 36, 2400 MHz, 0 MiB
+1, 33, 2325 MHz, 0 MiB
+
+########## G1: kernel-check ##########
+kernel-check FAIL-lines=0 exit=101
+kernel fa_prefill_qw_db_w_hd128 not in any fatbin
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+########## G2: decode-batch-gate --mode pp, step35, B=1,2,4,8 ##########

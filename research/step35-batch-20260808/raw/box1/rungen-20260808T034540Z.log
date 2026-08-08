@@ -1,0 +1,20 @@
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 trunk layers; optional MTP skipped)
+prompt text: "Write a short paragraph explaining how a CPU pipeline improves instruction throughput, and mention one hazard."
+prompt tokens: [0, 21750, 260, 3107, 15363, 26131, 1192, 260, 25454, 28499, 28232, 12740, 62027, 14, 305, 6731, 834, 23616, 16]
+prefill argmax=6776  decode argmax=6776  logit maxdiff=1.444e0  MATCH
+batched-prime argmax=6776  tokenwise argmax=6776  logit maxdiff=1.097e0  MATCH
+prefill 19 tok in 0.4975s = 38.2 tok/s (pp19)
+generated 64 tokens in 3.967s = 16.13 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.498s) [stop: MaxNew]
+tokens: [6776, 666, 7805, 11490, 2143, 35, 25454, 28499, 21994, 12740, 16846, 1055, 13656, 343, 70698, 14, 64285, 14, 22218, 14, 6464, 14, 5085, 43360, 3555, 11, 832, 396, 3586, 12846, 477, 21121, 19649, 14, 5767, 62027, 16, 4114, 23616, 344, 260, 1499, 23616, 14, 1479, 411, 12740, 11776, 377, 270, 1529, 294, 260, 4412, 12740, 396, 769, 554, 4671, 10156, 14, 13922, 93324, 469]
+MoE cache: 15356 slots | cumulative hits=120528 misses=13080 (hit-rate=90.2%) | Stage-1 baseline = 2678 MB/decode-token (every block, every layer, every token)
+MoE cache STEADY-STATE (32 tokens after warmup): hit-rate=96.1% | 47.3 MB/decode-token (vs 2678 MB/token Stage-1 => 56.6x less PCIe)
+OUTPUT TEXT: "  \n\n**Answer:**  \nA CPU pipeline breaks instruction execution into stages (fetch, decode, execute, memory, write‑back) so that several instructions are processed simultaneously, increasing throughput. One hazard is a data hazard, where an instruction depends on the result of a previous instruction that has not yet completed, causing stalls or"
+--- generated text ---
+  
+
+**Answer:**  
+A CPU pipeline breaks instruction execution into stages (fetch, decode, execute, memory, write‑back) so that several instructions are processed simultaneously, increasing throughput. One hazard is a data hazard, where an instruction depends on the result of a previous instruction that has not yet completed, causing stalls or

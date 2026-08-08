@@ -563,14 +563,37 @@ impl HybridModel {
             return Err("decode_step_batch has no gemma4 arm (per-layer swa/global geometry, \
                         softcapped head) — serve gemma4 on the eager per-session path".into());
         }
-        // step35: the batched body below is the generic Full arm (uniform n_head, 128-dim rope
-        // everywhere, no window, no head-wise gate). B=1 already routed to the shared eager
-        // trunk above; B>1 has no step35 twin.
-        assert!(
-            self.cfg.step35.is_none(),
-            "decode_step_batch has no step35 arm at B>1 (per-layer n_head / partial rope / SWA \
-             offset view / head-wise gate) — B=1 rides the shared eager trunk"
-        );
+        // step35 (lane/step35-batched-decode, 2026-08-08): its OWN batched walk. The generic
+        // body below is the uniform Full arm — global n_head, 128-dim rope on every layer, no
+        // SWA window, no head-wise gate — which on step35 produced HTTP-200 GARBAGE at c>1
+        // (research/step-sku-20260807/raw/b2ab-pre-*.log), so step35 NEVER enters it at any B.
+        // `step35_decode_batch_layers` carries the real geometry: per-layer n_head (64/96),
+        // partial rope (64 full / 128 SWA, dual base, rope_freqs on FULL only), per-SESSION
+        // SWA view offsets from each session's own kvl.len, the separate head-wise gate at
+        // m=B, and the sigmoid-router MoE via the same moe_ffn_il_zq8 the eager path uses.
+        // MEMRA_STEP35_BATCH=0 = the fail-closed rollback seam (chunk_cap_for re-pins B=1
+        // chunks server-side; this Err is the engine backstop, the gemma4 pattern).
+        if self.cfg.step35.is_some() {
+            if !Self::step35_batch_on() {
+                return Err("step35 batched decode is disabled (MEMRA_STEP35_BATCH=0) — \
+                            serve step35 with B=1 chunks".into());
+            }
+            let n_embd = self.cfg.n_embd as usize;
+            let eps = self.cfg.rms_eps;
+            let mut ph_last = std::time::Instant::now();
+            let pos_v: Vec<i32> = caches.iter().map(|c| c.pos as i32).collect();
+            let pos_d = e.htod_i32(&pos_v)?;
+            let x = e.htod(&self.embd.gather(n_embd, tokens))?;
+            ph_mark(e, 0, &mut ph_last)?;
+            let x = self.step35_decode_batch_layers(
+                e, x, caches, &pos_d, 0, self.layers.len(), &mut ph_last)?;
+            let mut hn = e.uninit(b_n * n_embd)?;
+            e.rms_norm(&x, self.output_norm.float_data(), &mut hn, n_embd, b_n, eps)?;
+            let logits = e.matmul(&self.output, &hn, b_n)?;
+            ph_mark(e, 10, &mut ph_last)?;
+            return self.decode_batch_epilogue(
+                e, caches, samp, masks, lean, logits, b_n, &mut ph_last);
+        }
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
 
@@ -760,22 +783,19 @@ impl HybridModel {
             && self.cfg.gemma4.is_none()
             && self.cfg.m3.is_none()
             && !e.verify_exact_on();
-        // step35: `decode_batch_layers` below is the generic Full arm — the SAME body the
-        // unsplit path refuses step35 for (decode_batch.rs:561), but the ppn door sits
-        // BEFORE that assert, so over a PP split (this SKU's only placement) a B>1 tick
-        // walked it silently: global n_head (the 96 max) over-reading wq on the 12
-        // full-attn layers, 128-dim rope on all 45 layers, no SWA window, no head-wise
-        // gate. Plausible-but-wrong logits, observed as garbage text on a c=4 serve
-        // (research/step-sku-20260807/raw/b2ab-pre-20260807T091553Z.log). B=1 is fine —
-        // `b1_stage_fast` rides `decode_layers_eager`, which has the step35 mixer — so the
-        // refusal binds exactly where the generic body would run. The server keeps c>1
-        // WORKING by chunking step35 at B=1 (`chunk_cap_for`); this Err is the engine-side
-        // fail-closed for any other caller.
-        if self.cfg.step35.is_some() && !b1_stage_fast {
-            return Err("decode_step_batch_ppn has no step35 arm outside the B=1 eager \
-                        stage walk (per-layer n_head / partial rope / SWA offset view / \
-                        head-wise gate) — serve step35 with B=1 chunks (chunk_cap_for) or \
-                        MEMRA_SERVE_B1FAST left on".into());
+        // step35 (lane/step35-batched-decode, 2026-08-08): B>1 rides its OWN stage-scoped
+        // batched walk (`step35_decode_batch_layers`) — the generic `decode_batch_layers`
+        // remains OFF-LIMITS for this arch at every B (its uniform geometry produced the
+        // b2ab HTTP-200 garbage: research/step-sku-20260807/raw/b2ab-pre-*.log). B=1 keeps
+        // the `b1_stage_fast` eager walk (`decode_layers_eager` has the step35 mixer and the
+        // m=1 fusion chain). The refusal below now guards only the RESIDUE: the rollback
+        // seam (MEMRA_STEP35_BATCH=0) re-pins fail-closed — chunk_cap_for re-pins the server
+        // to B=1 chunks, and this Err backstops any other caller (the gemma4 pattern:
+        // per-request Err, never a process kill).
+        let step35_batched = self.cfg.step35.is_some() && !b1_stage_fast;
+        if step35_batched && !Self::step35_batch_on() {
+            return Err("step35 batched decode is disabled (MEMRA_STEP35_BATCH=0) — serve \
+                        step35 with B=1 chunks (chunk_cap_for re-pins under the same seam)".into());
         }
         // Hoisted: `caches[0].pos` as a value argument alongside `caches[0]` as `&mut` in one
         // call is a borrow conflict; `pos` is Copy and the epilogue is what advances it.
@@ -791,6 +811,9 @@ impl HybridModel {
             ph_mark(e0, 0, &mut ph_last)?;
             let x = if b1_stage_fast {
                 self.decode_layers_eager(e0, x, fence[0], fence[1], &pos_d, pos0, caches[0])?
+            } else if step35_batched {
+                self.step35_decode_batch_layers(
+                    e0, x, caches, &pos_d, fence[0], fence[1], &mut ph_last)?
             } else {
                 let ctx = self.batch_layer_ctx(e0, caches, fence[0], fence[1])?;
                 self.decode_batch_layers(e0, x, caches, &ctx, &pos_d, &mut ph_last)?
@@ -808,6 +831,9 @@ impl HybridModel {
             let x = rt.rx(s - 1, slot, payload)?;
             let x = if b1_stage_fast {
                 self.decode_layers_eager(es, x, fence[s], fence[s + 1], &pos_d, pos0, caches[0])?
+            } else if step35_batched {
+                self.step35_decode_batch_layers(
+                    es, x, caches, &pos_d, fence[s], fence[s + 1], &mut ph_last)?
             } else {
                 let ctx = self.batch_layer_ctx(es, caches, fence[s], fence[s + 1])?;
                 self.decode_batch_layers(es, x, caches, &ctx, &pos_d, &mut ph_last)?
@@ -823,6 +849,9 @@ impl HybridModel {
         let x = rt.rx(n_st - 2, slot, payload)?;
         let x = if b1_stage_fast {
             self.decode_layers_eager(el, x, fence[n_st - 1], fence[n_st], &pos_d, pos0, caches[0])?
+        } else if step35_batched {
+            self.step35_decode_batch_layers(
+                el, x, caches, &pos_d, fence[n_st - 1], fence[n_st], &mut ph_last)?
         } else {
             let ctx = self.batch_layer_ctx(el, caches, fence[n_st - 1], fence[n_st])?;
             self.decode_batch_layers(el, x, caches, &ctx, &pos_d, &mut ph_last)?
@@ -1228,6 +1257,206 @@ impl HybridModel {
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il_zq8(e, m, &z, None, b_n, il as u16)?,
             };
             // next-layer input x = x1 + ffn_out (batched element-wise add)
+            let mut x2 = e.uninit(b_n * n_embd)?;
+            e.add(&x1, &ffn_out, &mut x2, b_n * n_embd)?;
+            x = x2;
+            ph_mark(e, 9, ph_last)?;
+        }
+        Ok(x)
+    }
+
+    /// Rollback seam for the step35 batched decode arm (lane/step35-batched-decode,
+    /// 2026-08-08). Default ON; `MEMRA_STEP35_BATCH=0` re-pins step35 to fail-closed B=1
+    /// (chunk_cap_for reads the same seam server-side; the engine bodies return Err).
+    /// Also the b2geo35 gate's CANARY seam — the gate's batched-evidence assertion must
+    /// fail under it, proving the gate can detect a silent re-pin.
+    pub fn step35_batch_on() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("MEMRA_STEP35_BATCH").as_deref() != Ok("0"))
+    }
+
+    /// THE step35 BATCHED LAYER WALK (lane/step35-batched-decode, 2026-08-08): B sequences
+    /// share one pass over layers `[lo, hi)` with the REAL step35 geometry — the arm that
+    /// kills the B=1 pin (34 tok/s aggregate FLAT across c=1..8, round-robin serialized;
+    /// research/step-sku-20260807 §4) without re-opening the b2ab garbage hole (the generic
+    /// `decode_batch_layers` ran uniform n_head/full-width rope/no window/no gate over
+    /// step35 weights and returned HTTP-200 garbage at c>1).
+    ///
+    /// SHAPE — batched where the weights are, per-session where the state is:
+    ///   * attn_norm + quantize + wq/wk/wv/attn_gate projections + q/k norms + rope + head
+    ///     gate + wo + residual/post-norm + FFN all run at m=B: ONE weight stream serves B
+    ///     rows (decode is weight-BW-bound; this is the entire win).
+    ///   * KV append + fa_decode stay a per-session loop — the SWA window makes each
+    ///     session's KV view a function of ITS OWN `kvl.len` (`off = len-win` when past the
+    ///     window), and the z-batched seqs kernels take one shared t_kv/rung, not per-row
+    ///     offsets. This is the same shape as `decode_batch_layers`' per-seq fallback arm,
+    ///     and it costs launches, not weight bandwidth (KV is per-session state either way).
+    ///
+    /// PER-LAYER GEOMETRY (the five mechanisms that make the generic body wrong here, all
+    /// from `step35_geom`/cfg): n_head 64 full / 96 SWA (wq/wo/attn_gate widths per layer),
+    /// partial rope (n_rot 64 full / 128 SWA), dual base (5e6/1e4) + `rope_freqs` factors
+    /// on FULL layers only, SWA window 512 with per-SESSION view offsets, and the separate
+    /// head-wise `attn_gate` (one pre-sigmoid scalar per (token, head), input = the
+    /// post-attn_norm hidden, applied before wo).
+    ///
+    /// EXACTNESS (the isolation contract, decode-batch-gate gate2's bar): every kernel here
+    /// is row-independent at m=B or per-session:
+    ///   * `rms_norm`/`add_rms_norm`/`quantize_q8_1`/`attn_head_gate`/activations: per-row
+    ///     programs, grid over rows — row bi's bytes are the 1-row call's bytes.
+    ///   * projections via `matmul_pre` at m=2..8: Q8_0/Q6_K-class rides the b2/b4/b8
+    ///     batched-mmvq tier (bit-identical per (token,row) to m=1 mmvq); IQ4_XS — this
+    ///     SKU's trunk class — has no mmvq/batched kernel, so BOTH m=1 decode and the m=B
+    ///     walk ride `qmatvec_iq4_XS_dp4a` (grid (out_f, m): each column IS the m=1 dp4a
+    ///     program). Same class at every width = the decode-parity law by construction.
+    ///   * `rope_neox2` takes per-row positions (tok = row / n_heads) — row bi rotates at
+    ///     ITS pos with the layer's (n_rot, base, ff), same bits as its solo call.
+    ///   * per-session append/fa_decode_kvmod: literally the eager arm's calls on that
+    ///     session's own cache and views.
+    ///   * MoE (`moe_ffn_il_zq8` at t=B): the router is per-column decode-exact at
+    ///     t < PRIME_MIN_T (m=1 program per column), sigmoid routing + expert dispatch are
+    ///     per-token — a session's experts are a function of its own row only.
+    /// The one accepted gap: vs the SERVED B=1 path (`b1_stage_fast` -> the m=1 FUSION
+    /// chain) this walk sits on the batched side of the long-accepted decode-config FP
+    /// composition class — the same gap qwen's batched body carries vs `decode_step_h`
+    /// (gate1 config-mode jurisdiction). Text-level identity is gated by b2geo35.
+    ///
+    /// STAGE-SCOPED FROM BIRTH: `[lo, hi)` + caller-supplied engine/pos_d, so
+    /// `decode_step_batch_ppn` calls it per stage (per-stage engine, per-stage pos_d, the
+    /// #87 entry fence and boundary slots unchanged) — the pp2-batch seam lesson.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn step35_decode_batch_layers(
+        &self,
+        e: &Engine,
+        mut x: CudaSlice<f32>,
+        caches: &mut [&mut Cache],
+        pos_d: &CudaSlice<i32>,
+        lo: usize,
+        hi: usize,
+        ph_last: &mut std::time::Instant,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let b_n = caches.len();
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
+        let eps = cfg.rms_eps;
+        let s35 = cfg.step35.as_ref().ok_or("step35_decode_batch_layers requires step35 cfg")?;
+        let win = s35.sliding_window as usize;
+        // b2geo35 gate evidence: one line, first B>1 walk only (grep-stable prefix).
+        if b_n > 1 {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| {
+                eprintln!("[step35-batch] first B>1 batched step35 walk: B={b_n} layers=[{lo},{hi})");
+            });
+        }
+
+        for il in lo..hi {
+            let layer = &self.layers[il];
+            let Mixer::Full(fa) = &layer.mixer else {
+                return Err(format!("step35 layer {il} is not full-attn — corrupt config").into());
+            };
+            let (hd, nkv, nh, rbase, scale, swa) = self.step35_geom(il);
+            let n_rot = s35.n_rot(il as u32) as usize;
+            let q_dim = nh * hd;
+            let kv_dim = nkv * hd;
+
+            // ---- attn_norm + q8_1 quantize, batched (B rows) ----
+            let anorm = layer.attn_norm.float_data();
+            let mut xn = e.uninit(b_n * n_embd)?;
+            e.rms_norm(&x, anorm, &mut xn, n_embd, b_n, eps)?;
+            let (hq, hdq) = e.quantize_q8_1(&xn, b_n, n_embd)?;
+
+            // ---- batched projections: q/k/v + the separate head-wise gate (one weight
+            // stream for B rows; xn is the live f32 fallback for non-q8_1-fast classes) ----
+            let q0 = e.matmul_pre(&fa.wq, &hq, &hdq, &xn, b_n)?;
+            let k0 = e.matmul_pre(&fa.wk, &hq, &hdq, &xn, b_n)?;
+            let v0 = e.matmul_pre(&fa.wv, &hq, &hdq, &xn, b_n)?;
+            let gw = fa.attn_gate.as_ref()
+                .ok_or("step35 layer is missing attn_gate.weight (head-wise attention gate)")?;
+            // gate input = the post-attn_norm hidden (upstream `cur`) — same xn/q8 pair.
+            let gt = e.matmul_pre(gw, &hq, &hdq, &xn, b_n)?;
+
+            // ---- q/k RMSNorm over head_dim rows + the per-layer PARTIAL rope ----
+            let mut q = e.uninit(b_n * q_dim)?;
+            e.rms_norm(&q0, fa.q_norm.float_data(), &mut q, hd, b_n * nh, eps)?;
+            let mut k = e.uninit(b_n * kv_dim)?;
+            e.rms_norm(&k0, fa.k_norm.float_data(), &mut k, hd, b_n * nkv, eps)?;
+            let ff = if swa { None } else {
+                self.step35_aux.as_ref().and_then(|a| a.rope_freqs.as_ref())
+            };
+            e.rope_neox2(&mut q, &mut k, pos_d, hd, n_rot, nh, nkv, b_n, rbase, 1.0, ff)?;
+            ph_mark(e, 1, ph_last)?;
+
+            // ---- per-session: KV append + windowed/global fa_decode (each session's OWN
+            // len drives its view offset — the iso-gap law, no cross-session term) ----
+            let mut attn = e.uninit(b_n * q_dim)?;
+            for (bi, cache) in caches.iter_mut().enumerate() {
+                let kvl = cache.kv[il].as_mut().unwrap();
+                let k_row = k.slice(bi * kv_dim..(bi + 1) * kv_dim);
+                let v_row = v0.slice(bi * kv_dim..(bi + 1) * kv_dim);
+                e.append_kv_quantized_view(
+                    &k_row, &v_row, &mut kvl.k, &mut kvl.v, kvl.len,
+                    kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                    Engine::kv_fp8_on(),
+                )?;
+                kvl.len += 1;
+                ph_mark(e, 2, ph_last)?;
+                // the eager arm's SWA view arithmetic, verbatim (step35_decode_attn):
+                // token-aligned offset, keys carry absolute rope, mask is positional.
+                let (off, t_kv) = if swa && kvl.len > win {
+                    (kvl.len - win, win)
+                } else {
+                    (0, kvl.len)
+                };
+                let k_view = e.view_u8_range(&kvl.k, off * kvl.k_tok_bytes,
+                                             (off + t_kv) * kvl.k_tok_bytes);
+                let v_view = e.view_u8_range(&kvl.v, off * kvl.v_tok_bytes,
+                                             (off + t_kv) * kvl.v_tok_bytes);
+                let mut q_row = e.uninit(q_dim)?;
+                e.dtod_copy_view(&q.slice(bi * q_dim..(bi + 1) * q_dim), &mut q_row)?;
+                ph_mark(e, 3, ph_last)?;
+                let mut a_row = e.uninit(q_dim)?;
+                e.fa_decode_kvmod(&q_row, &k_view, &v_view, &mut a_row, hd, nh, nkv,
+                                  t_kv, scale, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                  Engine::kv_fp8_on())?;
+                ph_mark(e, 4, ph_last)?;
+                e.dtod_copy_into(&a_row, &mut attn, bi * q_dim)?;
+                ph_mark(e, 3, ph_last)?;
+            }
+
+            // ---- head-wise gate (one sigmoid per (token, head), pre-wo) + o-proj at m=B ----
+            let mut ag = e.uninit(b_n * q_dim)?;
+            e.attn_head_gate(&attn, &gt, &mut ag, None, hd, nh, b_n)?;
+            let mixed = e.matmul(&fa.wo, &ag, b_n)?;
+            ph_mark(e, 5, ph_last)?;
+
+            // ---- residual add + post_attn_norm + FFN, batched ----
+            let pnorm = layer.post_attn_norm.float_data();
+            let mut x1 = e.uninit(b_n * n_embd)?;
+            let mut z = e.uninit(b_n * n_embd)?;
+            e.add_rms_norm(&x, &mixed, pnorm, &mut x1, &mut z, n_embd, b_n, eps)?;
+            let ffn_out = match &layer.ffn {
+                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
+                    // A dense step35 FFN's clamp is the SHEXP array (upstream's one
+                    // build_ffn serves dense + shared expert, llama-graph.cpp:1751);
+                    // ffn_act_lim dispatches clamped/plain per layer. Layers 0-2 (the
+                    // leading dense) have no live limit on this artifact, but the route
+                    // is correct by construction, not by artifact.
+                    let n_ff = ffn_gate.out_features();
+                    let (zq, zd) = e.quantize_q8_1(&z, b_n, n_embd)?;
+                    let g = e.matmul_pre(ffn_gate, &zq, &zd, &z, b_n)?;
+                    let u = e.matmul_pre(ffn_up, &zq, &zd, &z, b_n)?;
+                    let mut act = e.uninit(b_n * n_ff)?;
+                    Self::ffn_act_lim(e, cfg, &g, &u, 1.0, 1.0,
+                                      cfg.clamp_shexp_at(il as u32), &mut act, b_n * n_ff)?;
+                    let (aq, ad) = e.quantize_q8_1(&act, b_n, n_ff)?;
+                    e.matmul_pre(ffn_down, &aq, &ad, &act, b_n)?
+                }
+                // t=B < PRIME_MIN_T: per-column decode-exact router + host sigmoid routing
+                // + per-token expert dispatch — the same per-token program as eager t=1,
+                // including the per-layer SwiGLU clamp (43/44) via the sequential path's
+                // ffn_act_lim. The sigmoid-router deny on dev/pairs holds by predicate.
+                crate::hybrid::Ffn::Moe(m) =>
+                    self.moe_ffn_il_zq8(e, m, &z, None, b_n, il as u16)?,
+            };
             let mut x2 = e.uninit(b_n * n_embd)?;
             e.add(&x1, &ffn_out, &mut x2, b_n * n_embd)?;
             x = x2;

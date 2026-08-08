@@ -1,0 +1,29 @@
+=== step35-b2-geometry-gate tag=canary ts=20260808T050358Z model=/data/models/step37/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf draft=/data/models/step37/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf ===
+lock acquired 2026-08-08T05:03:58Z
+0, 0 MiB
+1, 0 MiB
+--- c=1 reference (greedy) ---
+ERROR {"message": "batch step: step35 batched decode is disabled (MEMRA_STEP35_BATCH=0) \u2014 serve step35 with B=1 chunks (chunk_cap_for re-pins under the same seam)", "type": "server_error", "param": null, "code": "engine_error"}
+--- c=2 concurrent identical requests ---
+ERROR {"message": "batch step: step35 batched decode is disabled (MEMRA_STEP35_BATCH=0) \u2014 serve step35 with B=1 chunks (chunk_cap_for re-pins under the same seam)", "type": "server_error", "param": null, "code": "engine_error"}
+ERROR {"message": "batch step: step35 batched decode is disabled (MEMRA_STEP35_BATCH=0) \u2014 serve step35 with B=1 chunks (chunk_cap_for re-pins under the same seam)", "type": "server_error", "param": null, "code": "engine_error"}
+--- c=4 concurrent identical requests ---
+ERROR {"message": "batch step: step35 batched decode is disabled (MEMRA_STEP35_BATCH=0) \u2014 serve step35 with B=1 chunks (chunk_cap_for re-pins under the same seam)", "type": "server_error", "param": null, "code": "engine_error"}
+ERROR {"message": "batch step: step35 batched decode is disabled (MEMRA_STEP35_BATCH=0) \u2014 serve step35 with B=1 chunks (chunk_cap_for re-pins under the same seam)", "type": "server_error", "param": null, "code": "engine_error"}
+ERROR {"message": "batch step: step35 batched decode is disabled (MEMRA_STEP35_BATCH=0) \u2014 serve step35 with B=1 chunks (chunk_cap_for re-pins under the same seam)", "type": "server_error", "param": null, "code": "engine_error"}
+ERROR {"message": "batch step: step35 batched decode is disabled (MEMRA_STEP35_BATCH=0) \u2014 serve step35 with B=1 chunks (chunk_cap_for re-pins under the same seam)", "type": "server_error", "param": null, "code": "engine_error"}
+0, 0 MiB
+1, 0 MiB
+lock released 2026-08-08T05:04:46Z
+FAIL: empty/error c=1 reference
+c2[1] == ref
+c2[2] == ref
+c4[1] == ref
+c4[2] == ref
+c4[3] == ref
+c4[4] == ref
+FAIL: step35 decode chunk cap is '1' (< 2) — the B=1 pin is live, nothing batched was tested
+FAIL: no '[step35-batch] first B>1' line in the server log — no B>1 step35 tick ran
+server log: research/step35-batch-20260808/raw/b2geo35-server-canary-20260808T050358Z.log
+VERDICT: FAIL (3 failed assertions)
+step35-b2-geometry-gate: CANARY OK (B=1 re-pin broke the batched-evidence assertion as required)

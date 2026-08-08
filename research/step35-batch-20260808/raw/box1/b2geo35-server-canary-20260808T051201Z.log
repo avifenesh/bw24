@@ -1,0 +1,34 @@
+[server] starting; models config = [("step35", "/home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf", Some("/home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf"))]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (device=0, MEMRA_FAST=true)
+[worker] loading model "step35" <- /home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+[mtp-draft] step35 MTP geometry blk.45: n_head=96 n_head_kv=8 n_rot=128 rope_base=10000 swa=true window=512
+[mtp-draft] external draft head: blk.45, source=nextn.shared_head_head.weight, head_vocab=128896 (full)
+[worker] step35: regime draft attached (/home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf)
+[worker]   loaded "step35": 45 layers, eos=128007
+[worker] step35: template caps tools=true think=true think_switch=false chat_ok=true effort_levels=true gemma_think=false ctx=262144 tok="deepseek-v3" instruct=Some("chatml")
+[worker] step35: decode chunk cap 1
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["step35"]
+[server] listening on http://127.0.0.1:8095
+[meter] admit id=chatcmpl-f359a3c3dde1868d145c48ccc58a8ba0 tenant=default lane=interactive model="step35"
+[worker] observed session VRAM cost for "step35": 336MB (admission gate = 2x)
+[meter] admit id=chatcmpl-763c6bef2553dac0e5d6cc68a502b591 tenant=default lane=interactive model="step35"
+[worker] kv-reuse: 34 of 34 prompt tokens resumed (model step35)
+[meter] admit id=chatcmpl-248e2a698168760c51fb91bda5d79a84 tenant=default lane=interactive model="step35"
+[worker] kv-reuse: 34 of 34 prompt tokens resumed (model step35)
+[meter] admit id=chatcmpl-b566a87a78e76342d856c4f7eeebeafd tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-b61a6467103dc529d7aabd60077bbfa4 tenant=default lane=interactive model="step35"
+[worker] kv-reuse: 34 of 34 prompt tokens resumed (model step35)
+[meter] admit id=chatcmpl-26c69de51242faa80b5065956a1f08a5 tenant=default lane=interactive model="step35"
+[worker] kv-reuse: 34 of 34 prompt tokens resumed (model step35)
+[meter] admit id=chatcmpl-836c2abcf6b70a403f2c19782a55abb2 tenant=default lane=interactive model="step35"
+[worker] kv-reuse: 34 of 34 prompt tokens resumed (model step35)
+[worker] kv-reuse: 34 of 34 prompt tokens resumed (model step35)
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

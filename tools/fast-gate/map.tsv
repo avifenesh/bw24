@@ -91,6 +91,10 @@
 # split-liveness counter; SKIPs on single-GPU rigs — the PP-2 box battery is the authority).
 # research/pp-leverb-20260807.
 ^crates/memra-engine/src/(decode|decode_batch|forward|hybrid_forward|pp|prime_graph|graph_update|mla)\.rs$	synthetic	g12,q9,q35,q35slru,chunkinv,chunkinvc,chunkinv35,chunkinv35c,tickinv35,tickinv35c,gwstress,isogap,isogapc,ppsplit,ppsplitc	q35spec
+# b2geo35/b2geo35c pin the step35 BATCHED-DECODE geometry (per-layer n_head / partial rope /
+# per-session SWA views / head gate at B>1, over PP-2) + the batched-evidence teeth — the
+# HTTP-200-garbage class no logit gate reaches from serve level. research/step35-batch-20260808.
+^crates/memra-engine/src/(decode|decode_batch|forward|hybrid_forward|pp|prime_graph|graph_update|mla)\.rs$	synthetic	g12,q9,q35,q35slru,chunkinv,chunkinvc,chunkinv35,chunkinv35c,tickinv35,tickinv35c,gwstress,isogap,isogapc,b2geo35,b2geo35c	q35spec
 # Variant-only forward paths: E4B owns PLE/KV-sharing, while KAT is the non-expert IQ4_XS trunk.
 ^crates/memra-engine/src/(decode|hybrid_forward)\.rs$	synthetic	e4b,kat	-
 # amargin compares these exact two arithmetic surfaces: batched forward_last vs tokenwise decode.
@@ -120,7 +124,10 @@
 # tickinv35: the worker's per-tick prime loop is the very segmentation the gate replicates —
 # a worker.rs change to tick budgets/LCP-split chunking must re-prove tick-invariance
 # (research/tick-seg-20260807; the probe's loop is a pinned replica of prefill_tick).
-^crates/memra-server/	none	sstress,accept,tickinv35,tickinv35c	-
+# b2geo35: chunk_cap_for + group_chunks live in worker.rs — a change there can silently re-pin
+# step35 to B=1 (gate goes vacuous) or widen past the arm's tier; the evidence assertion catches
+# both directions.
+^crates/memra-server/	none	sstress,accept,tickinv35,tickinv35c,b2geo35,b2geo35c	-
 # --- no-gate paths ---
 ^tools/argmax-margin-gate\.sh$	none	amargin,amarginc	-
 ^(docs/|research/|agent-knowledge/|probe/|\.github/|tools/)	none	-	-
