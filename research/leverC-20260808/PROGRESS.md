@@ -148,3 +148,24 @@ host sigmoid routing still supplies the exact `sel` and `w`, while the establish
 launch pair. Those kernels are rows twins of the sequential fused program, not the denied
 softmax router. Step35's clamped layers cannot enter the plain-SiLU rows arm and retain the
 clamp-aware grouped q8 fallback.
+
+## Increment 3 - rows path exact, clamped fallback isolated
+
+A dedicated Box2 worktree at `/home/ubuntu/memra-cx-leverC` was pinned to `72a929ec` after the
+shared `~/memra` checkout changed commits while an earlier command waited on the GPU lock. Only
+results from the pinned worktree are accepted below.
+
+The rebuilt model-backed oracle proved the batched rows correction byte-identical for every
+unclamped MoE layer from `il=3` through `il=42`. The first clamped layer isolated the remaining
+red:
+
+| Layer class | Dispatch | Verdict |
+|---|---|---|
+| `il=3..42`, unclamped | `resident-q8-rows` | `BYTE-IDENTICAL` at every layer |
+| `il=43`, clamped | first expert-major fallback | **FAIL**, 52,168 / 77,824 differ, max diff 6.203651e-4 |
+
+This disproves the remaining decode-once assumption for the clamped path. Its correction keeps
+the same host sigmoid routes, clamp kernel, batched row quantization, and slot-ordered scatter,
+but uses the pair-major `moe_pairs_matvec_q8` body for gate, up, and down. That kernel is the
+literal `qmatvec_expert_q8` row program with a pair-indexed weight pointer, matching the
+sequential clamped oracle without relying on the decode-once extractor's claimed equivalence.
