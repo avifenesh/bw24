@@ -1367,19 +1367,39 @@ impl Session {
 
 /// Primary CUDA ordinal for the serving worker. CUDA_VISIBLE_DEVICES already remaps physical GPUs
 /// into a process-local ordinal space, so the non-PP default remains logical device 0. Under PP,
-/// stage 0 is the primary engine and therefore follows MEMRA_PP_DEVICES[0], matching the gate and
-/// benchmark harnesses.
+/// the worker primary follows the LAST device in MEMRA_PP_DEVICES — the HEAD stage's device.
+///
+/// WHY THE LAST, NOT THE FIRST (v0.72 tag-blocker 2, research/v072-fix2-20260808): the sharded
+/// loader puts `output_norm` + the lm head on the LAST stage's engine (`hybrid.rs`:
+/// `e_head = layer_engine(e, n_trunk, n_trunk-1)`), and the spec-serving round loop runs its
+/// whole draft chain on the PRIMARY engine — `mtp_head_forward_dev` op 12 falls back to
+/// `&self.output` for every qwen35-family drafter, so EVERY draft token's head matmul reads the
+/// last stage's biggest tensor. The round's verify-logit consumers (device argmax, accept
+/// kernels, seed gather) read last-stage buffers through the primary context by UVA too. Pinning
+/// the primary to stage 0 (the 5f27c55c shape, MEMRA_PP_DEVICES[0]) therefore made every spec
+/// round pay cross-device head reads on BOTH placement orders: spec+PP-2 serving collapsed
+/// 112.5 -> 17.5 agg tok/s while spec-off (head matmul runs ON the last stage) and engine
+/// run-spec (primary=0 = the last stage on the dev10 placement) stayed fast. Following the head
+/// stage restores the exact topology every 212/212 crash-gate + 112.5 perf receipt validated
+/// (research/pp2spec-crash-20260807), keeps the cx-503b correctness win (the primary is still a
+/// placement device, never an unconditional 0), and fixes the pre-merge dev01 ~20x note — the
+/// same mismatch, from the other end. Gate/bench binaries keep primary=devices[0]: they
+/// deliberately exercise the shared-engine stage-0 case and don't run the serving spec round.
 fn worker_device(pp_devices: Option<&str>) -> Result<usize, String> {
     let Some(devices) = pp_devices.filter(|v| !v.trim().is_empty()) else {
         return Ok(0);
     };
-    let first = devices.split(',').next().unwrap().trim();
-    first.parse::<usize>().map_err(|_| {
-        format!(
-            "MEMRA_PP_DEVICES={devices} has invalid first device {first:?} \
-             (want <d0>,..,<dN-1> e.g. 0,1)"
-        )
-    })
+    let mut last = 0usize;
+    for part in devices.split(',') {
+        let part = part.trim();
+        last = part.parse::<usize>().map_err(|_| {
+            format!(
+                "MEMRA_PP_DEVICES={devices} has invalid device {part:?} \
+                 (want <d0>,..,<dN-1> e.g. 0,1)"
+            )
+        })?;
+    }
+    Ok(last)
 }
 
 /// The worker entry point. Runs on its OWN std::thread. Builds the Engine + loads every model on
@@ -4535,17 +4555,24 @@ mod tests {
     use super::worker_device;
 
     #[test]
-    fn worker_device_defaults_to_cuda_visible_zero_and_follows_pp_stage_zero() {
+    fn worker_device_defaults_to_cuda_visible_zero_and_follows_the_pp_head_stage() {
         assert_eq!(worker_device(None), Ok(0));
         assert_eq!(worker_device(Some("")), Ok(0));
-        assert_eq!(worker_device(Some("1,0")), Ok(1));
-        assert_eq!(worker_device(Some(" 3 , 4 ")), Ok(3));
+        // The primary follows the LAST stage (the lm head's device — the spec round's draft
+        // chain reads it every token; see worker_device's doc). The 5f27c55c stage-0 pin was
+        // the v0.72 tag-blocker-2 regressor: 112.5 -> 17.5 agg tok/s on spec+PP-2 serving.
+        assert_eq!(worker_device(Some("1,0")), Ok(0));
+        assert_eq!(worker_device(Some("0,1")), Ok(1));
+        assert_eq!(worker_device(Some(" 3 , 4 ")), Ok(4));
     }
 
     #[test]
-    fn worker_device_rejects_an_invalid_pp_primary() {
+    fn worker_device_rejects_an_invalid_pp_device() {
+        // EVERY position is validated (a bad string must refuse at boot, wherever it is).
         let err = worker_device(Some("gpu0,1")).unwrap_err();
-        assert!(err.contains("invalid first device"), "{err}");
+        assert!(err.contains("invalid device"), "{err}");
+        assert!(err.contains("gpu0"), "{err}");
+        let err = worker_device(Some("1,gpu0")).unwrap_err();
         assert!(err.contains("gpu0"), "{err}");
     }
 
