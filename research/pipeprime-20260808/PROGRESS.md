@@ -289,3 +289,34 @@ Receipts:
 - `raw/pp512-raw-20260808T075717Z.log`
 - `raw/pp2048-raw-20260808T075717Z.log`
 - `raw/pp4096-raw-20260808T075717Z.log`
+
+## Increment 9 — microchunk geometry sweep
+
+Exploratory N=3 medians, alternating order, one GPU-lock hold:
+
+| shape | chunk | chunks | serial | PIPE | speedup |
+|---|---:|---:|---:|---:|---:|
+| pp512 | 128 | 4 | 221.8 | **326.0** | 1.470x |
+| pp512 | 64 | 7 | 197.8 | 323.0 | 1.633x |
+| pp2048 | 512 | 4 | 257.7 | 376.2 | 1.460x |
+| pp2048 | 256 | 8 | **248.2** | **399.4** | 1.609x |
+| pp4096 | 1024 | 4 | 264.9 | 392.2 | 1.481x |
+| pp4096 | 512 | 8 | 258.8 | **417.5** | 1.613x |
+| pp4096 | 256 | 16 | 251.1 | 423.7 | 1.688x |
+
+Every PIPE sample reported exactly `chunks - 1` concurrent active-walker overlaps.
+The practical default candidate targets up to eight microchunks with a 128-token floor:
+pp512 selects 128, pp2048 lands near 256, and pp4096 selects 512. The 16-chunk pp4096
+arm buys only 1.5% more absolute throughput while doubling host-thread, boundary, and
+per-chunk epilogue count. Final N=5 measurements remain pending.
+
+Receipts:
+
+- `raw/sweep-summary-20260808T080643Z.log`
+- `raw/pp512-c128-raw-20260808T080643Z.log`
+- `raw/pp512-c64-raw-20260808T080643Z.log`
+- `raw/pp2048-c512-raw-20260808T080643Z.log`
+- `raw/pp2048-c256-raw-20260808T080643Z.log`
+- `raw/pp4096-c1024-raw-20260808T080643Z.log`
+- `raw/pp4096-c512-raw-20260808T080643Z.log`
+- `raw/pp4096-c256-raw-20260808T080643Z.log`
