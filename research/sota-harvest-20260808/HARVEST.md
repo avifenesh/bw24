@@ -651,10 +651,14 @@ launch. *Cost:* days of measurement + writeup. *Lane:* codex measurement, fable 
    the gate). ~2 weeks; +session-capacity on big-trunk SKUs; only worth it where KV is
    the admission ceiling — measure that first via the admission receipts.
 
-Deliberately NOT in the top-8: FA4 conditional rescaling and the CUTLASS #3030 warp-spec
-template (real, but our prefill wall is MoE+scheduling, not attention — re-rank when the
-anatomy says otherwise); POD-Attention (biggest kernel spend, unproven tick-hybridity);
-decode-graph bucketing for the batched arm (measured negative once; re-sweep on nsys
-evidence only); drafter self-distillation (3.5 — strategic, but its v1 receipt is
-cheap to get and its ranking depends on it); TriAttention/sub-4-bit KV (lossy, watch).
+Deliberately NOT in the top-8: grouped-expert DECODE (3.4 — days-class and the mechanism
+is proven at m=4096, but at decode's m_e∈{1,3} the gather/scatter overhead can eat the
+win; run it as a cheap codex lane with a pre-registered kill bar, it just doesn't
+displace the eight above on expected value); FA4 conditional rescaling and the CUTLASS
+#3030 warp-spec template (real, but our prefill wall is MoE+scheduling, not attention —
+re-rank when the anatomy says otherwise); POD-Attention (biggest kernel spend, unproven
+tick-hybridity); decode-graph bucketing for the batched arm (measured negative once;
+re-sweep on nsys evidence only); drafter self-distillation (3.5 — strategic, but its v1
+receipt is cheap to get and its ranking depends on it); TriAttention/sub-4-bit KV
+(lossy, watch).
 
