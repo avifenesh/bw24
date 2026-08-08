@@ -462,6 +462,7 @@ fn build_dev_exps(
         down: d,
         ptr_row,
         gu_il,
+        dev: e.ctx().ordinal(),
     }))
 }
 
@@ -656,6 +657,14 @@ pub struct DevExps {
     pub down: CudaSlice<u8>,
     /// [3*n_expert] u64 device row: gate ptrs, up ptrs, down ptrs (proj-major like layer_dev_row).
     pub ptr_row: CudaSlice<u64>,
+    /// The CUDA device ordinal these slabs live on (the OWNING stage's device under the PP
+    /// sharded loader — cx-503b sizes and `layer_engine` places per device). Consumers that
+    /// dispatch from a DIFFERENT device must NOT dereference the slabs: an m=1 qmatvec over
+    /// peer-read expert bytes is the measured 34-150x slow class (research/pp-prefill-20260807
+    /// anatomy), strictly worse than SLRU staging. The sequential arm's slab-locality gate
+    /// (lane/pp-leverb) keys on this field; the per-stage prime walker makes every layer's
+    /// slab local by construction.
+    pub dev: usize,
     /// WALL-GAP ARC (MEMRA_MOE_GU_IL=1): gate/up rows INTERLEAVED in one slab — row o of gate at
     /// base + o*(rb_g+rb_u), up at +rb_g. Consumers on the dev path must use (rb_g+rb_u) as the
     /// row stride for BOTH projections (see MoeWeights::dev_rb_gu). One contiguous 1760B stream
