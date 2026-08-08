@@ -5,7 +5,7 @@
 # Self-gating (`kind=cmd` in tools/fast-gate/models.tsv):
 # exit 0 = PASS.
 #
-#   tools/prime-split-gate.sh [<model.gguf>] [--devices 0,1] [--stages 2] [--chunks 4096,513]
+#   tools/prime-split-gate.sh [<model.gguf>] [--devices 0,1] [--stages 2] [--chunks auto,513]
 #                             [--steps 8] [--prompts <f>] [--canary]
 #
 # WHY THIS GATE EXISTS (research/pp-leverb-20260807/PROGRESS.md): the prime path has NO pp
@@ -30,7 +30,7 @@ PROBE=./target/release/concat-prime-probe
 MODEL=""
 DEVICES=0,1
 STAGES=2
-CHUNKS=4096,513
+CHUNKS=auto,513
 STEPS=8
 PROMPTS=""
 CANARY=0
@@ -65,7 +65,7 @@ if [ "$NGPU" -le "$MAXDEV" ] || [ "$NDEV" -lt 2 ]; then
     echo "prime-split-gate: SKIP (needs the multi-GPU placement $DEVICES; $NGPU GPU(s) visible)"
     exit 0
 fi
-# Prompt must exceed the largest chunk so the chunk loop actually segments.
+# Prompt must exercise both the naked auto geometry and the fixed stress chunk.
 PROMPTS="${PROMPTS:-research/chunk-invariance-20260805/prompt-pp6257.txt}"
 [ -f "$PROMPTS" ] || { echo "prime-split-gate: FAIL (missing pinned prompt $PROMPTS)"; exit 1; }
 

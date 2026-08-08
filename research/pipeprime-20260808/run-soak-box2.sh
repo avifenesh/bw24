@@ -31,7 +31,7 @@ thermal() {
     thermal
     env MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1 \
       timeout 14400 ./target/release/concat-prime-probe "$MODEL" ppsplit \
-      --prompt-a "@$PROMPT" --chunks 2048 --steps 1 --soak 200 \
+      --prompt-a "@$PROMPT" --chunks auto --steps 1 --soak 200 \
       >"$PROBE_LOG" 2>&1
     rc=$?
     cat "$PROBE_LOG"

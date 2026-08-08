@@ -1455,11 +1455,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // may advance PRIME_PIPE_OVERLAPS, by at least chunks-1. `--force-serial-pipe`
         // leaves the split live but runs the PIPE arm with MEMRA_PRIME_PIPE=0 — the direct
         // canary for overlap liveness. `--force-unsplit` retains the older walker canary.
-        //   ppsplit <model> ppsplit --prompt-a <txt|@f> [--chunks 4096,513] [--steps 8]
+        //   ppsplit <model> ppsplit --prompt-a <txt|@f> [--chunks auto,513] [--steps 8]
         //                           [--soak 200] [--force-unsplit|--force-serial-pipe]
         "ppsplit" => {
             let pa = text_arg(&rest, "--prompt-a").expect("--prompt-a");
-            let chunks_s = arg(&rest, "--chunks").unwrap_or_else(|| "4096,513".into());
+            let chunks_s = arg(&rest, "--chunks").unwrap_or_else(|| "auto,513".into());
             let steps: usize = arg(&rest, "--steps").and_then(|v| v.parse().ok()).unwrap_or(8);
             let soak: usize = arg(&rest, "--soak").and_then(|v| v.parse().ok()).unwrap_or(1);
             assert!(soak > 0, "ppsplit --soak must be at least 1");
@@ -1563,10 +1563,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut fail = false;
             for cv in chunks_s.split(',') {
                 let cv = cv.trim();
-                unsafe { std::env::set_var("MEMRA_PRIME_CHUNK", cv) };
+                let chunk = if cv == "auto" {
+                    unsafe {
+                        std::env::remove_var("MEMRA_PRIME_CHUNK");
+                        std::env::remove_var("MEMRA_PRIME_PP");
+                        std::env::remove_var("MEMRA_PRIME_PIPE");
+                    }
+                    memra_engine::hybrid_forward::prime_chunk_tokens(
+                        t,
+                        cx.model.layers.len(),
+                    )
+                } else {
+                    unsafe { std::env::set_var("MEMRA_PRIME_CHUNK", cv) };
+                    cv.parse().unwrap_or(0)
+                };
+                let chunk_label = if cv == "auto" {
+                    format!("auto({chunk})")
+                } else {
+                    cv.to_string()
+                };
                 // expected chunk count = prime_cache's own loop (incl. the PRIME_MIN_T tail
                 // merge), so the liveness bar tracks the real segmentation at every --chunks.
-                let chunk: usize = cv.parse().unwrap_or(0);
                 let expected = if chunk == 0 || t <= chunk {
                     1
                 } else {
@@ -1669,7 +1686,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "EXACT+SPLIT-LIVE+PIPE-LIVE"
                 };
                 println!(
-                    "  chunk {cv} | serial-vs-ref diff L/H/S/D={}/{}/{}/{} | \
+                    "  chunk {chunk_label} | serial-vs-ref diff L/H/S/D={}/{}/{}/{} | \
                      pipe-vs-serial diff L/H/S/D={}/{}/{}/{} | split_chunks R/S/P={}/{}/{} \
                      need S,P>={expected} | pipe_overlaps R/S/P={}/{}/{} need P>={} | \
                      soak pipe_primes={} exact_failures={} live_failures={} | {status}",
@@ -1701,6 +1718,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             unsafe {
+                std::env::remove_var("MEMRA_PRIME_CHUNK");
                 std::env::remove_var("MEMRA_PRIME_PP");
                 std::env::remove_var("MEMRA_PRIME_PIPE");
             }
