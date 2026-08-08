@@ -491,13 +491,14 @@ Caveats that travel with these cells:
   also remains **quarantined**: the H100-era 35% same-device flake was refuted on this silicon
   (20/20, p<0.001) but the quarantine was not lifted, and the cross-device ~0.5% flake is
   neither reproduced nor excluded.
-- **`MEMRA_SERVE_SPEC=0` is required** — spec over PP-2 is bit-identical (7/7) but one
-  placement is ~20x slow and the other trips a sticky `CUDA_ERROR_ILLEGAL_ADDRESS` that
-  poisons the CUDA context (100% of requests lost at c=4, 3/3 repro). Mechanism detail in
-  [`docs/SERVING.md`](SERVING.md#pipeline-parallel-pp-2-serving).
-- **The serving primary is always device 0** (`Engine::new(0)` is unconditional in the worker,
-  regardless of `MEMRA_PP_DEVICES`). That asymmetry is the root of the dev01-vs-dev10
-  behavioral difference — and dev10 is the placement that goes fatal at c=4 with spec on.
+- **PP-2 defaults to plain decode through the placement-aware spec gate.** The old fatal
+  spec placement was fixed and crash-gated, but spec loses every measured q9 and step35
+  c=1/2/4 throughput cell. Default LOW=0/HIGH=1 admits no PP-2 spec sessions;
+  `MEMRA_SPEC_GATE=0` retains the always-spec rollback and crash-gate arm. Mechanism and
+  current matrix: [`docs/SERVING.md`](SERVING.md#pipeline-parallel-pp-2-serving).
+- **The serving primary follows the last `MEMRA_PP_DEVICES` entry**, the head stage. This
+  v0.72 correction removes the old placement-order head peer-read asymmetry; both orders
+  now measure in the same 111-112 tok/s spec class.
 
 ## Bring-up notes
 

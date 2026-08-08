@@ -93,7 +93,10 @@ Tensor parallelism is neither — it is a separate in-progress build (M0 comms f
   matches never-spec; set `MEMRA_SPEC_GATE_LOW=0` to never admit spec if cold-ramp p95
   outweighs c=1 throughput. Flags: `MEMRA_SPEC_GATE` (rollback seam),
   `MEMRA_SPEC_GATE_LOW`/`_HIGH`. Receipts: `research/spec-serving-20260801/`,
-  `research/spec-gate-20260806/`.
+  `research/spec-gate-20260806/`. **The defaults are placement-aware:** a current-train q9
+  re-sweep keeps single-card at LOW=2/HIGH=4 (spec wins c=1/2, plain wins c=4), while
+  sharded cross-device PP-2 uses LOW=0/HIGH=1 because plain wins every q9 and step35
+  c=1/2/4 cell. Receipts: `research/specplace-20260808/`.
 - **The plain-serve c=1 gap (task #70) is closed by the fast path above — with one cell
   pending re-measure and one still open.** Phase 1 measured serve c=1 trailing the naked
   CLI **−11.74%** on a Q8_0 27B cell (`memra-server` 46.09 tok/s, N=3 median, vs `run-gen`
@@ -254,11 +257,11 @@ The serving config, minimally:
 
 ```bash
 MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1 \
-MEMRA_SERVE_SPEC=0 \
 MEMRA_MODELS="big=/path/to/model.gguf" memra-server
 ```
 
-`MEMRA_SERVE_SPEC=0` is **load-bearing, not tidiness** (see below). The server logs
+The placement-aware spec gate selects plain decode by default on this sharded PP-2 shape;
+no explicit `MEMRA_SERVE_SPEC=0` is required. The server logs
 `[pp] cross-device transport: stage0=dev0 stage1=dev1` when the split is live — a config that
 silently did not split is the failure mode that banner exists to rule out.
 
@@ -293,22 +296,21 @@ by giving the split its own B=1 path — each stage runs its layer range through
 `decode_layers_eager`. `MEMRA_SERVE_B1FAST=0` is the rollback control and still measures the
 old 177 (0.851x).
 
-**Why `MEMRA_SERVE_SPEC=0`.** Speculative serving over PP-2 is *correct* — the verify trunk
-takes its own stage split and the bit-identity battery is 7/7 ALL GREEN — and it is still
-**not shippable for concurrent serving**:
+**PP-2 speculative policy.** Speculative serving over PP-2 is *correct* — the verify trunk
+takes its own stage split and the bit-identity battery is 7/7 ALL GREEN. The old concurrent
+crash was the ppN reverse-publication hole; #87 fixed it with stage-behind fences and closed
+the formerly fatal placement at c=2/4/8. The later v0.72 head-affinity fix made both
+placement orders the same 111-112 tok/s spec class.
 
-- On the reversed placement it provokes a deterministic `CUDA_ERROR_ILLEGAL_ADDRESS` that is
-  **sticky for the CUDA context**: once it fires, every later `new_session` inherits it. At
-  c=4 that is **100% of requests lost** (0/48, wall 0.008 s), reproducible 3/3.
-- On the other placement it is ~20x slow.
-- The same placement with spec OFF is 96/96 clean and the fastest arm measured.
-
-So PP-2 serves the **plain** path today. An artifact carrying an embedded MTP head self-specs
-by default, which is why the flag must be explicit: without it every request funnels into the
-verify trunk. `serve-smoke.sh` over the split (PP-2 dev01, spec off) returns **0 failed
-checks** across `/models`, non-stream chat, SSE streaming, `/v1/completions`, greedy
-determinism, 3 concurrent chats, and long generation — identical to the door-shut control,
-i.e. the split adds nothing observable to the OpenAI surface.
+Correctness does not make it the throughput winner. q9 spec ON/OFF measures
+112.5/223.3, 112.3/340.3, and 112.1/593.4 tok/s at c=1/2/4. On the current batched step35
+core the corresponding cells are 35.9/85.7, 36.2/101.6, and 36.7/121.7 (N=3). The
+placement-aware default is therefore `MEMRA_SPEC_GATE_LOW=0`,
+`MEMRA_SPEC_GATE_HIGH=1`: no PP-2 request enters the serial spec queue, and plain requests
+do not pay the spec-only admission reserve. `MEMRA_SPEC_GATE=0` restores always-spec for
+rollback and the #87 crash gate; explicit LOW/HIGH values remain measurement overrides.
+Receipts: `research/pp2spec-crash-20260807/`, `research/v072-fix2-20260808/`,
+`research/specplace-20260808/`.
 
 **What refuses, deliberately.** The four decode paths that have no stage split
 (`decode_step_batch`'s unsplit body, `decode_step_dc`, the graph capture wrapping dc, and

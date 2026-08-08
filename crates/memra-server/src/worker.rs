@@ -724,82 +724,159 @@ fn serve_batching() -> bool {
     *B.get_or_init(|| std::env::var("MEMRA_SERVE_BATCH").map(|v| v != "0").unwrap_or(true))
 }
 
-/// Spec serving armed? (MEMRA_SERVE_SPEC!=0 — the model-independent half of `spec_eligible`.)
-/// The admission gate uses this to decide whether a model can take the spec path at all, and
-/// therefore whether it must pay the SPEC_SHRINK_RESERVE transient floor (lane/admit-oom).
+/// Can this process admit a spec session under the current placement policy?
+///
+/// The admission gate uses this only for the SPEC_SHRINK_RESERVE transient floor
+/// (lane/admit-oom). A sharded PP-2 process at the placement-aware default has LOW=0, so no
+/// request can take spec and the plain path must not pay that reserve. `MEMRA_SPEC_GATE=0`
+/// remains always-spec and therefore still pays it.
 fn serve_spec_enabled() -> bool {
     static S: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *S.get_or_init(|| std::env::var("MEMRA_SERVE_SPEC").map(|v| v != "0").unwrap_or(true))
+    let armed = *S.get_or_init(|| {
+        std::env::var("MEMRA_SERVE_SPEC")
+            .map(|v| v != "0")
+            .unwrap_or(true)
+    });
+    armed && (!spec_gate_on() || spec_gate_low() > 0)
 }
-
 
 /// ---- CONCURRENCY-GATED SPEC (lane/spec-gate, task #89, 2026-08-07) ----
 ///
-/// THE MEASUREMENT THAT FORCES THIS (research/spec-scaling-20260806, merged fe2b3740, N=3
-/// interleaved on this rig with q9 NVFP4+MTP + the production drafter, K=3, greedy):
+/// THE SINGLE-CARD MEASUREMENT (research/specplace-20260808, N=3 interleaved on the
+/// current train with q9 NVFP4+MTP + the production drafter, K=3, greedy):
 ///
 /// | c | spec ON agg | spec OFF agg | S/N  |
 /// |---|-------------|--------------|------|
-/// | 1 | 253.2       | 139.4        | 1.82x WIN  |
-/// | 2 | 252.3       | 223.2        | 1.13x win  |
-/// | 4 | 251.2       | 386.7        | 0.65x LOSS |
-/// | 8 | 249.7       | 525.9        | 0.47x LOSS |
+/// | 1 | 374.8       | 224.5        | 1.67x WIN  |
+/// | 2 | 374.5       | 347.5        | 1.08x WIN  |
+/// | 4 | 377.3       | 617.1        | 0.61x LOSS |
 ///
-/// Spec is monotonically FLAT (253.2 -> 249.7 across an 8x load increase) because the spec path
-/// is a QUEUE: `worker.rs` phase (a) steps each spec session's whole burst in a serial host loop
-/// and phase (c) excludes spec sessions from batched decode, so per-round cost moves 1.009x
-/// under 8x load while per-session p50 goes 7.75x. The obvious fix — a batched cross-session
-/// verify — is REFUTED, not untried: the exact-kernel width tier caps a pooled verify at 16
-/// columns (`matmul_decode_exact`'s `(2..=16).contains(&m)`; measured per-column cliff 1.677 ->
-/// 3.887 ms between T=16 and T=17), which is 4 sessions at K=3, and the measured amortization
-/// inside that cap bounds the whole fix at 1.27-1.44x on an arm spec-OFF already beats 2.1x.
+/// Spec stays approximately flat because phase (a) steps each spec session's whole burst in a
+/// serial host loop and phase (c) excludes spec sessions from batched decode. Single-card
+/// therefore keeps the measured LOW=2/HIGH=4 crossover.
 ///
-/// So the shippable answer is POLICY: run spec while concurrency is low, take the batched path
-/// when it rises. Two thresholds, not one, because a single threshold at the crossover would
-/// thrash — a session count oscillating across it would pay both paths' costs and neither's
-/// benefit (and every demotion is one-way, see `into_demoted`).
+/// PP-2 IS A DIFFERENT POLICY CELL. The fixed q9 path measured 112.5/112.3/112.1 spec ON
+/// against 223.3/340.3/593.4 spec OFF at c=1/2/4 (research/pp2spec-crash-20260807).
+/// Re-checking the newly batched step35 core on the current train measured
+/// 35.9/36.2/36.7 against 85.7/101.6/121.7, N=3 with no run-range overlap
+/// (research/specplace-20260808). Spec loses every PP-2 cell, including c=1, so the
+/// placement-aware default is LOW=0/HIGH=1: never admit spec.
 ///
-///   enter/stay spec while active <= T_LOW   (default 2 — the last measured WIN rung)
-///   demote to batched when active >= T_HIGH (default 4 — the first measured LOSS rung)
+/// Defaults:
 ///
-/// The hysteresis band (act == 3 here) is the "keep doing what you are doing" zone: a session
-/// already on spec keeps bursting, a new arrival admits batched. That holds mode switches to
-/// O(load crossings) instead of O(ticks).
+///   single card / non-PP-2: LOW=2, HIGH=4
+///   sharded cross-device PP-2: LOW=0, HIGH=1 (spec admission OFF)
 ///
-/// `MEMRA_SPEC_GATE=0` is the rollback seam (restores the pre-lane always-spec behavior at every
-/// concurrency). Thresholds are `MEMRA_SPEC_GATE_LOW` / `MEMRA_SPEC_GATE_HIGH`.
+/// `MEMRA_SPEC_GATE_LOW` / `_HIGH` explicitly override the placement defaults.
+/// `MEMRA_SPEC_GATE=0` is the rollback seam and restores always-spec on every placement.
 fn spec_gate_on() -> bool {
     static G: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *G.get_or_init(|| std::env::var("MEMRA_SPEC_GATE").as_deref() != Ok("0"))
 }
 
-/// Admit-spec ceiling: a NEW request goes spec only while the active-session count is at or
-/// below this. Default 2 = the highest measured spec-win rung (1.13x at c=2).
-fn spec_gate_low() -> usize {
-    static L: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *L.get_or_init(|| {
-        std::env::var("MEMRA_SPEC_GATE_LOW").ok().and_then(|v| v.parse().ok()).unwrap_or(2)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SpecGateThresholds {
+    low: usize,
+    high: usize,
+    raw_high: usize,
+    pp2_default: bool,
+    low_overridden: bool,
+    high_overridden: bool,
+    high_clamped: bool,
+}
+
+fn spec_gate_defaults(pp2: bool) -> (usize, usize) {
+    if pp2 { (0, 1) } else { (2, 4) }
+}
+
+fn resolve_spec_gate_thresholds(
+    pp2: bool,
+    low_override: Option<usize>,
+    high_override: Option<usize>,
+) -> SpecGateThresholds {
+    let (default_low, default_high) = spec_gate_defaults(pp2);
+    let low = low_override.unwrap_or(default_low);
+    let raw_high = high_override.unwrap_or(default_high);
+    let high_clamped = raw_high <= low;
+    let high = if high_clamped {
+        low.saturating_add(1)
+    } else {
+        raw_high
+    };
+    SpecGateThresholds {
+        low,
+        high,
+        raw_high,
+        pp2_default: pp2,
+        low_overridden: low_override.is_some(),
+        high_overridden: high_override.is_some(),
+        high_clamped,
+    }
+}
+
+/// This lane measured the cross-device, stage-split PP-2 placement. Do not silently apply its
+/// default to PP-N or to the same-device/door-rollback configurations, whose execution shape is
+/// different and unmeasured here.
+fn spec_gate_pp2_placement() -> bool {
+    let exactly_two_stages = std::env::var("MEMRA_PP_STAGES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .is_some_and(|n| n == 2);
+    exactly_two_stages && memra_engine::pp::pp_sharded_cross_device()
+}
+
+fn spec_gate_thresholds() -> &'static SpecGateThresholds {
+    static T: std::sync::OnceLock<SpecGateThresholds> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        let low_override = std::env::var("MEMRA_SPEC_GATE_LOW")
+            .ok()
+            .and_then(|v| v.parse().ok());
+        let high_override = std::env::var("MEMRA_SPEC_GATE_HIGH")
+            .ok()
+            .and_then(|v| v.parse().ok());
+        let thresholds =
+            resolve_spec_gate_thresholds(spec_gate_pp2_placement(), low_override, high_override);
+        if thresholds.high_clamped {
+            eprintln!(
+                "[spec-gate] WARN: MEMRA_SPEC_GATE_HIGH={} <= LOW={} leaves no hysteresis \
+                 band (mode thrash); clamped to {}",
+                thresholds.raw_high, thresholds.low, thresholds.high
+            );
+        }
+        thresholds
     })
 }
 
-/// Demote floor: a LIVE spec session hands its cache to the batched path once the active count
-/// reaches this. Default 4 = the first measured spec-loss rung (0.65x at c=4). Must exceed
-/// `spec_gate_low()` or there is no hysteresis band; a bad pair is clamped, loudly.
+fn log_spec_gate_policy() {
+    if !spec_gate_on() {
+        eprintln!("[spec-gate] policy disabled by MEMRA_SPEC_GATE=0: always-spec");
+        return;
+    }
+    let thresholds = spec_gate_thresholds();
+    let placement = if thresholds.pp2_default {
+        "pp2-cross-device"
+    } else {
+        "single-or-non-pp2"
+    };
+    let source = if thresholds.low_overridden || thresholds.high_overridden {
+        "env-resolved"
+    } else {
+        "placement-default"
+    };
+    let admission = if thresholds.low == 0 { "off" } else { "on" };
+    eprintln!(
+        "[spec-gate] policy placement={placement} LOW={} HIGH={} source={source} \
+         spec-admission={admission}",
+        thresholds.low, thresholds.high
+    );
+}
+
+fn spec_gate_low() -> usize {
+    spec_gate_thresholds().low
+}
+
 fn spec_gate_high() -> usize {
-    static H: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *H.get_or_init(|| {
-        let raw = std::env::var("MEMRA_SPEC_GATE_HIGH").ok()
-            .and_then(|v| v.parse::<usize>().ok()).unwrap_or(4);
-        let low = spec_gate_low();
-        if raw <= low {
-            let fixed = low + 1;
-            eprintln!("[spec-gate] WARN: MEMRA_SPEC_GATE_HIGH={raw} <= LOW={low} leaves no \
-                       hysteresis band (mode thrash); clamped to {fixed}");
-            fixed
-        } else {
-            raw
-        }
-    })
+    spec_gate_thresholds().high
 }
 
 /// What the load path must SAY (and whether it must refuse) about one model's drafter
@@ -1430,6 +1507,7 @@ pub fn run(
     // per-call, but logging it once keeps the worker's behavior explicit and stable for the run.
     let fast = std::env::var("MEMRA_FAST").as_deref() != Ok("0");
     eprintln!("[worker] Engine ready (device={device}, MEMRA_FAST={})", fast);
+    log_spec_gate_policy();
 
     let mut loaded: HashMap<String, LoadedModel> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
@@ -4568,7 +4646,27 @@ mod tests {
     use super::{PoolKey, PrefixCache, PrefixEntry, PREFIX_CACHE_MIN_TOKENS};
     use super::{meter_account, HashMap, METER_TENANT_CAP};
     use super::{draft_verdict, draft_verdict_message, DraftVerdict};
+    use super::{resolve_spec_gate_thresholds, spec_gate_defaults};
     use super::worker_device;
+
+    #[test]
+    fn spec_gate_defaults_follow_placement() {
+        assert_eq!(spec_gate_defaults(false), (2, 4));
+        assert_eq!(spec_gate_defaults(true), (0, 1));
+    }
+
+    #[test]
+    fn spec_gate_threshold_overrides_remain_explicit_and_clamped() {
+        let pp2_c1 = resolve_spec_gate_thresholds(true, Some(1), Some(2));
+        assert_eq!((pp2_c1.low, pp2_c1.high), (1, 2));
+        assert!(pp2_c1.low_overridden);
+        assert!(pp2_c1.high_overridden);
+        assert!(!pp2_c1.high_clamped);
+
+        let bad = resolve_spec_gate_thresholds(false, Some(4), Some(4));
+        assert_eq!((bad.low, bad.raw_high, bad.high), (4, 4, 5));
+        assert!(bad.high_clamped);
+    }
 
     #[test]
     fn worker_device_defaults_to_cuda_visible_zero_and_follows_the_pp_head_stage() {

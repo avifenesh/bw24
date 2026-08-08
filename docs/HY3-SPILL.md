@@ -88,16 +88,16 @@ resident every realistic class clears the honest estimate S_est = 1 + r/2 >= 1.2
 the PP-2 spike wires spec K=1 in and measures the verify-batch overhead phi that the
 floor regime cannot price. K stays 1: the nextn=1 head accepts zero chained drafts.
 
-**Status of that spike (2026-08-06):** PP-2 shipped as a real serving shape, but *not* with
-spec, so phi is still unpriced on a pair. The verify forward does take its own stage split
-(`MEMRA_SPEC_PP`, default ON) and is bit-identical — `decode-batch-gate --mode ppspec` is 7/7
-arms green — yet spec-over-PP-2 is not shippable for concurrent serving: one placement is ~20x
-slow and the other trips a sticky `CUDA_ERROR_ILLEGAL_ADDRESS` that kills the worker's CUDA
-context (100% of requests lost at c=4, 3/3 repro). PP-2 serving therefore sets
-`MEMRA_SERVE_SPEC=0` and runs plain batched decode, whose split cost is 0.5-1.5% at B=4/8/16
-(`research/pp2-spec-20260806/`, `research/pp2-batch-20260806/`). Until that crash is root-caused,
-the resident-bank spec estimate above stays an estimate on this shape — do not quote S_est as a
-measured PP-2 result. The acceptance profile itself is unaffected: it was measured single-GPU.
+**Status of that spike (2026-08-08):** the PP-2 spec path is now correct and crash-gated.
+The verify forward takes its own stage split (`MEMRA_SPEC_PP`, default ON),
+`decode-batch-gate --mode ppspec` is 7/7 green, and the #87 reverse-publication fix closed
+the old fatal placement. The generic PP-2 serving policy nevertheless defaults spec
+admission off because q9 and step35 both lose every measured c=1/2/4 throughput cell
+(`research/specplace-20260808/`). That result does **not** price Hy3's different K=1
+resident-bank economics: its PP-2 spike must explicitly force spec with
+`MEMRA_SPEC_GATE=0`, measure phi against a same-window plain arm, and keep the acceptance
+profile frozen. Until then S_est remains an estimate on this shape, not a measured PP-2
+result. The single-GPU acceptance profile itself is unaffected.
 
 ## Obtaining the published overlay
 

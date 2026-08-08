@@ -103,9 +103,11 @@ decode under a config that asked for spec.
 reverse-publication hole, fixed by `PpNRt::fence_stages_behind` — crash gate 212/212 at
 c=2..8 on the previously-fatal placement, run-spec K=1..8 PASS with acceptance identical
 to door-shut (`research/pp2spec-crash-20260807/`). Spec + a drafter now boots and serves
-over any PP placement; benchmark placement order (dev01 spec-ON measured ~20x slow on the
-2026-08-06 rig — a scheduling property, not a crash). Receipts:
-`research/step-draft-20260807/`.
+over any PP placement. The v0.72 worker follows the head stage and removes the old
+placement-order slowdown, but the placement-aware scheduler defaults PP-2 spec admission
+off because plain batching wins every measured c=1/2/4 cell. Use
+`MEMRA_SPEC_GATE=0` only for rollback or an explicit spec measurement. Receipts:
+`research/step-draft-20260807/`, `research/specplace-20260808/`.
 
 ## Prebuilt drafts
 

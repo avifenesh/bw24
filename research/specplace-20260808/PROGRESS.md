@@ -94,6 +94,34 @@ uses LOW=0/HIGH=1 (never admit spec); single-card keeps LOW=2/HIGH=4. Explicit
 `MEMRA_SPEC_GATE_LOW`/`_HIGH` values override those defaults, and
 `MEMRA_SPEC_GATE=0` remains the rollback to always-spec on every placement.
 
+## Implementation
+
+`crates/memra-server/src/worker.rs` now resolves the gate thresholds from the
+actual serving placement:
+
+- exactly two stages plus a sharded cross-device placement: LOW=0/HIGH=1;
+- single-card, PP-N, same-device PP, and sharding/stream rollback shapes:
+  LOW=2/HIGH=4, because this lane did not measure those as PP-2 policy cells;
+- explicit LOW/HIGH values override the placement defaults, with the existing
+  loud `HIGH <= LOW` clamp retained;
+- `MEMRA_SPEC_GATE=0` still bypasses admission and demotion and therefore forces
+  the always-spec rollback arm.
+
+The placement-default PP-2 process also stops charging
+`SPEC_SHRINK_RESERVE`: with LOW=0 no request can enter spec, so plain admission
+keeps its prior headroom rule. A startup line records placement, resolved
+thresholds, source, and whether spec admission is on or off.
+
+Operator docs were synchronized in README, `docs/SERVING.md`,
+`docs/PERFORMANCE.md`, `docs/FLAGS.md`, `docs/DRAFT-REGIME.md`, and
+`docs/HY3-SPILL.md`. No generated perf block or published number changed.
+
+Local GPU-free checks:
+
+- `cargo test -p memra-server -- --test-threads=1`: 119 passed, 0 failed;
+- `python3 tools/update-perf-board.py --check`: up to date;
+- `git diff --check`: clean.
+
 ## Measurement protocol
 
 - One exclusive `/tmp/memra-gpu.lock` hold per sweep.
@@ -131,3 +159,5 @@ boundary. Load points: 36, with 0 errors and 0 shed requests. Temperatures staye
   extracted into the matrices above.
 - 2026-08-08: current-train box2 sweep completed, 36/36 clean load points. The
   decision rule selects PP-2 default OFF and preserves the single-card gate.
+- 2026-08-08: placement-aware gate implemented and current operator docs
+  synchronized; local server unit tests 119/119 green.
