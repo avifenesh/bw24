@@ -392,6 +392,21 @@ gen) — the slab arm cannot fire on softmax-router archs (they take pairs/dev b
 sequential body), and single-card behavior is unchanged. `ppsplit` SKIPs on one GPU by
 design (box battery is the authority).
 
+### Rebase confirmation on d8363ccd (`raw/rebase-confirm-20260808T042723Z.log`)
+
+The lane rebased onto the v0.72-blockers train tip (the merged tick-canary engine fix +
+`c5cd6a35` step35 batched decode, which touches the same file). Full re-confirmation on
+the rebased tree, one hold:
+
+| gate | verdict |
+|---|---|
+| R1 prime-split-gate | **GREEN** (SPLIT BIT-IDENTICAL + LIVE) |
+| R1c ppsplitc canary | **teeth** |
+| R2 tickinv35 naked over the split | **PASS** |
+| R2c tickinv35c (the MERGED both-halves seam) over the split | **teeth** — the engine fix bites through the walker too |
+| R3 run-gen PP-2 | **MATCH** (argmax 6776) |
+| R4 pp4096 split/unsplit N=3 | 270.9/267.6/267.3 vs 142.0/142.3 — the 1.88x holds on the rebased tree |
+
 ### What remains (the honest cut line)
 
 - **Chunk pipelining (step 6)** — stage-0 chunk N+1 under stage-1 chunk N, the SGLang
