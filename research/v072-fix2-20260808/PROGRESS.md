@@ -109,5 +109,54 @@ Interim receipts (points-*.jsonl, first 4 arms, single lock hold):
 | fix-dev10-spec-c1-r1 | HEAD-stage primary fix | 1,0 | 1 | **111.7** | 112 class RETURNED (r1 of N=3) |
 
 Boot lines quoted: BASE dev10 "Engine ready (device=1, ...)" (stage-0 pin),
-FIX dev10 "Engine ready (device=0, ...)" expected (head stage). Remaining arms running:
-F1r2/r3, F2 c=2 x3, spec-off, door-shut, dev01 differentiator, crash c=4 x50, run-spec.
+FIX dev10 "Engine ready (device=0, ...)" (head stage).
+
+### FINAL verify table (driver rc=0, one lock hold, raw/ in this directory)
+
+All rows: q9 embedded-MTP, greedy, max_tokens 96, warmup 1. FIX = the head-stage
+worker_device patch (identical bytes to commit 05ddfef2's worker.rs); BASE = tree as
+found (5f27c55c stage-0 pin). Single runs labeled single runs; headline cells N=3.
+
+| arm | binary | placement | c | agg tok/s | verdict |
+|---|---|---|---|---|---|
+| base-dev10-spec-c1 | BASE | 1,0 | 1 | 17.4 | collapse REPRODUCED (battery E2: 17.5) |
+| base-dev10-spec-c2 (GATE=0) | BASE | 1,0 | 2 | 17.5 | crash-gate shape collapse REPRODUCED (lane receipt: 112.5) |
+| base-dev10-specoff-c1 | BASE | 1,0 | 1 | 221.7 | control clean (lane: 223.3) |
+| fix-dev10-spec-c1 r1/r2/r3 | FIX | 1,0 | 1 | 111.7 / 112.0 / 111.9 | **112 class RETURNED, N=3, spread 0.3** |
+| fix-dev10-spec-c2 (GATE=0) r1/r2/r3 | FIX | 1,0 | 2 | 111.8 / 111.9 / 111.9 | **matches the lane's 112.3 c=2 receipt, N=3** |
+| fix-dev10-specoff-c1 | FIX | 1,0 | 1 | 221.7 | spec-off UNCHANGED (digit-match to BASE) |
+| fix-doorshut-c4 (single card) | FIX | none | 4 | 543.5 | single-card unchanged (battery: 547.3; single run) |
+| fix-dev01-spec-c1 | FIX | 0,1 | 1 | 111.0 | **THEORY DIFFERENTIATOR: the pre-merge ~20x-slow placement is now FAST** — a plain revert would NOT do this (single run) |
+| fix-dev10-crash-c4 x50 (GATE=0) | FIX | 1,0 | 4 | 50/50 ok, 0 err, agg 111.6 | #87 quick crash gate CLEAN; fault-line grep count 0 |
+| run-spec K=1..8 dev10 PP-2 (engine) | shared bin | 1,0 | — | K=1 161.5 tok/s | **SELF-CONSISTENCY PASS 8/8**, acceptance 27/36, 33/62, 36/84... — IDENTICAL to the pinned door-shut table |
+
+Boot-line receipt across all arms: every BASE PP arm booted device=1 (stage 0 of 1,0);
+every FIX dev10 arm booted device=0 (head stage); fix-dev01 booted device=1 (head stage
+of 0,1); door-shut booted device=0 (no placement -> default). Exactly the topology rule.
+
+### Root cause, one paragraph (CONFIRMED by the A/B)
+
+The sharded PP loader homes `output_norm` + the lm head on the LAST stage's device
+(hybrid.rs:1213). The serving spec round runs its draft chain on the PRIMARY engine, and
+`mtp_head_forward_dev` op 12 falls back to `&self.output` for qwen35-family drafters —
+one full lm-head read per draft token, plus op 11's `output_norm` fallback and the
+round's UVA readbacks of last-stage verify buffers. 5f27c55c pinned the worker primary
+to MEMRA_PP_DEVICES[0] = stage 0, making the head remote from the draft chain on every
+placement order (the battery's "placement-independent" 17.5). The lane's fast receipts
+were all topologies where primary == last-stage device (`Engine::new(0)` under 1,0). The
+fix makes the worker primary follow the HEAD stage (last device): 17.4 -> 111.9 (N=3,
+c=1 and c=2), spec-off/door-shut digit-unchanged, crash gate 50/50 clean, run-spec 8/8
+PASS at pinned acceptance, and dev01 — slow since before the merge for the same reason,
+recorded as a "~20x placement-scheduling question" in the pp2spec lane — is fixed to
+111.0 by the same rule, which a revert to `Engine::new(0)` could not have done. The
+correctness win of 5f27c55c is preserved: the primary is always a placement device
+(multi-tenant device-follow), invalid strings still refuse at boot (now validated at
+every position, not just [0]).
+
+### Not addressed here (out of scope, already owned elsewhere)
+
+- The leverb lane's ~3% pp residency regression from the SAME merge (dead slabs starve
+  the SLRU) — separate mechanism (238beae0, engine residency sizing), receipts and the
+  slab-arm recovery live in lane/pp-leverb (ab564179).
+- Spec-ON vs spec-OFF on PP-2 (112 vs 222 at c=1) — the pp2spec lane's flagged
+  placement-aware spec-gate tuning question, pre-existing, unchanged by this fix.
