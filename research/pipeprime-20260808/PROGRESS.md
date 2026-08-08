@@ -320,3 +320,43 @@ Receipts:
 - `raw/pp4096-c1024-raw-20260808T080643Z.log`
 - `raw/pp4096-c512-raw-20260808T080643Z.log`
 - `raw/pp4096-c256-raw-20260808T080643Z.log`
+
+## Increment 10 - naked auto geometry and final composition battery
+
+The measured policy is now the naked PP-2 default when `MEMRA_PRIME_CHUNK` is unset:
+target at most eight microchunks, with a 128-token floor and a 4096-token ceiling.
+An explicit `MEMRA_PRIME_CHUNK` remains authoritative. `MEMRA_PRIME_PIPE=0` keeps the
+same chunk boundaries and disables only stage overlap, so the rollback remains a
+schedule-only comparison.
+
+Box2 rebuilt every `memra-engine` release binary at final code candidate `61c8d2f2`.
+One GPU-lock hold then ran the final schedule/composition battery:
+
+| Gate | Naked pipeline verdict | Canary verdict |
+|---|---|---|
+| `ppsplit`, T=4883, auto chunk 611 | all L/H/S/D bits equal; split 0/8/8; overlap 0/0/7 | forced serial PIPE retained 8 split chunks and produced 0/7 overlaps |
+| `ppsplit`, T=4883, chunk 513 | all L/H/S/D bits equal; split 0/10/10; overlap 0/0/9 | forced serial PIPE retained 10 split chunks and produced 0/9 overlaps |
+| `chunkinv35` | chunks 4096/513/512/256/64 exact through 24 steps | legacy SWA seam diverged at rows 513/512 |
+| `tickinv35` | budgets 0/1024/513/512/256/64 and split calls 64/256/512 exact through 24 steps | legacy call-local seam diverged in every nonzero/split arm |
+
+The final tick gate exercises the new auto policy directly: a 1024-token caller tick is
+internally split into eight 128-token pipeline microchunks. The run ended at 43/44 C,
+2370/2272 MHz, and both GPUs returned to 0 MiB. Verdict: **FINAL COMPOSITION BATTERY
+GREEN**.
+
+Receipts:
+
+- `raw/pipeprime-final-build-20260808T082417Z.log`
+- `raw/final-gates-summary-20260808T082535Z.log`
+- `raw/ppsplit-20260808T082535Z.log`
+- `raw/ppsplitc-20260808T082535Z.log`
+- `raw/prime-split-gate-aP63hh.log`
+- `raw/prime-split-gate-nslKuN.log`
+- `raw/chunkinv35-20260808T082535Z.log`
+- `raw/chunkinv35c-20260808T082535Z.log`
+- `raw/chunkinv-gate-nWymlW.log`
+- `raw/chunkinv-gate-AEKtL5.log`
+- `raw/tickinv35-20260808T082535Z.log`
+- `raw/tickinv35c-20260808T082535Z.log`
+- `raw/tickinv-gate-TepX3x.log`
+- `raw/tickinv-gate-gG2mMy.log`
