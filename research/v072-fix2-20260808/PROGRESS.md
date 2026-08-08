@@ -95,3 +95,19 @@ deliberately test the shared-engine stage-0 case and are not the serving surface
 - Controls: spec-off PP-2 unchanged; door-shut single-card unchanged; dev01 spec
   (expect fast NOW — differentiates fix from a plain revert); run-spec 8/8;
   #87 quick crash gate c=4 x50 clean.
+
+## Box2 verification (driver box2-fix2-verify.sh, q9 @ /data/models, tree a131e8c7
+## + spot-guard checkpoint aa2895b2 [engine-only seam edits, no worker.rs delta])
+
+Interim receipts (points-*.jsonl, first 4 arms, single lock hold):
+
+| arm | binary | placement | c | agg tok/s | prediction |
+|---|---|---|---|---|---|
+| base-dev10-spec-c1 | 5f27c55c worker (stage-0 primary) | 1,0 | 1 | **17.4** | collapse class 17.5 — REPRODUCED, digit-match |
+| base-dev10-spec-c2 SPEC_GATE=0 | same | 1,0 | 2 | **17.5** | crash-gate shape that read 112.5 on the lane binary — REPRODUCED |
+| base-dev10-specoff-c1 | same | 1,0 | 1 | **221.7** | ~223 control — spec-off unaffected, CONFIRMED |
+| fix-dev10-spec-c1-r1 | HEAD-stage primary fix | 1,0 | 1 | **111.7** | 112 class RETURNED (r1 of N=3) |
+
+Boot lines quoted: BASE dev10 "Engine ready (device=1, ...)" (stage-0 pin),
+FIX dev10 "Engine ready (device=0, ...)" expected (head stage). Remaining arms running:
+F1r2/r3, F2 c=2 x3, spec-off, door-shut, dev01 differentiator, crash c=4 x50, run-spec.
