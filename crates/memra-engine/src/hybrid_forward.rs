@@ -4982,9 +4982,9 @@ impl HybridModel {
             return Ok(moe_out);
         }
 
-        // Pair ids stay in router slot order. The expert CSR changes only execution order; every
-        // kernel writes its result back to the original pair id and the scatter performs the same
-        // slot-ordered FMA chain as the sequential token loop.
+        // Clamped layers keep gate/up, activation, and down as separate stages. The pair-major
+        // matvec body is qmatvec_expert_q8 verbatim, while one launch covers every routed pair.
+        // Pair ids stay in router slot order so scatter preserves the sequential FMA chain.
         let pair_tok: Vec<i32> = (0..n_pairs).map(|pair| (pair / n_used) as i32).collect();
         let pair_ex: Vec<i32> = sel_all.iter().map(|&expert| expert as i32).collect();
         let tok_off: Vec<i32> = (0..=t).map(|tok| (tok * n_used) as i32).collect();
@@ -4994,29 +4994,13 @@ impl HybridModel {
         for (pair, &expert) in pair_ex.iter().enumerate() {
             by_expert[expert as usize].push(pair as i32);
         }
-        let mut ex_ids = Vec::new();
-        let mut ex_off = vec![0i32];
-        let mut ex_pairs = Vec::with_capacity(n_pairs);
-        for (expert, pairs) in by_expert.iter().enumerate() {
-            if pairs.is_empty() {
-                continue;
-            }
-            ex_ids.push(expert as i32);
-            ex_pairs.extend_from_slice(pairs);
-            ex_off.push(ex_pairs.len() as i32);
-        }
-        let n_active = ex_ids.len();
 
         let pair_tok_d = e.htod_i32(&pair_tok)?;
+        let pair_ex_d = e.htod_i32(&pair_ex)?;
         let pair_w_d = e.htod(w_all)?;
         let tok_off_d = e.htod_i32(&tok_off)?;
         let tok_ids_d = e.htod_i32(&tok_ids)?;
-        let ex_ids_d = e.htod_i32(&ex_ids)?;
-        let ex_off_d = e.htod_i32(&ex_off)?;
-        let ex_pairs_d = e.htod_i32(&ex_pairs)?;
 
-        let decode_once =
-            std::env::var("MEMRA_MOE_DEC").map(|value| value != "0").unwrap_or(true);
         let matvec = |
             proj: i32,
             pair_rows: &CudaSlice<i32>,
@@ -5027,43 +5011,20 @@ impl HybridModel {
             qtype: i32,
             row_bytes: usize,
         | -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-            if decode_once && q8_expert_dec_supported(qtype) {
-                e.moe_pairs_matvec_q8_dec(
-                    table,
-                    proj,
-                    &ex_ids_d,
-                    &ex_off_d,
-                    &ex_pairs_d,
-                    pair_rows,
-                    aq,
-                    ad,
-                    in_f,
-                    out_f,
-                    n_expert,
-                    n_active,
-                    n_pairs,
-                    qtype,
-                    row_bytes,
-                )
-            } else {
-                e.moe_pairs_matvec_q8_em(
-                    table,
-                    proj,
-                    &ex_ids_d,
-                    &ex_off_d,
-                    &ex_pairs_d,
-                    pair_rows,
-                    aq,
-                    ad,
-                    in_f,
-                    out_f,
-                    n_expert,
-                    n_active,
-                    n_pairs,
-                    qtype,
-                    row_bytes,
-                )
-            }
+            e.moe_pairs_matvec_q8(
+                table,
+                proj,
+                pair_rows,
+                &pair_ex_d,
+                aq,
+                ad,
+                in_f,
+                out_f,
+                n_expert,
+                n_pairs,
+                qtype,
+                row_bytes,
+            )
         };
 
         let (gate_row_bytes, up_row_bytes) = if gu_il {
@@ -5137,7 +5098,7 @@ impl HybridModel {
             sizes.sort_unstable();
             let mean = sizes.iter().sum::<usize>() as f64 / sizes.len().max(1) as f64;
             println!(
-                "moe-grouped il={il} t={t} dispatch=resident-q8 active={}/{} \
+                "moe-grouped il={il} t={t} dispatch=resident-q8-clamped-pairs active={}/{} \
                  m_e: min={} median={} mean={mean:.1} max={}",
                 sizes.len(),
                 n_expert,
