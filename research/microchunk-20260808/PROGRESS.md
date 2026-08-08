@@ -199,3 +199,35 @@ sm_120a. The initial non-interactive invocation failed before compilation with
 Before launching the GPU battery, its driver was corrected to exit immediately after
 the first red gate. This matches the lane stop rule: no later exactness or performance
 work may continue after a failure.
+
+## Increment 4 - box1 exactness and liveness receipt
+
+The complete battery ran on box1 under one exclusive
+`/tmp/memra-gpu.lock` hold from `2026-08-08T13:46:36Z` through
+`2026-08-08T14:04:09Z`. Both GPUs were idle at the start (27-30 C, 0 MiB)
+and returned to 34 C / 0 MiB at the end. The driver completed with `rc=0`.
+
+| Gate | Result | Evidence |
+|---|---|---|
+| `kernel-check` | PASS | ALL GREEN on the available Step model-backed and synthetic sections |
+| `ppsplit` | PASS | fixed unsplit, fixed serial, and dynamic pipeline bit-identical; all expected overlaps live |
+| `ppsplitc` | PASS | forced serial replay retained exact bits but reduced overlap to zero |
+| `chunkinv35` | PASS | 4096/513/512/256/64 all exact |
+| `chunkinv35c` | PASS | legacy sequence-boundary seam produced the expected differences |
+| `tickinv35` | PASS | budgets 0/1024/513/512/256/64 and split points 64/256/512 all exact |
+| `tickinv35c` | PASS | legacy call-local seam produced the expected differences |
+| `run-gen` | PASS | prefill/decode argmax 6776 matched; batched-prime/tokenwise argmax 6776 matched |
+| `run-spec` | PASS | K=1..8 self-consistency identical to generate |
+
+The dynamic `auto` geometry exercised by `ppsplit` at T=4883 was
+`306,717,692,670,651,632,616,599`, versus fixed
+`611,611,611,611,611,611,611,606`. Logits, final hidden state, seed hidden
+state, and eight teacher-forced decode continuations had zero differences.
+The dynamic pipeline reported eight split chunks and seven active-walker
+overlaps. The explicit 513-token fixed rollback arm likewise had ten chunks,
+nine overlaps, and zero differences.
+
+The two `kernel-check` Qwen3.6-only sections were explicitly skipped because
+that unrelated model was absent on box1; all available checks passed. Raw
+build and gate logs are preserved under `raw/box1/build/` and
+`raw/box1/gates/`.
