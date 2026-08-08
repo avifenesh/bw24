@@ -72,3 +72,21 @@ Box2 receipts:
 The naked run's entry snapshot was not idle (`87537 / 56081 MiB` in use); it is a
 correctness receipt only and will not be used for performance. It exited with both cards
 at 0 MiB. The canary run entered and exited at 0 MiB on both cards.
+
+## Increment 3 — batch the remaining attention weight streams
+
+The exact-first implementation deliberately kept the step35 gate projection and `wo`
+per sequence. Its clean paired N=5 baseline showed that this was correct but left nearly
+linear work: at T=520, B=2 moved 3993.8 -> 3933.5 ms (+1.5%) and B=4 moved
+7981.0 -> 7829.8 ms (+1.9%). Raw alternating pairs and thermal snapshots:
+`raw/primebench35-paired-20260808T105411Z.log`.
+
+At fixed layer, `attn_gate` and `wo` have the same geometry for every request. The path
+now projects Q/K/V/gate together at `m=sum(T)`, keeps Q/K normalization, partial RoPE,
+SWA/cache attention, and head-gate application per sequence, concatenates the gated
+attention rows, and runs one `wo` at `m=sum(T)`. This removes two repeated weight streams
+without mixing request state.
+
+The promotion is still byte-exact: `raw/primebatch35-naked-20260808T110701Z.log` repeats
+the complete PP-2 gate with 0 differing logits, `h_seed`, hidden, or teacher-forced
+decode bits, and both liveness counters at 1. Both cards entered and exited at 0 MiB.

@@ -1,0 +1,71 @@
+=== step35 paired prime bench ts=20260808T105411Z N=5 T=520 PP-2 ===
+lock acquired 2026-08-08T10:59:08Z
+0, 36, 2370 MHz, 100.94 W, 0 MiB
+1, 35, 2272 MHz, 98.23 W, 0 MiB
+########## B=2 ##########
+pre 2026-08-08T10:59:08Z
+0, 36, 2370 MHz, 103.59 W, 0 MiB
+1, 35, 2272 MHz, 98.19 W, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers); batch=2
+[step35-prime-batch] first concat prime: B=2 tokens=1057
+seq 0 (T=520): prefill argmax batched=223 individual=223 MATCH
+seq 0: exact logits diff 0/128896 h_seed diff 0/4096 hidden diff 0/2129920
+seq 1 (T=537): prefill argmax batched=223 individual=223 MATCH
+seq 1: exact logits diff 0/128896 h_seed diff 0/4096 hidden diff 0/2199552
+seq 0: decode-0 stream MATCH
+seq 0: teacher-forced decode logit diff 0
+seq 1: decode-0 stream MATCH
+seq 1: teacher-forced decode logit diff 0
+step35 batched-prime liveness: batches=1 pp_splits=1 require_pp_split=true LIVE
+bench-run B=2 T=520 rep=1 order=serial,batch serial_ms=3998.938 batch_ms=3935.601
+bench-run B=2 T=520 rep=2 order=batch,serial serial_ms=4018.355 batch_ms=3938.106
+bench-run B=2 T=520 rep=3 order=serial,batch serial_ms=3993.777 batch_ms=3933.501
+bench-run B=2 T=520 rep=4 order=batch,serial serial_ms=3985.411 batch_ms=3923.522
+bench-run B=2 T=520 rep=5 order=serial,batch serial_ms=3992.153 batch_ms=3919.372
+bench B=2 T=520 N=5 alternating: serial_wall_ms=3993.777 batch_wall_ms=3933.501 sequential=260.4 tok/s batched=264.4 tok/s (+1.5%)
+ALL GREEN: prime-batch gate (batch=2, uneven lengths)
+B=2 exit=0
+0, 41, 2370 MHz, 100.70 W, 0 MiB
+1, 41, 2272 MHz, 100.50 W, 0 MiB
+########## B=4 ##########
+pre 2026-08-08T11:00:39Z
+0, 41, 2370 MHz, 103.49 W, 0 MiB
+1, 41, 2272 MHz, 102.15 W, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers); batch=4
+[step35-prime-batch] first concat prime: B=4 tokens=2182
+seq 0 (T=520): prefill argmax batched=223 individual=223 MATCH
+seq 0: exact logits diff 0/128896 h_seed diff 0/4096 hidden diff 0/2129920
+seq 1 (T=537): prefill argmax batched=223 individual=223 MATCH
+seq 1: exact logits diff 0/128896 h_seed diff 0/4096 hidden diff 0/2199552
+seq 2 (T=554): prefill argmax batched=223 individual=223 MATCH
+seq 2: exact logits diff 0/128896 h_seed diff 0/4096 hidden diff 0/2269184
+seq 3 (T=571): prefill argmax batched=223 individual=223 MATCH
+seq 3: exact logits diff 0/128896 h_seed diff 0/4096 hidden diff 0/2338816
+seq 0: decode-0 stream MATCH
+seq 0: teacher-forced decode logit diff 0
+seq 1: decode-0 stream MATCH
+seq 1: teacher-forced decode logit diff 0
+seq 2: decode-0 stream MATCH
+seq 2: teacher-forced decode logit diff 0
+seq 3: decode-0 stream MATCH
+seq 3: teacher-forced decode logit diff 0
+step35 batched-prime liveness: batches=1 pp_splits=1 require_pp_split=true LIVE
+bench-run B=4 T=520 rep=1 order=serial,batch serial_ms=7981.011 batch_ms=7835.491
+bench-run B=4 T=520 rep=2 order=batch,serial serial_ms=8012.317 batch_ms=7829.837
+bench-run B=4 T=520 rep=3 order=serial,batch serial_ms=7957.959 batch_ms=7807.439
+bench-run B=4 T=520 rep=4 order=batch,serial serial_ms=8028.086 batch_ms=7815.795
+bench-run B=4 T=520 rep=5 order=serial,batch serial_ms=7979.666 batch_ms=7837.699
+bench B=4 T=520 N=5 alternating: serial_wall_ms=7981.011 batch_wall_ms=7829.837 sequential=260.6 tok/s batched=265.7 tok/s (+1.9%)
+ALL GREEN: prime-batch gate (batch=4, uneven lengths)
+B=4 exit=0
+0, 41, 2370 MHz, 101.05 W, 0 MiB
+1, 42, 2272 MHz, 101.19 W, 0 MiB
+lock released 2026-08-08T11:03:00Z rc=0

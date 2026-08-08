@@ -1213,40 +1213,50 @@ impl HybridModel {
                 )?;
             }
 
-            // Q/K/V projections are the first batched weight stream. The step35 core below
-            // remains per sequence, so its partial RoPE, SWA view and head gate are verbatim.
-            let g3 = if f16fuse {
-                e.matmul_group_xh(&[&fa.wq, &fa.wk, &fa.wv], &h, &hx16, total)?
+            // Q/K/V + gate projections and wo are batched weight streams. The step35 core
+            // remains per sequence, so its partial RoPE, SWA view, KV append, and gate
+            // application stay verbatim.
+            let gate_w = fa
+                .attn_gate
+                .as_ref()
+                .ok_or("step35 layer is missing attn_gate.weight (head-wise attention gate)")?;
+            let mut g4 = if f16fuse {
+                e.matmul_group_xh(&[&fa.wq, &fa.wk, &fa.wv, gate_w], &h, &hx16, total)?
             } else {
-                e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], &h, total)?
+                e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv, gate_w], &h, total)?
             };
+            let gate = g4.pop().unwrap();
             let mut parts: Vec<Vec<CudaSlice<f32>>> =
                 (0..b).map(|_| Vec::with_capacity(3)).collect();
-            for (w, y) in [&fa.wq, &fa.wk, &fa.wv].iter().zip(g3) {
+            for (w, y) in [&fa.wq, &fa.wk, &fa.wv].iter().zip(g4) {
                 for (s, ys) in split(e, &y, w.out_features())?.into_iter().enumerate() {
                     parts[s].push(ys);
                 }
             }
-            let hs = split(e, &h, n_embd)?;
-            let mut mixed = e.uninit(total * n_embd)?;
-            for (s, (g3s, hs)) in parts.into_iter().zip(hs).enumerate() {
+            let gates = split(e, &gate, gate_w.out_features())?;
+            let (hd, _, nh, _, _, _) = self.step35_geom(il);
+            let mut ag_cat = e.uninit(total * nh * hd)?;
+            for (s, (g3s, gate)) in parts.into_iter().zip(gates).enumerate() {
                 let ag = self.step35_attn_pre_wo(
                     e,
                     fa,
                     g3s,
-                    &hs,
+                    None,
+                    Some(&gate),
                     &pos_ds[s],
                     ts[s],
                     Some(&mut *caches[s]),
                     il,
                     ts[s],
                 )?;
-                // Keep wo per sequence for the exactness-first increment. QKV + the FFN
-                // already amortize the dominant trunk weights; a batched wo promotion can
-                // be measured later against this exact reference.
-                let y = e.matmul(&fa.wo, &ag, ts[s])?;
-                e.copy_into(&mut mixed, offs[s] * n_embd, &y, ts[s] * n_embd)?;
+                e.copy_into(
+                    &mut ag_cat,
+                    offs[s] * nh * hd,
+                    &ag,
+                    ts[s] * nh * hd,
+                )?;
             }
+            let mixed = e.matmul(&fa.wo, &ag_cat, total)?;
 
             let mut x1 = e.uninit(total * n_embd)?;
             let mut z = e.uninit(total * n_embd)?;
@@ -7474,7 +7484,9 @@ impl HybridModel {
     /// gate, returning the GATED attention output PRE-`wo` (the caller runs wo, so this composes
     /// with both the plain `matmul(&fa.wo, ..)` sites and the f16/into-slab GEMM sites).
     ///
-    /// `hg` = the POST-attn_norm hidden state (upstream's `cur`) — the gate projection's input.
+    /// `hg` = the POST-attn_norm hidden state (upstream's `cur`) — the gate projection's input
+    /// on single-sequence paths. `gt_pre` supplies the already-projected per-head gate for a
+    /// cross-request batch; exactly one of `hg` or `gt_pre` must be present.
     /// `cache`:
     ///   * `Some` => PRIME mode: append this chunk's post-rope K / raw V rows into the resident
     ///     quantized cache and attend THROUGH the cache view, exactly like the generic
@@ -7529,7 +7541,8 @@ impl HybridModel {
     /// those with t_kv <= win = 512.
     #[allow(clippy::too_many_arguments)]
     fn step35_attn_pre_wo(&self, e: &Engine, fa: &FullAttnLayer, mut g3: Vec<CudaSlice<f32>>,
-                          hg: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, t: usize,
+                          hg: Option<&CudaSlice<f32>>, gt_pre: Option<&CudaSlice<f32>>,
+                          pos_d: &CudaSlice<i32>, t: usize,
                           cache: Option<&mut Cache>, il: usize, seq_end: usize)
                           -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (hd, nkv, nh, rbase, scale, swa) = self.step35_geom(il);
@@ -7676,9 +7689,18 @@ impl HybridModel {
         // attn *= sigmoid(gate) broadcast over head_dim. BEFORE wo.
         let gw = fa.attn_gate.as_ref()
             .ok_or("step35 layer is missing attn_gate.weight (head-wise attention gate)")?;
-        let gt = e.matmul(gw, hg, t)?;
+        let gt_owned = if gt_pre.is_none() {
+            Some(e.matmul(
+                gw,
+                hg.ok_or("step35 attention needs hg when gt_pre is absent")?,
+                t,
+            )?)
+        } else {
+            None
+        };
+        let gt = gt_pre.or(gt_owned.as_ref()).unwrap();
         let mut ag = e.uninit(t * nh * hd)?;
-        e.attn_head_gate(&attn, &gt, &mut ag, None, hd, nh, t)?;
+        e.attn_head_gate(&attn, gt, &mut ag, None, hd, nh, t)?;
         Ok(ag)
     }
 
@@ -7689,7 +7711,7 @@ impl HybridModel {
                               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let g3 = e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], h, t)?;
         // Monolithic path: the request ends at t (no chunk loop). See step35_attn_pre_wo's note.
-        let ag = self.step35_attn_pre_wo(e, fa, g3, h, pos_d, t, None, il, t)?;
+        let ag = self.step35_attn_pre_wo(e, fa, g3, Some(h), None, pos_d, t, None, il, t)?;
         Ok(e.matmul(&fa.wo, &ag, t)?)
     }
 
@@ -7708,7 +7730,18 @@ impl HybridModel {
             Some(xh) => e.matmul_group_xh(&[&fa.wq, &fa.wk, &fa.wv], h, xh, t)?,
             None => e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], h, t)?,
         };
-        let ag = self.step35_attn_pre_wo(e, fa, g3, h, pos_d, t, Some(cache), il, seq_end)?;
+        let ag = self.step35_attn_pre_wo(
+            e,
+            fa,
+            g3,
+            Some(h),
+            None,
+            pos_d,
+            t,
+            Some(cache),
+            il,
+            seq_end,
+        )?;
         Ok(e.matmul(&fa.wo, &ag, t)?)
     }
 
