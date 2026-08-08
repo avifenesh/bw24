@@ -1,0 +1,14 @@
+=== b2-geometry-ab tag=pre 20260807T091553Z ===
+lock acquired 2026-08-07T09:15:53Z
+0, 0 MiB
+1, 0 MiB
+--- c=1 reference (greedy, B=1 tick) ---
+REF: ""
+--- c=4 concurrent identical requests (forms B>1 decode chunks after prefix-cache hits) ---
+
+=== c4 outputs (from /tmp)
+REF: ""
+C4: ""
+C4: ""
+C4: "::::\n\n::::::::\n\n\n\n\n\n\n\n\n     \n\n\n\n\n\n\n\n\n\n \n\n\n\n\n\n\n"
+C4: ""

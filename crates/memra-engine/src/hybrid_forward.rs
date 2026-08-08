@@ -82,6 +82,20 @@ fn gdec_enabled() -> bool {
     *E.get_or_init(|| std::env::var("MEMRA_MOE_GDEC").map(|v| v != "0").unwrap_or(true))
 }
 
+/// SLAB-LOCAL RESIDENT ARM gate (lane/pp-leverb 2026-08-08, MEMRA_MOE_SLAB, default ON;
+/// `=0` restores the SLRU dispatch even when resident slabs exist). Read PER CALL, never
+/// memoized — probes A/B the two provenances in one process (the MEMRA_PRIME_PP pattern).
+/// See `moe_ffn_sequential_zq8`'s slab_local arm: the sigmoid-router archs (step35/M3/Hy3)
+/// are denied every `dev_exps` consumer (pairs/dev route softmax), so before this arm the
+/// fits-VRAM resident slabs were UPLOADED for them but never READ — the SLRU kept staging
+/// the same bytes beside a dead copy (37 GB H2D per pp4096 prime on the Step SKU, anatomy
+/// receipt). The arm reads the SAME bytes through the SAME kernels; only the pointer
+/// PROVENANCE changes (slab base + ex*stride vs SLRU slot address) — the bit-identity class
+/// `moe_ffn_dev`'s resident arm already documents against its SLRU arm.
+fn moe_slab_enabled() -> bool {
+    std::env::var("MEMRA_MOE_SLAB").as_deref() != Ok("0")
+}
+
 /// Deterministic in-token expert prefetch. `MEMRA_MOE_PREFETCH=1` overlaps memory-source H2D on the
 /// copy stream; selecting the opt-in worker spill backend enables the same known-next hook for disk.
 fn moe_prefetch_enabled() -> bool {
@@ -286,7 +300,7 @@ impl HybridModel {
             e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
 
             let mixed = match &layer.mixer {
-                Mixer::Full(fa) => self.full_attn(e, fa, &h, &pos_d, t)?,
+                Mixer::Full(fa) => self.full_attn(e, fa, &h, &pos_d, t, il)?,
                 Mixer::Linear(la) => self.linear_attn(e, la, &h, t)?,
                 Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
             };
@@ -305,7 +319,12 @@ impl HybridModel {
                     let up = g2.pop().unwrap();
                     let gate = g2.pop().unwrap();
                     let mut act = e.uninit(t * n_ff)?;
-                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
+                    // A DENSE FFN reads the SHEXP clamp array: upstream's one `build_ffn` serves
+                    // both the dense MLP and the shared expert, and its limit is
+                    // `swiglu_clamp_shexp[il]` (llama-graph.cpp:1751). step35's leading dense
+                    // blocks 0-2 therefore key off clamp_shexp, not clamp_exp.
+                    Self::ffn_act_lim(e, &self.cfg, &gate, &up, 1.0, 1.0,
+                                      self.cfg.clamp_shexp_at(il as u32), &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
@@ -344,7 +363,7 @@ impl HybridModel {
             e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
             if probe { e.stream().synchronize()?; eprintln!("[probe] L{il} norm ok"); }
             let mixed = match &layer.mixer {
-                Mixer::Full(fa) => self.full_attn(e, fa, &h, &pos_d, t)?,
+                Mixer::Full(fa) => self.full_attn(e, fa, &h, &pos_d, t, il)?,
                 Mixer::Linear(la) => self.linear_attn(e, la, &h, t)?,
                 Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
             };
@@ -360,7 +379,9 @@ impl HybridModel {
                     let up = g2.pop().unwrap();
                     let gate = g2.pop().unwrap();
                     let mut act = e.uninit(t * n_ff)?;
-                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
+                    // dense FFN keys off the SHEXP clamp array — see forward()'s note.
+                    Self::ffn_act_lim(e, &self.cfg, &gate, &up, 1.0, 1.0,
+                                      self.cfg.clamp_shexp_at(il as u32), &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
@@ -397,7 +418,22 @@ impl HybridModel {
     /// hiddens = the full pre-output_norm hidden stack [T, n_embd] — generate_spec's prompt_h).
     /// FRESH-PROMPT ONLY (cache.pos == 0): the fa_prefill tiles attend within `tokens` alone.
     /// forward_last itself stays untouched (kernel-check / run-gen gate on it).
-    pub fn prime_cache(&self, e: &Engine, tokens: &[u32], cache: &mut Cache)
+    ///
+    /// `queued_after` (lane/tick-seg, 2026-08-07): the number of prompt tokens of the SAME
+    /// REQUEST that the caller will prime in LATER calls — 0 when this call is the whole
+    /// request (every single-shot caller). Serve splits a long prompt across SEVERAL
+    /// prime_cache calls (one per scheduler tick, plus the prefix-cache LCP split), and the
+    /// request's absolute end position `seq_end = cache.pos + t + queued_after` steers step35's
+    /// SWA prefill arm — computing it per CALL made the arm a function of the tick budget
+    /// (budgets 512/256/64 DIFFER 1.813e0 vs monolithic, greedy diverging at step 6; dark lanes
+    /// default to 256 AND cap by live SLO headroom, so identical judge requests primed
+    /// differently under load — research/tick-seg-20260807, receipt in
+    /// research/step35-chunkfix-20260807 §9). The parameter is what prime_cache structurally
+    /// lacked: it cannot know from `tokens` and `cache` alone whether more of the request is
+    /// coming. A SESSION CONTINUATION (a NEW user turn primed onto a live cache) is a NEW
+    /// request — its arithmetic is keyed to its own extent, so those callers pass 0; only a
+    /// caller that SPLITS one request across calls passes the remainder.
+    pub fn prime_cache(&self, e: &Engine, tokens: &[u32], cache: &mut Cache, queued_after: usize)
                        -> Result<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         let n_embd = self.cfg.n_embd as usize;
         let t = tokens.len();
@@ -451,8 +487,26 @@ impl HybridModel {
         // MEMRA_PRIME_INVARIANT/MEMRA_PRIME_GRAIN pin-the-boundary door was superseded by that
         // fix and KILLED at v0.71 per the flags doctrine (the jsonl + VERDICT.md are the
         // record); the chunkinv gate asserts byte-identity across chunk sizes naked.
+        // The REQUEST's absolute end position, computed ONCE before the loop: every chunk sees the
+        // same value, whatever the chunk size. step35's SWA arm selects on it so that kernel
+        // selection — and therefore the logits — cannot depend on MEMRA_PRIME_CHUNK
+        // (research/step35-chunkfix-20260807; see step35_attn_pre_wo's doc note).
+        // `+ queued_after` closes the SECOND axis (lane/tick-seg): when serve splits the request
+        // across calls, the request still ends at the same absolute position, whatever the tick
+        // budget or LCP split point. MEMRA_PRIME_CALLLOCAL=1 is the ROLLBACK SEAM to the FULL
+        // pre-fix arithmetic: the per-call value here AND the unaligned FA view offset in
+        // step35_attn_pre_wo. Both halves are required for tickinv35's canary teeth under the FA
+        // default. Read per call, not cached (the probe flips it in-process between arms). Never
+        // on in a measured default run.
+        let legacy_calllocal =
+            std::env::var("MEMRA_PRIME_CALLLOCAL").as_deref() == Ok("1");
+        let seq_end = if legacy_calllocal {
+            cache.pos + t
+        } else {
+            cache.pos + t + queued_after
+        };
         if chunk == 0 || t <= chunk {
-            return self.prime_chunk(e, tokens, cache);
+            return self.prime_chunk(e, tokens, cache, seq_end);
         }
         let mut hiddens = e.uninit(t * n_embd)?;
         let mut last: Option<(Vec<f32>, CudaSlice<f32>)> = None;
@@ -461,7 +515,7 @@ impl HybridModel {
             // keep the tail chunk >= PRIME_MIN_T (the stateful conv needs T >= d_conv-1).
             let mut end = (start + chunk).min(t);
             if t - end > 0 && t - end < PRIME_MIN_T { end = t; }
-            let (l, hs, x) = self.prime_chunk(e, &tokens[start..end], cache)?;
+            let (l, hs, x) = self.prime_chunk(e, &tokens[start..end], cache, seq_end)?;
             e.copy_into(&mut hiddens, start * n_embd, &x, (end - start) * n_embd)?;
             last = Some((l, hs));
             start = end;
@@ -499,12 +553,18 @@ impl HybridModel {
 
     /// (cache.pos + i). Returns (last-row logits, h_seed, this chunk's hidden stack [T, n_embd]).
     /// See HybridModel::prime_slabs — the eager prime's resident trunk transients.
+    /// PER-DEVICE since lane/pp-leverb (2026-08-08): the map is keyed by the allocating
+    /// engine's CUDA ordinal — under the prime stage split each stage's range walks through
+    /// its OWN slabs on its own device (a dev0 slab dereferenced by a dev1 kernel would be
+    /// a peer read per GEMM operand, the exact class Lever B removes). Single-device rigs
+    /// see one entry, byte-identical behavior.
     pub fn prime_slabs_get(&self, e: &Engine, t: usize, n_embd: usize, n_ff_max: usize)
-                           -> Result<std::sync::MutexGuard<'_, Option<PrimeSlabs>>, Box<dyn std::error::Error>> {
+                           -> Result<std::sync::MutexGuard<'_, std::collections::HashMap<usize, PrimeSlabs>>, Box<dyn std::error::Error>> {
         let mut g = self.prime_slabs.lock().unwrap();
-        let need_new = match g.as_ref() { None => true, Some(sl) => sl.t_cap < t };
+        let dev = e.ctx().ordinal();
+        let need_new = match g.get(&dev) { None => true, Some(sl) => sl.t_cap < t };
         if need_new {
-            *g = Some(PrimeSlabs {
+            g.insert(dev, PrimeSlabs {
                 t_cap: t,
                 h: e.uninit(t * n_embd)?,
                 x1: e.uninit(t * n_embd)?,
@@ -526,17 +586,61 @@ impl HybridModel {
         Ok(g)
     }
 
-    fn prime_chunk(&self, e: &Engine, tokens: &[u32], cache: &mut Cache)
+    /// `seq_end` = the whole REQUEST's absolute end position (`cache.pos + prompt_len` at
+    /// `prime_cache` entry), NOT this chunk's end. Chunk-size-invariant by construction; step35's
+    /// SWA arm selects on it (see `step35_attn_pre_wo`). Every other arch ignores it.
+    fn prime_chunk(&self, e: &Engine, tokens: &[u32], cache: &mut Cache, seq_end: usize)
                        -> Result<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
-        let cfg = &self.cfg;
-        let n_embd = cfg.n_embd as usize;
+        // LEVER B (lane/pp-leverb, 2026-08-08): the ppN door for the chunked prime. With the
+        // door open + per-stage streams, each chunk walks its layer ranges on the OWNING
+        // stage's engine/device (the anatomy receipt this kills: dev1 ran ZERO prefill
+        // kernels; stage-1 trunk weights were peer-read = 22% of the pp4096 wall).
+        // MEMRA_PRIME_PP=0 = the unsplit rollback (also the prime-split-gate's reference
+        // arm — prime deliberately keeps NO refuse_unsplit_if_remote, see pp.rs). The
+        // MEMRA_PP_STREAMS=0 seam keeps the unsplit walk too: in that regime the sharded
+        // loader is off and there is nothing remote to split for.
+        if self.cfg.gemma4.is_none()
+            && !crate::pp::pp2_streams_off()
+            && crate::pp::prime_pp_on()
+        {
+            if let Some(fence) = crate::pp::pp_cuts(self.layers.len()) {
+                return self.prime_chunk_ppn(e, tokens, cache, seq_end, &fence);
+            }
+        }
         let t = tokens.len();
-        let eps = cfg.rms_eps;
         let base = cache.pos;
+        debug_assert!(seq_end >= base + t, "prime_chunk: seq_end must cover this chunk");
         let pos: Vec<i32> = (base as i32..(base + t) as i32).collect();
         let pos_d = e.htod_i32(&pos)?;
 
         let x_embed = self.embed(e, tokens)?;   // [T, n_embd]
+        let x = self.prime_layers(e, x_embed, 0, self.layers.len(), &pos_d, t, cache, seq_end)?;
+        self.prime_chunk_epilogue(e, x, t, cache)
+    }
+
+    /// PRIME RANGE SUBGRAPH (lane/pp-leverb, 2026-08-08): layers `[lo, hi)` of the chunked
+    /// prime walk — `prime_chunk`'s trunk loop extracted verbatim to the
+    /// `decode_layers_eager(lo, hi)` / `verify_layers(lo, hi)` contract: enters with a
+    /// MATERIALIZED `[T, n_embd]` residual, exits with the range's final residual
+    /// materialized (cloned out of the slab). At `lo=0, hi=n_layers` — the unsplit call —
+    /// the launch sequence is byte-identical to the pre-extraction body. Range semantics:
+    ///   - the cross-layer [down-add + NEXT attn-norm] fusion is range-LOCAL (`il + 1 < hi`):
+    ///     layer `hi`'s attn_norm belongs to the NEXT stage's device, so the range ends with
+    ///     the plain add (materialize) and the next stage hoists its own first norm — the
+    ///     kernel-check-pinned `add_rms_norm == add then rms_norm` identity, the same law
+    ///     the decode split rests on (`prime-split-gate` arbitrates end-to-end);
+    ///   - prime slabs are PER-DEVICE (`prime_slabs_get` keys on the engine ordinal), so
+    ///     each stage walks through its own resident transients;
+    ///   - the S-glue/S-mid capture path requires the FULL range (its lookahead fuses
+    ///     `self.layers[il+1]` unconditionally) — `use_seg` gains `lo == 0 && hi == n_layers`.
+    #[allow(clippy::too_many_arguments)]
+    fn prime_layers(&self, e: &Engine, x_in: CudaSlice<f32>, lo: usize, hi: usize,
+                    pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, seq_end: usize)
+                    -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
+        let eps = cfg.rms_eps;
+        let base = cache.pos;
         // task #14: fuse the fp16 GEMM-operand emission into the trunk norms (kills the
         // standalone convert launches). Only when the f16 lane serves and T reaches the
         // GEMM tier; bit-identical either way.
@@ -563,8 +667,10 @@ impl HybridModel {
         let mut x_own2;
         match slab_guard.as_mut() {
             Some(g) => {
-                let slabs = g.as_mut().unwrap();
-                e.copy_into(&mut slabs.xa, 0, &x_embed, t * n_embd)?;
+                // per-device map (lane/pp-leverb): the getter above populated this engine's
+                // entry; a missing key here is a getter contract bug, fail loudly.
+                let slabs = g.get_mut(&e.ctx().ordinal()).expect("prime slabs for this device");
+                e.copy_into(&mut slabs.xa, 0, &x_in, t * n_embd)?;
                 let PrimeSlabs { xa, xb, h, x1, z, act, h16, z16, gate, up, ffn_out, seg_glue, mixed, seg_mid, seg_t, .. } = slabs;
                 x_cur = xa;
                 x_nxt = xb;
@@ -572,7 +678,7 @@ impl HybridModel {
                 sl = Some((h, x1, z, act, h16, z16, gate, up, ffn_out));
             }
             None => {
-                x_own = x_embed;
+                x_own = x_in;
                 x_own2 = e.uninit(t * n_embd)?;
                 x_cur = &mut x_own;
                 x_nxt = &mut x_own2;
@@ -616,7 +722,11 @@ impl HybridModel {
         // drift (the repo's interleaved-A/B law exists for exactly this). Larger segments
         // (S-prep/S-attn, 7-9 kernels) remain the open hypothesis; the core-split
         // machinery stays (byte-identical) as their foundation.
-        let use_seg = f16fuse && seg.is_some()
+        // step35 is excluded: the core-split path calls `full_attn_prime_core_inner`, which is
+        // the GENERIC attn core (uniform n_head, rope_dim_count, no window, no head-wise gate).
+        // step35 rides its own mixer through the normal per-layer arm below.
+        let use_seg = f16fuse && seg.is_some() && self.cfg.step35.is_none()
+            && lo == 0 && hi == n_layers
             && std::env::var("MEMRA_PRIME_SEG").as_deref() == Ok("1");
         if let Some((sg, sm, _, st)) = seg.as_mut() {
             if **st != t {
@@ -628,14 +738,15 @@ impl HybridModel {
             }
         }
         {
-            let layer0 = &self.layers[0];
+            let layer_lo = &self.layers[lo];
             if f16fuse {
-                e.rms_norm_f16out(x_cur, layer0.attn_norm.float_data(), h, h16, n_embd, t, eps)?;
+                e.rms_norm_f16out(x_cur, layer_lo.attn_norm.float_data(), h, h16, n_embd, t, eps)?;
             } else {
-                e.rms_norm(x_cur, layer0.attn_norm.float_data(), h, n_embd, t, eps)?;
+                e.rms_norm(x_cur, layer_lo.attn_norm.float_data(), h, n_embd, t, eps)?;
             }
         }
-        for (il, layer) in self.layers.iter().enumerate() {
+        for il in lo..hi {
+            let layer = &self.layers[il];
             let hx16 = if f16fuse { Some(&*h16) } else { None };
             if use_seg {
                 // core-split path: projections -> _inner core -> out-GEMM INTO the mixed
@@ -690,7 +801,8 @@ impl HybridModel {
                 }
             } else {
                 let mixed = match &layer.mixer {
-                    Mixer::Full(fa) => self.full_attn_prime(e, fa, h, hx16, &pos_d, t, cache, il)?,
+                    Mixer::Full(fa) => self.full_attn_prime(e, fa, h, hx16, &pos_d, t, cache, il,
+                                                            seq_end)?,
                     Mixer::Linear(la) => self.linear_attn_prime(e, la, h, hx16, t, cache, il)?,
                     Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                 };
@@ -727,12 +839,17 @@ impl HybridModel {
                     }
                     // task #17: the silu arm's f16out twin emits the down GEMM's fp16
                     // operand in-epilogue; non-silu activations keep the standalone convert.
-                    let act16 = if Self::f16out_on(e, t) && self.cfg.m3.is_none() {
+                    // silu_mul_f16out is PLAIN silu(gate)*up — a clamped layer (step35 dense
+                    // blocks under a live swiglu_clamp_shexp) must take the ffn_act_lim arm.
+                    let d_lim = self.cfg.clamp_shexp_at(il as u32);
+                    let act16 = if Self::f16out_on(e, t) && self.cfg.m3.is_none()
+                        && d_lim.is_none() {
                         let mut a16 = e.alloc_u8_uninit(t * n_ff * 2)?;
                         e.silu_mul_f16out(sl_gate, sl_up, act, &mut a16, t * n_ff)?;
                         Some(a16)
                     } else {
-                        Self::ffn_act(e, &self.cfg, sl_gate, sl_up, act, t * n_ff)?;
+                        Self::ffn_act_lim(e, &self.cfg, sl_gate, sl_up, 1.0, 1.0, d_lim,
+                                          act, t * n_ff)?;
                         None
                     };
                     // down GEMM into the ffn_out slab (f16 arm; fallback copies)
@@ -750,7 +867,7 @@ impl HybridModel {
                     e.copy_into(sl_fo, 0, &y, t * n_embd)?;
                 }
             }
-            if use_seg && il + 1 < n_layers {
+            if use_seg && il + 1 < hi {
                 // S-glue segment: [add + next attn-norm(+f16out)] — one cuGraphLaunch
                 let w_next = self.layers[il + 1].attn_norm.float_data();
                 let (sg, _, _, _) = seg.as_mut().unwrap();
@@ -770,7 +887,7 @@ impl HybridModel {
                 }
                 sg[il].as_ref().unwrap().launch()?;
             } else {
-                if il + 1 < n_layers {
+                if il + 1 < hi {
                     let w_next = self.layers[il + 1].attn_norm.float_data();
                     if f16fuse {
                         e.add_rms_norm_f16out(x1, sl_fo, w_next, x_nxt, h, h16, n_embd, t, eps)?;
@@ -808,7 +925,17 @@ impl HybridModel {
         let mut x = e.uninit(t * n_embd)?;
         e.copy_into(&mut x, 0, x_cur, t * n_embd)?;
         drop(slab_guard);
+        Ok(x)
+    }
 
+    /// The prime chunk's tail — h_seed + output_norm + one-row lm head + cache.pos advance —
+    /// shared verbatim by the unsplit walk and the last stage of the ppN walk (`e` = the
+    /// engine that produced `x`, i.e. the last stage's under the split; output_norm/output
+    /// were loaded through that engine by the sharded loader, hybrid.rs `e_head`).
+    fn prime_chunk_epilogue(&self, e: &Engine, x: CudaSlice<f32>, t: usize, cache: &mut Cache)
+                            -> Result<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let eps = self.cfg.rms_eps;
         // h_seed = LAST row of x BEFORE output_norm (MTP-PLAN §A default) or AFTER it
         // (MEMRA_SPEC_HPOST — reference convention; hn is computed just below either way, so
         // the post-norm copy happens after hn exists).
@@ -831,6 +958,88 @@ impl HybridModel {
         // Hidden stack handed to generate_spec as prompt_h: pre-norm x (default) or the full
         // post-norm stack hn (MEMRA_SPEC_HPOST).
         Ok((e.dtoh(&logits)?, h_seed, if crate::spec::spec_hpost() { hn } else { x }))
+    }
+
+    /// THE PRIME STAGE SPLIT (lane/pp-leverb, 2026-08-08): one prime chunk as N stage
+    /// subgraphs, each range on ITS OWN engine/stream/device, with the `[T, n_embd]`
+    /// boundary handoff at every fence cut — the prime twin of `decode_step_h_ppn` /
+    /// `decode_step_t_core_ppn`, and the kill for the anatomy's two receipts: stage-1 trunk
+    /// weights stop being peer-read (22% of the pp4096 wall) and dev1 stops running zero
+    /// prefill kernels. Structure mirrors the verify split exactly:
+    ///   stage 0        `rt.enter(0)` → per-stage pos_d + embed (the table lives with
+    ///                  stage 0) → `prime_layers(fence[0], fence[1])` → `rt.tx`
+    ///   middle stages  `rt.rx` → per-stage pos_d → range → `rt.tx`
+    ///   last stage     `rt.rx` → range → the shared epilogue (output_norm + head live
+    ///                  there via the sharded loader) → `publish_to`
+    /// Laws inherited (not relearned): `fence_stages_behind` at entry (#87 — a previous
+    /// round's stage-freed buffers must not be reused under the caller's queued reads);
+    /// per-stage `pos_d` (allocated/consumed/freed on one stream); per-stage Engines from
+    /// `PpNRt` (shared-scratch race); EXIT PUBLICATION for the device-resident returns
+    /// (h_seed + hidden stack live on the last stage — the caller's stream must wait).
+    /// KV/MoE locality falls out: each range's KV appends run on the owning stage
+    /// (`pp::new_cache` placed the buffers there), each stage engine owns its own SLRU
+    /// pool (per-Engine `moe_cache`, sized on ITS device — the SGLang #33666 law), and the
+    /// slab-local MoE arm's `DevExps.dev` gate now matches on stage-1 layers too.
+    /// EXACTNESS: the split adds zero deviation by construction (same kernels, same bytes,
+    /// boundary = straight f32 copy); `prime-split-gate` (ppsplit) arbitrates bit-for-bit
+    /// and its liveness counter is bumped here — the gate goes green with this function.
+    fn prime_chunk_ppn(&self, e: &Engine, tokens: &[u32], cache: &mut Cache, seq_end: usize,
+                       fence: &[usize])
+                       -> Result<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        let rt = crate::pp::PpNRt::get(e)?;
+        let n_st = fence.len() - 1;
+        assert_eq!(
+            rt.n_stages(), n_st,
+            "PpNRt stage count {} != fence stages {n_st}", rt.n_stages()
+        );
+        let n_embd = self.cfg.n_embd as usize;
+        let t = tokens.len();
+        let base = cache.pos;
+        debug_assert!(seq_end >= base + t, "prime_chunk_ppn: seq_end must cover this chunk");
+        let payload = t * n_embd;
+        // The caller's ambient stream, captured BEFORE any enter() pushes a stage stream
+        // (inside a stage scope e.stream() IS the stage stream and the exit wait would
+        // self-order into a no-op) — the decode_step_t_core_ppn pattern.
+        let caller_stream = e.stream();
+        rt.fence_stages_behind(&caller_stream)?;
+        let pos: Vec<i32> = (base as i32..(base + t) as i32).collect();
+
+        // ---- STAGE 0: embed + layers [0, fence[1]) + boundary-0 TX ----
+        let mut slot = {
+            let _st0 = rt.enter(0);
+            let e0 = rt.engine(0, e);
+            let pos_d = e0.htod_i32(&pos)?;
+            let x = self.embed(e0, tokens)?;
+            let x = self.prime_layers(e0, x, fence[0], fence[1], &pos_d, t, cache, seq_end)?;
+            rt.tx(0, &x, payload)?
+            // x + pos_d drop here: freed stream-ordered on stage-0's stream after use.
+        };
+
+        // ---- MIDDLE STAGES: RX boundary s-1 -> range -> TX boundary s ----
+        for s in 1..n_st - 1 {
+            let _st = rt.enter(s);
+            let es = rt.engine(s, e);
+            let pos_d = es.htod_i32(&pos)?;
+            let x = rt.rx(s - 1, slot, payload)?;
+            let x = self.prime_layers(es, x, fence[s], fence[s + 1], &pos_d, t, cache, seq_end)?;
+            slot = rt.tx(s, &x, payload)?;
+        }
+
+        // ---- LAST STAGE: RX + final range + the shared epilogue ----
+        let _stl = rt.enter(n_st - 1);
+        let el = rt.engine(n_st - 1, e);
+        let pos_d = el.htod_i32(&pos)?;
+        let x = rt.rx(n_st - 2, slot, payload)?;
+        let x = self.prime_layers(el, x, fence[n_st - 1], fence[n_st], &pos_d, t, cache, seq_end)?;
+        let out = self.prime_chunk_epilogue(el, x, t, cache)?;
+        // EXIT PUBLICATION: h_seed + the hidden stack are device-resident on the last
+        // stage's stream; the caller resumes on its own stream (chunk-loop copy_into /
+        // generate_spec's prompt_h consumer). The logits dtoh above already drained the
+        // stage stream host-side, but the law is stated in events, not in a dtoh side
+        // effect a later deferred form would remove.
+        rt.publish_to(n_st - 1, &caller_stream)?;
+        crate::pp::PRIME_SPLIT_CHUNKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(out)
     }
 
     /// CAPTURE-SAFE prime trunk (task #14 increment 1, ARCHITECTURE-H100.md design v2):
@@ -870,7 +1079,11 @@ impl HybridModel {
                 e.rms_norm(&x, layer.attn_norm.float_data(), &mut h, n_embd, t, eps)?;
             }
             let mixed = match &layer.mixer {
-                Mixer::Full(fa) => self.full_attn_prime(e, fa, &h, hx16.as_ref(), pos_d, t, cache, il)?,
+                // The captured prime is ONE unchunked bucket over a FRESH cache (pos == 0), so the
+                // request ends at t. If bucketed capture ever composes with chunking, seq_end must
+                // come from the caller (see step35_attn_pre_wo's doc note).
+                Mixer::Full(fa) => self.full_attn_prime(e, fa, &h, hx16.as_ref(), pos_d, t, cache,
+                                                        il, t)?,
                 Mixer::Mla(_) => crate::hybrid::mla_forward_unimplemented(),
                 Mixer::Linear(la) => {
                     let ws = [&la.wqkv, &la.wqkv_gate, &la.ssm_beta, &la.ssm_alpha];
@@ -902,7 +1115,9 @@ impl HybridModel {
                     let up = g2.pop().unwrap();
                     let gate = g2.pop().unwrap();
                     let mut act = e.uninit(t * n_ff)?;
-                    Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, t * n_ff)?;
+                    // dense FFN keys off the SHEXP clamp array — see forward()'s note.
+                    Self::ffn_act_lim(e, &self.cfg, &gate, &up, 1.0, 1.0,
+                                      self.cfg.clamp_shexp_at(il as u32), &mut act, t * n_ff)?;
                     e.matmul(ffn_down, &act, t)?
                 }
                 crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, t, il as u16)?,
@@ -953,8 +1168,23 @@ impl HybridModel {
         assert!(b >= 1 && b == caches.len());
         let pos0s: Vec<usize> = caches.iter().map(|c| c.pos).collect();
         let carried = pos0s.iter().any(|&p| p > 0);
-        if carried && cfg.gemma4.is_some() {
-            return Err("prime_cache_batch: gemma4 has no continuation prime (v0 fresh-only)".into());
+        // gemma4: refuse UNCONDITIONALLY (2026-08-07, lane/gemma4-serve-gaps). The old guard
+        // covered only `carried` — two concurrent FRESH gemma4 prompts batched into the
+        // generic concat attn core below (uniform geometry, no per-layer swa window, no
+        // softcapped head): compiles, runs, wrong logits. Same silent-wrong class as the
+        // step35 refusal beneath. The per-sequence `gemma4_prime` is the supported prefill.
+        if cfg.gemma4.is_some() {
+            return Err("prime_cache_batch: gemma4 has no batched prime core (per-layer \
+                        swa/global geometry, softcapped head) — use gemma4_prime per sequence".into());
+        }
+        // step35: the cross-request batch driver splits the concat projection outputs and feeds
+        // them to `full_attn_prime_core_inner` (the GENERIC attn core — uniform n_head, 128-dim
+        // rope on every layer, no window, no head-wise gate). Running step35 through it compiles
+        // and produces plausible-but-wrong logits, so refuse until a step35 varlen core exists.
+        // The single-sequence `prime_cache` path is the supported prefill.
+        if cfg.step35.is_some() {
+            return Err("prime_cache_batch: step35 has no batched prime core (per-layer n_head / \
+                        partial rope / SWA / head-wise gate) — use prime_cache per sequence".into());
         }
         let ts: Vec<usize> = prompts.iter().map(|p| p.len()).collect();
         for &t in &ts { assert!(t >= PRIME_MIN_T, "prime_cache_batch needs T >= {PRIME_MIN_T}"); }
@@ -1183,7 +1413,9 @@ impl HybridModel {
                     let mut act = e.uninit(total * n_ff)?;
                     // task #17 (batch trunk): silu twin emits the down GEMM's fp16 operand
                     // in-epilogue (nsys round-26: this trunk still paid 32 cvt passes).
-                    if Self::f16out_on(e, total) && self.cfg.m3.is_none() {
+                    // A clamped layer must skip the plain-SiLU twin (see prime_chunk's note).
+                    let d_lim = self.cfg.clamp_shexp_at(il as u32);
+                    if Self::f16out_on(e, total) && self.cfg.m3.is_none() && d_lim.is_none() {
                         let mut a16 = e.alloc_u8_uninit(total * n_ff * 2)?;
                         e.silu_mul_f16out(&gate, &up, &mut act, &mut a16, total * n_ff)?;
                         match e.try_f16_gemm_pre(ffn_down, &a16, total)? {
@@ -1191,7 +1423,8 @@ impl HybridModel {
                             None => e.matmul(ffn_down, &act, total)?,
                         }
                     } else {
-                        Self::ffn_act(e, &self.cfg, &gate, &up, &mut act, total * n_ff)?;
+                        Self::ffn_act_lim(e, &self.cfg, &gate, &up, 1.0, 1.0, d_lim,
+                                          &mut act, total * n_ff)?;
                         e.matmul(ffn_down, &act, total)?
                     }
                 }
@@ -1253,10 +1486,20 @@ impl HybridModel {
     /// bytes are BIT-IDENTICAL to the decode append (same per-warp quant kernel per row; the
     /// batched `append_kv_quantized_rows` runs that exact warp math on a (block, token) grid).
     /// The attention itself is unchanged prefill math (fa_prefill over the f32 K/V).
+    ///
+    /// `seq_end` = the ABSOLUTE end position of the WHOLE prime request (`cache.pos + prompt_len`
+    /// measured BEFORE the chunk loop starts), i.e. a chunk-size-invariant property of the request.
+    /// Only step35's SWA arm reads it (`step35_attn_pre_wo`'s doc note explains why keying on the
+    /// chunk's own `t_kv` made the output depend on MEMRA_PRIME_CHUNK); every other arch ignores it.
+    #[allow(clippy::too_many_arguments)]
     fn full_attn_prime(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
                        hx: Option<&CudaSlice<u8>>,
-                       pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize)
+                       pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize,
+                       seq_end: usize)
                        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        if self.cfg.step35.is_some() {
+            return self.step35_attn_prime(e, fa, h, hx, pos_d, t, cache, il, seq_end);
+        }
         // PROJ/CORE SPLIT (task #13, 2026-07-26): the q/k/v group projection is hoisted so
         // the cross-request batch driver can run it at m = sum_T over concatenated tokens;
         // this single-seq path composes proj+core identically (byte-for-byte the old body).
@@ -1793,8 +2036,14 @@ impl HybridModel {
     }
 
     /// Full-attention mixer with QK-norm, partial RoPE, sigmoid output gate (qwen35 :257-336).
-    pub fn full_attn(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, t: usize)
+    ///
+    /// `il` = layer index: step35 needs it (per-layer n_head / rope width / window / gate) and
+    /// routes to its own mixer. Every other arch ignores it (uniform geometry).
+    pub fn full_attn(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, t: usize, il: usize)
                  -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        if self.cfg.step35.is_some() {
+            return self.step35_attn(e, fa, h, pos_d, t, il);
+        }
         let cfg = &self.cfg;
         let _n_embd = cfg.n_embd as usize;
         let n_head = cfg.n_head as usize;
@@ -2133,6 +2382,10 @@ impl HybridModel {
         debug_assert_eq!(m.down_exps.out_f, n_embd);   //                     out=2048
         debug_assert_eq!(m.gate_exps.n_expert, n_expert);
 
+        // step35 PER-LAYER SwiGLU clamp (None on every other arch and on every unclamped layer).
+        // Routed experts and the shared expert read SEPARATE arrays — never share one value.
+        let lim_exp = cfg.clamp_exp_at(il as u32);
+        let lim_shexp = cfg.clamp_shexp_at(il as u32);
         let use_cache = Engine::moe_cache_enabled();
         let uniform_experts = m.has_uniform_expert_layout();
         let moe_q8 = uniform_experts && moe_q8_enabled()
@@ -2247,7 +2500,11 @@ impl HybridModel {
         // its global scale (~3e4x, measured garbage 2026-07-16). GGUF experts: macros None.
         let no_exp_macros = m.gate_exps.macros.is_none() && m.up_exps.macros.is_none()
             && m.down_exps.macros.is_none();
+        // A clamped-SwiGLU layer (step35 43/44) also cannot ride pairs: moe_pairs_silu_mul's
+        // epilogue is plain silu(gate)*up with no clamp form, and moe_ffn_pairs takes no `il`
+        // so it cannot even see the per-layer limit.
         if cfg.sigmoid_router().is_none() && cfg.m3.is_none() && cfg.hy3.is_none()
+            && !cfg.swiglu_clamped_at(il as u32)
             && no_exp_macros
             && t >= PRIME_MIN_T && m.dev_exps.is_some() && moe_q8_enabled()
             && q8_expert_supported(m.gate_exps.qtype) && q8_expert_supported(m.up_exps.qtype)
@@ -2266,7 +2523,16 @@ impl HybridModel {
         // (gate MISMATCH 74602 vs 92, caught 2026-07-07). Host sigmoid path below is correct.
         // macro-carrying experts are handled inside the dev path now (epilogue fold + w-scale);
         // pairs/gdec/csr keep their macro gates until their kernels grow the fold.
-        let dev_ok = uniform_experts && cfg.m3.is_none() && cfg.hy3.is_none();
+        // step35 (2026-08-06) is the third sigmoid-router arch and the deny above was written as
+        // two arch names, not as the mechanism — so `dev_ok` let it into moe_ffn_dev's
+        // moe_router_topk (softmax, no exp_probs_b bias, no expert_weights_scale) = silently
+        // wrong experts, the same failure the pairs gate at :2254 already blocks by predicate.
+        // Keyed off sigmoid_router() so arch #4 is denied by construction.
+        // The clamped-SwiGLU layers must also fall through: every moe_ffn_dev kernel's fused
+        // epilogue is plain silu(gate)*up (moe_gate_up_silu8_dev_*), which has no clamp form.
+        let dev_ok = uniform_experts && cfg.sigmoid_router().is_none()
+            && cfg.m3.is_none() && cfg.hy3.is_none()
+            && !cfg.swiglu_clamped_at(il as u32);
         // Observation modes must route through the host-visible selection below. Otherwise a fully
         // resident layer returns through device dispatch before its trace/stats row is recorded,
         // silently biasing calibration toward only non-resident layers on large-VRAM machines.
@@ -2397,8 +2663,52 @@ impl HybridModel {
         // and lazily zero ONLY the row of a token that falls through to the sequential axpy loop.
         // BIT-IDENTITY: unchanged — every row is either fully overwritten (gdec) or
         // zeroed-then-accumulated exactly as before (fallback).
-        let gdec_may_fire = uniform_experts && use_cache && n_used <= 8 && gdec_enabled();
-        let mut moe_out = if gdec_may_fire {
+        // `!swiglu_clamped_at`: the grouped-decode kernels' fused epilogue is plain
+        // silu(gate)*up (see the m3 note at the call sites below) — a clamped layer must fall
+        // through to the sequential loop's ffn_act_lim. Hoisted into the fire predicate so the
+        // uninit/memset invariant at :2418 stays consistent with what actually dispatches.
+        let gdec_may_fire = uniform_experts && use_cache && n_used <= 8 && gdec_enabled()
+            && !cfg.swiglu_clamped_at(il as u32);
+        // SLAB-LOCAL RESIDENT ARM (lane/pp-leverb 2026-08-08): the fits-VRAM resident slabs
+        // (`dev_exps`, sized per PP device by cx-503b) were consumed ONLY by the pairs/dev
+        // arms — every one of which DENIES sigmoid-router archs (step35/M3/Hy3). So on those
+        // archs the slabs were uploaded but never read, and every expert went through the
+        // SLRU (37 GB H2D staging per pp4096 prime on the Step SKU; and post-cx-503b the
+        // dead slabs additionally STARVE the SLRU, which sizes itself on free-VRAM-after-
+        // residents). This arm reads the slabs through the SAME kernels the SLRU arm runs —
+        // gdec's fused pair when eligible, the per-expert qmatvec twins otherwise — with the
+        // slab base + ex*stride as the pointer provenance (the exact bit-identity class
+        // `moe_ffn_dev` documents for its resident-vs-SLRU arms; bytes are the same HostExps
+        // bytes either way). LOCALITY GATE: `d.dev == e.ctx().ordinal()` — a slab on another
+        // device must NOT be dereferenced (m=1 peer reads are the measured 34-150x class,
+        // strictly worse than staging); under PP-2 without the prime walker this admits
+        // stage-0 layers on dev0 and leaves stage-1 layers on the SLRU, which is the honest
+        // interim shape. MEMRA_MOE_SLAB=0 = rollback/A-B seam (read per call).
+        let slab_local = m.dev_exps.as_ref()
+            .filter(|d| !d.gu_il && moe_slab_enabled() && d.dev == e.ctx().ordinal());
+        let slab_bases = slab_local.map(|d| {
+            use cudarc::driver::DevicePtr;
+            let s = e.stream();
+            let (pg, _g0) = d.gate.device_ptr(&s);
+            let (pu, _g1) = d.up.device_ptr(&s);
+            let (pd, _g2) = d.down.device_ptr(&s);
+            (pg as u64, pu as u64, pd as u64)
+        });
+        // Fused-pair eligibility mirrors the gdec call sites exactly (plain-SiLU epilogue,
+        // no macros, m3 clamp excluded, q8-supported qtypes, <=8 experts) — INCLUDING
+        // `gdec_enabled()`: the pair IS the gdec kernel pair, so MEMRA_MOE_GDEC=0 must
+        // disable it here too. That seam is also the exactness localizer: with GDEC=0 both
+        // provenances run the SAME per-expert qmatvec kernels (slab base+stride vs SLRU
+        // slot) and must be BIT-IDENTICAL — the true provenance-only pair — while GDEC=1
+        // compares the fused-pair class against the SLRU's hit/miss MIX (gdec for
+        // all-resident tokens, staged loop for misses), which is a dispatch-class
+        // comparison, not a provenance one.
+        let slab_fused_may_fire = slab_bases.is_some() && n_used <= 8 && gdec_enabled()
+            && !cfg.swiglu_clamped_at(il as u32) && cfg.m3.is_none()
+            && no_exp_macros && moe_q8;
+        // moe_out memset elision: BOTH full-row-overwrite arms (gdec + slab fused) allocate
+        // uninit; a token that falls through to any accumulating loop zeroes its own row.
+        let mut moe_out = if gdec_may_fire || slab_fused_may_fire {
             e.uninit(t * n_embd)?
         } else {
             e.zeros(t * n_embd)?
@@ -2453,6 +2763,43 @@ impl HybridModel {
             // per-expert macro-scales the fused kernels don't fold — those fall through too.
             let no_macros = m.gate_exps.macros.is_none() && m.up_exps.macros.is_none()
                 && m.down_exps.macros.is_none();
+            // SLAB-LOCAL FUSED PAIR (lane/pp-leverb 2026-08-08): the gdec launch pair
+            // (moe_gate_up_silu8_q8 + moe_down8_fma_q8 — the EXACT kernels, same FP chains)
+            // with pointers computed from the resident slab base + ex*stride instead of
+            // collected SLRU slot addresses. No cache lock, no residency predicate — the
+            // slab holds every expert by construction, so this arm never falls through
+            // (gdec's P(all 24 resident) ≈ 0.37 coin-flip and the miss path's ~49-launch
+            // staging both die). Bit-identity class: pointer provenance only, the same
+            // slab-vs-SLRU equivalence moe_ffn_dev documents. Ordered BEFORE gdec: when a
+            // slab exists it is strictly better (no lock, no miss).
+            if slab_fused_may_fire {
+                let (pg, pu, pd) = slab_bases.unwrap();
+                let mut gp = [0u64; 8];
+                let mut up = [0u64; 8];
+                let mut dp = [0u64; 8];
+                for (j, &ex) in sel.iter().enumerate() {
+                    let ex = ex as usize;
+                    gp[j] = pg + (ex * m.gate_exps.expert_stride) as u64;
+                    up[j] = pu + (ex * m.up_exps.expert_stride) as u64;
+                    dp[j] = pd + (ex * m.down_exps.expert_stride) as u64;
+                }
+                let mut wv = [0f32; 8];
+                wv[..n_used].copy_from_slice(w);
+                if tok_q8.is_none() {
+                    tok_q8 = Some(e.quantize_q8_1_view(&zt, 1, n_embd)?);
+                }
+                let (zq, zd) = tok_q8.as_ref().unwrap();
+                let act = e.moe_gate_up_silu8_q8(crate::WPtr8(gp), crate::WPtr8(up), zq, zd,
+                                                 n_embd, n_ff_exp, n_used,
+                                                 m.gate_exps.qtype, m.up_exps.qtype,
+                                                 m.gate_exps.row_bytes, m.up_exps.row_bytes)?;
+                let (aq2, ad2) = e.quantize_q8_1(&act, n_used, n_ff_exp)?;
+                let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
+                e.moe_down8_fma_q8(crate::WPtr8(dp), crate::F32x8(wv), &aq2, &ad2, &mut dst,
+                                   n_ff_exp, n_embd, n_used,
+                                   m.down_exps.qtype, m.down_exps.row_bytes)?;
+                continue;
+            }
             if gdec_may_fire && moe_q8 && cfg.m3.is_none() && no_macros {
                 if tok_q8.is_none() {
                     tok_q8 = Some(e.quantize_q8_1_view(&zt, 1, n_embd)?);
@@ -2468,10 +2815,12 @@ impl HybridModel {
                 continue;
             }
 
-            // STAGE 2 memset-elision invariant: moe_out was allocated UNINIT when gdec could fire.
-            // This token fell through to the sequential axpy loop, which ACCUMULATES — zero its row
-            // first (row-sized memset, replaces the old full-buffer zeros; other rows are gdec-owned).
-            if gdec_may_fire {
+            // STAGE 2 memset-elision invariant: moe_out was allocated UNINIT when gdec or the
+            // slab pair could fire. This token fell through to a sequential axpy loop, which
+            // ACCUMULATES — zero its row first (row-sized memset; other rows are owned by the
+            // full-overwrite arms). slab_fused_may_fire never actually reaches here (its arm
+            // has no fallible predicate), included for the allocation invariant's symmetry.
+            if gdec_may_fire || slab_fused_may_fire {
                 let mut row = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
                 e.memset_zeros_view(&mut row)?;
             }
@@ -2539,6 +2888,56 @@ impl HybridModel {
                     continue;
                 }
                 let ex = ex as usize;
+                // PER-EXPERT SLAB READ (lane/pp-leverb 2026-08-08): the layers the fused
+                // pair above excludes — step35's CLAMPED layers 43/44 (ffn_act_lim has no
+                // fused form) and macro-carrying artifacts — still have their bytes in the
+                // local resident slab. Same kernels as the SLRU arms (`qmatvec_expert_q8` /
+                // `qmatvec_view`), same ffn_act_lim/macro folds; provenance = slab base +
+                // ex*stride. No dispatch lock, no admission, no prefetch — nothing to miss.
+                if let Some(d) = slab_local {
+                    let gl = m.gate_exps.expert_layout(ex);
+                    let ul = m.up_exps.expert_layout(ex);
+                    let dl = m.down_exps.expert_layout(ex);
+                    let (g0, u0, d0) = (ex * m.gate_exps.expert_stride,
+                                        ex * m.up_exps.expert_stride,
+                                        ex * m.down_exps.expert_stride);
+                    let (gate, up) = if moe_q8 {
+                        if tok_q8.is_none() {
+                            tok_q8 = Some(e.quantize_q8_1_view(&zt, 1, n_embd)?);
+                        }
+                        let (zq, zd) = tok_q8.as_ref().unwrap();
+                        (e.qmatvec_expert_q8(&d.gate, g0..g0 + gl.len, zq, zd, 1,
+                                             m.gate_exps.in_f, m.gate_exps.out_f,
+                                             gl.qtype, gl.row_bytes)?,
+                         e.qmatvec_expert_q8(&d.up, u0..u0 + ul.len, zq, zd, 1,
+                                             m.up_exps.in_f, m.up_exps.out_f,
+                                             ul.qtype, ul.row_bytes)?)
+                    } else {
+                        (e.qmatvec_view(&d.gate, g0..g0 + gl.len, &zt, 1,
+                                        m.gate_exps.in_f, m.gate_exps.out_f,
+                                        gl.qtype, gl.row_bytes)?,
+                         e.qmatvec_view(&d.up, u0..u0 + ul.len, &zt, 1,
+                                        m.up_exps.in_f, m.up_exps.out_f,
+                                        ul.qtype, ul.row_bytes)?)
+                    };
+                    let mut act = e.uninit(n_ff_exp)?;
+                    Self::ffn_act_lim(e, cfg, &gate, &up, m.gate_exps.macro_scale(ex),
+                                      m.up_exps.macro_scale(ex), lim_exp, &mut act, n_ff_exp)?;
+                    let y = if moe_q8 {
+                        let (aq2, ad2) = e.quantize_q8_1(&act, 1, n_ff_exp)?;
+                        e.qmatvec_expert_q8(&d.down, d0..d0 + dl.len, &aq2, &ad2, 1,
+                                            m.down_exps.in_f, m.down_exps.out_f,
+                                            dl.qtype, dl.row_bytes)?
+                    } else {
+                        let actv = act.slice(0..n_ff_exp);
+                        e.qmatvec_view(&d.down, d0..d0 + dl.len, &actv, 1,
+                                       m.down_exps.in_f, m.down_exps.out_f,
+                                       dl.qtype, dl.row_bytes)?
+                    };
+                    let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
+                    e.axpy_into(&y, w[j] * m.down_exps.macro_scale(ex), &mut dst, n_embd)?;
+                    continue;
+                }
                 for next in page_prefetch_positions(j, sel.len(), page_window) {
                     Self::moe_prefetch_host_expert(sel[next] as usize, m);
                 }
@@ -2586,13 +2985,14 @@ impl HybridModel {
                         Self::moe_cached_gemm(e, il, PROJ_UP, ex, m, max_block, &zt)?
                     };
                     let mut act = e.uninit(n_ff_exp)?;
-                    Self::ffn_act_scaled(
+                    Self::ffn_act_lim(
                         e,
                         cfg,
                         &gate,
                         &up,
                         m.gate_exps.macro_scale(ex),
                         m.up_exps.macro_scale(ex),
+                        lim_exp,
                         &mut act,
                         n_ff_exp,
                     )?;
@@ -2614,8 +3014,8 @@ impl HybridModel {
                     let gate = Self::moe_cached_gemm(e, il, PROJ_GATE, ex, m, max_block, &zt)?;
                     let up   = Self::moe_cached_gemm(e, il, PROJ_UP,   ex, m, max_block, &zt)?;
                     let mut act = e.uninit(n_ff_exp)?;  // activation fully overwrites
-                    Self::ffn_act_scaled(e, cfg, &gate, &up,
-                        m.gate_exps.macro_scale(ex), m.up_exps.macro_scale(ex), &mut act, n_ff_exp)?;
+                    Self::ffn_act_lim(e, cfg, &gate, &up, m.gate_exps.macro_scale(ex),
+                        m.up_exps.macro_scale(ex), lim_exp, &mut act, n_ff_exp)?;
                     let actv = act.slice(0..n_ff_exp);
                     let y = Self::moe_cached_gemm(e, il, PROJ_DOWN, ex, m, max_block, &actv)?;
                     let mut dst = moe_out.slice_mut(tok * n_embd..(tok + 1) * n_embd);
@@ -2649,13 +3049,14 @@ impl HybridModel {
                         u_len,
                     )?;
                     let mut act = e.uninit(n_ff_exp)?;
-                    Self::ffn_act_scaled(
+                    Self::ffn_act_lim(
                         e,
                         cfg,
                         &gate,
                         &up,
                         m.gate_exps.macro_scale(ex),
                         m.up_exps.macro_scale(ex),
+                        lim_exp,
                         &mut act,
                         n_ff_exp,
                     )?;
@@ -2696,8 +3097,8 @@ impl HybridModel {
                         m.up_exps.in_f, m.up_exps.out_f, ul.qtype, ul.row_bytes)?;
 
                     let mut act = e.uninit(n_ff_exp)?;  // activation fully overwrites
-                    Self::ffn_act_scaled(e, cfg, &gate, &up,
-                        m.gate_exps.macro_scale(ex), m.up_exps.macro_scale(ex), &mut act, n_ff_exp)?;
+                    Self::ffn_act_lim(e, cfg, &gate, &up, m.gate_exps.macro_scale(ex),
+                        m.up_exps.macro_scale(ex), lim_exp, &mut act, n_ff_exp)?;
 
                     e.stage_expert(m.down_exps.expert_bytes(ex), sd, 0)?;
                     let actv = act.slice(0..n_ff_exp);
@@ -2750,7 +3151,7 @@ impl HybridModel {
                 (e.matmul(gate_shexp, z, t)?, e.matmul(up_shexp, z, t)?)   // [T, 512] each
             };
             let mut sa = e.uninit(t * n_ff_sh)?;  // activation fully overwrites
-            Self::ffn_act(e, cfg, &sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
+            Self::ffn_act_lim(e, cfg, &sg_gate, &sg_up, 1.0, 1.0, lim_shexp, &mut sa, t * n_ff_sh)?;
             let sh = if verify_t { e.matmul_decode_exact(down_shexp, &sa, t)? }
                      else { e.matmul(down_shexp, &sa, t)? };     // [T, n_embd]
 
@@ -2968,6 +3369,10 @@ impl HybridModel {
     /// FFN activation dispatch: swigluoai (clamped, alpha/limit) when cfg.m3 says so, else the
     /// standard SiLU*up. One seam so every FFN site (dense, routed expert, shared expert) follows
     /// the model's activation exactly.
+    ///
+    /// NO-`il` FORM: cannot apply step35's PER-LAYER SwiGLU clamp. Only call it from a site whose
+    /// layer provably has no live limit (dense-FFN layers, MTP blocks) — `ffn_act_lim` is the
+    /// form for anything that can land on a clamped layer.
     pub fn ffn_act(e: &Engine, cfg: &ModelConfig, gate: &CudaSlice<f32>, up: &CudaSlice<f32>,
                act: &mut CudaSlice<f32>, n: usize) -> Result<(), Box<dyn std::error::Error>> {
         Self::ffn_act_scaled(e, cfg, gate, up, 1.0, 1.0, act, n)
@@ -2975,13 +3380,32 @@ impl HybridModel {
 
     /// ffn_act with per-tensor post-matmul macro-scales folded in (gs/us == 1.0 -> identical
     /// float ops to ffn_act; used by the ModelOpt NVFP4 expert path where each expert tensor
-    /// carries a `weight_scale_2`).
+    /// carries a `weight_scale_2`). Same no-`il` contract as `ffn_act`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn ffn_act_scaled(e: &Engine, cfg: &ModelConfig, gate: &CudaSlice<f32>, up: &CudaSlice<f32>,
                gs: f32, us: f32, act: &mut CudaSlice<f32>, n: usize)
                -> Result<(), Box<dyn std::error::Error>> {
+        Self::ffn_act_lim(e, cfg, gate, up, gs, us, None, act, n)
+    }
+
+    /// ffn_act_scaled + step35's PER-LAYER clamped SwiGLU. `limit`:
+    ///   * `None`   -> the unclamped dispatch (every arch except step35's layers 43-44).
+    ///   * `Some(l)`-> `min(silu(gate*gs), l) * clamp(up*us, +-l)` (llama-graph.cpp:2146/1751,
+    ///                 non-DEEPSEEK4 branch). Callers source it from `cfg.clamp_exp_at(il)`
+    ///                 (routed experts) or `cfg.clamp_shexp_at(il)` (shared expert) — the two
+    ///                 arrays are SEPARATE and a layer can have one without the other.
+    /// The `> 1e-6` eps gate lives in `clamp_exp_at`/`clamp_shexp_at`, so a `Some` here is
+    /// already known live.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn ffn_act_lim(e: &Engine, cfg: &ModelConfig, gate: &CudaSlice<f32>, up: &CudaSlice<f32>,
+               gs: f32, us: f32, limit: Option<f32>, act: &mut CudaSlice<f32>, n: usize)
+               -> Result<(), Box<dyn std::error::Error>> {
         if let Some(m3) = cfg.m3.as_ref() {
+            debug_assert!(limit.is_none(), "m3 swigluoai and step35 clamp are different archs");
             return e.swigluoai_mul_scaled(gate, up, gs, us, m3.swiglu_alpha, m3.swiglu_limit, act, n);
+        }
+        if let Some(l) = limit {
+            return e.swiglu_clamped_mul_scaled(gate, up, gs, us, l, act, n);
         }
         if gs == 1.0 && us == 1.0 { return e.silu_mul(gate, up, act, n); }
         e.silu_mul_scaled(gate, up, gs, us, act, n)
@@ -3211,6 +3635,12 @@ impl HybridModel {
         let n_expert = moe.expert_count as usize;
         let n_used = moe.expert_used_count as usize;
         let n_ff_exp = moe.expert_ff_length as usize;
+        // This arm has no `il` and every kernel in it fuses PLAIN silu(gate)*up, so a clamped
+        // model must never reach it. The caller's gate at `moe_ffn_sequential_zq8` denies per
+        // layer via `swiglu_clamped_at(il)`; assert the whole-model form here so a future caller
+        // that forgets the gate fails loudly in debug instead of returning wrong logits.
+        debug_assert!(!cfg.swiglu_clamped_anywhere(),
+                      "moe_ffn_pairs has no per-layer clamp: fused epilogues are plain SiLU");
         let dev = m.dev_exps.as_ref().unwrap();
         // WALL-GAP ARC: interleaved gate/up slab strides (see moe_ffn_dev).
         let (rbg_d, rbu_d) = if dev.gu_il {
@@ -3462,6 +3892,13 @@ impl HybridModel {
         let n_expert = moe.expert_count as usize;
         let n_used = moe.expert_used_count as usize;
         let n_ff_exp = moe.expert_ff_length as usize;
+        // moe_router_topk is SOFTMAX-only (no exp_probs_b bias, no expert_weights_scale) and every
+        // gate_up kernel here fuses PLAIN silu(gate)*up. `dev_ok` denies sigmoid-router archs and
+        // clamped layers; assert both so a future caller that skips the gate fails loudly.
+        debug_assert!(cfg.sigmoid_router().is_none(),
+                      "moe_ffn_dev routes SOFTMAX: a sigmoid-router arch would pick wrong experts");
+        debug_assert!(!cfg.swiglu_clamped_at(il as u32),
+                      "moe_ffn_dev's fused epilogue is plain SiLU: no clamped form");
 
         // device top-k: sel [t, n_used] i32, w [t, n_used] f32 — stays on device.
         let (sel_d, mut w_d) = e.moe_router_topk(logits, t, n_expert, n_used)?;
@@ -4039,6 +4476,9 @@ impl HybridModel {
         let n_expert = moe.expert_count as usize;
         let n_used = moe.expert_used_count as usize;
         let n_ff_exp = moe.expert_ff_length as usize;
+        // step35 per-layer SwiGLU clamp; None on every other arch / unclamped layer.
+        let lim_exp = cfg.clamp_exp_at(il as u32);
+        let lim_shexp = cfg.clamp_shexp_at(il as u32);
 
         // 1. ROUTER (identical to moe_ffn).
         let logits = e.matmul(&m.gate_inp, z, t)?;
@@ -4170,10 +4610,10 @@ impl HybridModel {
                     eng.qmatvec_view(buf, 0..ul.len, &gv, m_e,
                         m.up_exps.in_f, m.up_exps.out_f, ul.qtype, ul.row_bytes)
                 })?;
-                // SiLU-MUL activation (per-expert macro-scales folded).
+                // SiLU-MUL activation (per-expert macro-scales folded; step35's per-layer clamp).
                 let mut act = e.zeros(m_e * n_ff_exp)?;
-                Self::ffn_act_scaled(e, cfg, &gate, &up,
-                    m.gate_exps.macro_scale(ex), m.up_exps.macro_scale(ex), &mut act, m_e * n_ff_exp)?;
+                Self::ffn_act_lim(e, cfg, &gate, &up, m.gate_exps.macro_scale(ex),
+                    m.up_exps.macro_scale(ex), lim_exp, &mut act, m_e * n_ff_exp)?;
                 let actv = act.slice(0..m_e * n_ff_exp);
                 e.with_moe_cache(max_block, |c, eng| {
                     let id = BlockId::new(il, PROJ_DOWN, ex as u16);
@@ -4194,10 +4634,10 @@ impl HybridModel {
                     m.gate_exps.in_f, m.gate_exps.out_f, gl.qtype, gl.row_bytes)?;
                 let up = e.qmatvec_view(su, 0..ul.len, &gv, m_e,
                     m.up_exps.in_f, m.up_exps.out_f, ul.qtype, ul.row_bytes)?;
-                // SiLU-MUL activation (per-expert macro-scales folded).
+                // SiLU-MUL activation (per-expert macro-scales folded; step35's per-layer clamp).
                 let mut act = e.zeros(m_e * n_ff_exp)?;
-                Self::ffn_act_scaled(e, cfg, &gate, &up,
-                    m.gate_exps.macro_scale(ex), m.up_exps.macro_scale(ex), &mut act, m_e * n_ff_exp)?;
+                Self::ffn_act_lim(e, cfg, &gate, &up, m.gate_exps.macro_scale(ex),
+                    m.up_exps.macro_scale(ex), lim_exp, &mut act, m_e * n_ff_exp)?;
                 let actv = act.slice(0..m_e * n_ff_exp);
                 e.qmatvec_view(sd, 0..dl.len, &actv, m_e,
                     m.down_exps.in_f, m.down_exps.out_f, dl.qtype, dl.row_bytes)?
@@ -4236,7 +4676,7 @@ impl HybridModel {
             let sg_gate = e.matmul(gate_shexp, z, t)?;
             let sg_up = e.matmul(up_shexp, z, t)?;
             let mut sa = e.zeros(t * n_ff_sh)?;
-            Self::ffn_act(e, cfg, &sg_gate, &sg_up, &mut sa, t * n_ff_sh)?;
+            Self::ffn_act_lim(e, cfg, &sg_gate, &sg_up, 1.0, 1.0, lim_shexp, &mut sa, t * n_ff_sh)?;
             let sh = e.matmul(down_shexp, &sa, t)?;
             // shexp gate: qwen35moe sigmoid-gates; M3 has no gate tensor -> weight 1.0.
             // Fused sigmoid-dot below PRIME_MIN_T — one fold order with the sequential and
@@ -4284,6 +4724,9 @@ impl HybridModel {
         let n_expert = moe.expert_count as usize;
         let n_used = moe.expert_used_count as usize;
         let n_ff_exp = moe.expert_ff_length as usize;
+        // step35 per-layer SwiGLU clamp; None on every other arch / unclamped layer.
+        let lim_exp = cfg.clamp_exp_at(il as u32);
+        let lim_shexp = cfg.clamp_shexp_at(il as u32);
 
         let logits = e.matmul(&m.gate_inp, zbatch, mrows)?;
         let (sel_all, w_all) = if let Some(sig) = cfg.sigmoid_router() {
@@ -4431,8 +4874,8 @@ impl HybridModel {
                     m.up_exps.in_f, m.up_exps.out_f, ul.qtype, ul.row_bytes)
             })?;
             let mut act = e.zeros(m_e * n_ff_exp)?;
-            Self::ffn_act_scaled(e, cfg, &gate, &up,
-                m.gate_exps.macro_scale(ex), m.up_exps.macro_scale(ex), &mut act, m_e * n_ff_exp)?;
+            Self::ffn_act_lim(e, cfg, &gate, &up, m.gate_exps.macro_scale(ex),
+                m.up_exps.macro_scale(ex), lim_exp, &mut act, m_e * n_ff_exp)?;
             let actv = act.slice(0..m_e * n_ff_exp);
             let y = e.with_moe_cache(max_block, |c, eng| {
                 let slot = c
@@ -4480,7 +4923,8 @@ impl HybridModel {
             let sg_gate = e.matmul(gate_shexp, zbatch, mrows)?;
             let sg_up = e.matmul(up_shexp, zbatch, mrows)?;
             let mut sa = e.zeros(mrows * n_ff_sh)?;
-            Self::ffn_act(e, cfg, &sg_gate, &sg_up, &mut sa, mrows * n_ff_sh)?;
+            Self::ffn_act_lim(e, cfg, &sg_gate, &sg_up, 1.0, 1.0, lim_shexp,
+                              &mut sa, mrows * n_ff_sh)?;
             let sh = e.matmul(down_shexp, &sa, mrows)?;
             // lockstep rows ARE decode tokens: fused sigmoid-dot per row so batched serving
             // decode matches the single-sequence decode chain bit-for-bit.
@@ -5256,7 +5700,14 @@ impl HybridModel {
     /// pre-output_norm hidden, hiddens = full pre-output_norm stack [T, n_embd]).
     pub(crate) fn gemma4_prime(&self, e: &Engine, tokens: &[u32], cache: &mut Cache)
                                -> Result<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
-        assert_eq!(cache.pos, 0, "gemma4 prime v0 is fresh-prompt only");
+        // Err, not assert (2026-08-07, lane/gemma4-serve-gaps): a served gemma4 prompt longer
+        // than the worker's prefill tick used to chunk here, and chunk 2 (pos > 0) killed the
+        // whole worker process on this line. The worker now primes gemma4 monolithically and
+        // routes continuation suffixes tokenwise; this is the per-request backstop.
+        if cache.pos != 0 {
+            return Err("gemma4 prime v0 is fresh-prompt only (no continuation/chunked prime) \
+                        — prime the full prompt in one call or decode tokenwise".into());
+        }
         let n_embd = self.cfg.n_embd as usize;
         let eps = self.cfg.rms_eps;
         let t = tokens.len();
@@ -6611,6 +7062,369 @@ impl HybridModel {
     }
 }
 
+// ============================ step35 (Step-3.7-Flash) ==================================
+// Node-for-node vs llama.cpp src/models/step35.cpp:216-300. WHY THIS IS A DEDICATED MIXER
+// FAMILY and not a few branches inside the generic `full_attn*` chain:
+//
+//   1. `n_head` IS PER LAYER (`step35.attention.head_count` is an ARRAY: 64 on full-attn
+//      layers, 96 on SWA). Every generic site reads the `cfg.n_head` scalar, so wq/wo/attn_gate
+//      shapes and the FA head counts would be wrong on 33 of 45 layers.
+//   2. `cfg.rope_dim_count` is 128 for this arch, but FULL-attn layers rotate only 64 dims
+//      (upstream halves `n_rot_full` after the generic loader defaults it). A generic mixer
+//      would rotate 128 dims on the full layers — silently wrong, plausible-looking logits.
+//   3. Dual rope base (5e6 full / 1e4 SWA) + `rope_freqs.weight` on FULL layers ONLY.
+//   4. SWA 3:1 (`sliding_window` 512, pattern [false,true,true,true]).
+//   5. The head-wise gate is a SEPARATE `attn_gate.weight [n_embd, n_head_l]` (one pre-sigmoid
+//      scalar per head, broadcast over head_dim) applied to the attention output BEFORE wo —
+//      not the qwen35 fused-in-wq per-DIM gate that `attn_out_gate()`/`q_gate_split` handle.
+//      Its input is the POST-attn_norm hidden (`cur`), not the residual.
+//
+// Attention scale is the DEFAULT 1/sqrt(n_embd_head_k) (step35.cpp:255) — NOT gemma4's 1.0.
+impl HybridModel {
+    /// Per-layer attention geometry: (head_dim, n_kv, n_head, rope_base, scale, is_swa).
+    pub(crate) fn step35_geom(&self, il: usize) -> (usize, usize, usize, f32, f32, bool) {
+        let s = self.cfg.step35.as_ref().unwrap();
+        let hd = self.cfg.head_dim_k as usize;
+        (hd,
+         s.n_head_kv(il as u32) as usize,        // 8 (uniform on 3.7-Flash)
+         s.n_head(il as u32) as usize,           // 64 full / 96 SWA
+         s.rope_base(il as u32),                 // 5e6 full / 1e4 SWA
+         1.0 / (hd as f32).sqrt(),               // step35.cpp:255 kq_scale
+         s.is_swa(il as u32))
+    }
+
+    /// step35 attention core: everything from the q/k/v projection outputs through the head-wise
+    /// gate, returning the GATED attention output PRE-`wo` (the caller runs wo, so this composes
+    /// with both the plain `matmul(&fa.wo, ..)` sites and the f16/into-slab GEMM sites).
+    ///
+    /// `hg` = the POST-attn_norm hidden state (upstream's `cur`) — the gate projection's input.
+    /// `cache`:
+    ///   * `Some` => PRIME mode: append this chunk's post-rope K / raw V rows into the resident
+    ///     quantized cache and attend THROUGH the cache view, exactly like the generic
+    ///     `full_attn_prime_fa_dispatch` (quantize-then-attend on chunk 0 too, so chunk size
+    ///     cannot decide where a precision edge falls — the grain-free chunk-invariance
+    ///     contract, lane/chunkinv-flip).
+    ///   * `None` => pure prefill (forward/forward_last/t2probe): attend over this batch's f32
+    ///     q/k/v, no cache side effect.
+    ///
+    /// SWA WINDOW, and why prefill needs `sdpa_naive_w_quantized_view`: the view is trimmed to
+    /// the oldest key ANY query in this chunk can reach (`off = base_len - (win-1)`), which
+    /// bounds the view at `win-1+t` rows, but the mask is still required — inside the chunk,
+    /// query `qt` may only see view keys `[qt, qt+win-1]`, so the earlier keys the trimmed view
+    /// still contains must be masked per query. memra's window convention
+    /// (`sdpa_naive_w_f32`: mask `t < q_pos-(window-1)`, `q_pos = (T_kv-T)+qt`) is bit-for-bit
+    /// upstream's `LLAMA_SWA_TYPE_STANDARD` (`llama-hparams.h:359`: mask `p1-p0 >= n_swa`), and
+    /// step35.cpp:6 sets exactly that swa_type — verified verbatim on both sides.
+    ///
+    /// Note the f32 `sdpa_naive_w` floor's shared memory is `t_kv*4` bytes, so the SWA arm needs
+    /// `t_kv = win-1+t <= 12287` — i.e. it relies on chunked prefill (MEMRA_PRIME_CHUNK, default
+    /// 4096). A monolithic 32k prime would exceed the 48 KiB dynamic-smem default.
+    ///
+    /// SWA ARM SELECTION IS KEYED ON `seq_end`, NOT ON THE CHUNK'S OWN `t_kv` (lane/step35-chunkfix,
+    /// 2026-08-07). `seq_end` = the ABSOLUTE end position of the whole prime call
+    /// (`cache.pos + prompt_len` at entry; `t` on the cacheless prefill path) — a property of the
+    /// REQUEST, identical at every MEMRA_PRIME_CHUNK value. The old predicate `swa && t_kv > win`
+    /// read the chunk's own extent, which made kernel selection — and therefore the logits, the
+    /// hidden rows, and the generated text — a function of the chunk size:
+    ///   a chunk [b,e) has off = max(0, b-(win-1)), t_kv = e-off, so b <= win-1 => off=0 => FA iff
+    ///   e <= win, while every later chunk has t_kv = t+(win-1) > win. The FA rows were therefore a
+    ///   contiguous PREFIX [0,P) with P = c*floor(win/c) for c <= win (else 0), and the output
+    ///   depended only on P. Measured (research/step37-p2-20260806, closed-form receipt
+    ///   `raw/chunkinv-step35-GAP2-CONFIRMED-20260807.txt`): at T=4883, c=512 and c=64 (P=512) are
+    ///   byte-identical to each other but DIFFER from the c=4096 default (P=0) by maxdiff 1.813e0
+    ///   with greedy text diverging at step 6; c=513 (P=0) is bit-identical to the default. A
+    ///   one-token change in a documented machine-config knob changed the answer.
+    /// So the pre-fix comment "same cache bytes, same numeric class" was false as written: same
+    /// bytes, DIFFERENT numeric class — swapping `fa_prefill_view_ws` for the f32 windowed floor on
+    /// the same rows moves the logits by ~1.8.
+    ///
+    /// Keying on `seq_end` makes P identically 0 for every chunk size, so MEMRA_PRIME_CHUNK is a
+    /// pure memory/transient knob again (research/step35-chunkfix-20260807). It is
+    /// correct-by-construction rather than a tolerance argument — the windowed kernel computes the
+    /// same masked attention the FA arm computed (for e <= win the window mask is a no-op under
+    /// causal, which is exactly why FA was legal there), it is now simply the ONLY arm used once
+    /// the request passes the window. It also cannot move the shipped default: at chunk=4096 every
+    /// chunk of a `seq_end > win` prime ALREADY had t_kv > win (chunk 0 has t_kv = min(chunk,
+    /// seq_end) > win; every later chunk has t_kv >= t+win-1 > win since `PRIME_MIN_T` keeps
+    /// t >= 16), and a `seq_end <= win` prime keeps every chunk on FA exactly as before — so this
+    /// is a no-op on both default regimes and only removes the FA prefix at small chunk values.
+    /// The `t_kv <= 12287` smem ceiling is respected: the chunks whose arm changes are precisely
+    /// those with t_kv <= win = 512.
+    #[allow(clippy::too_many_arguments)]
+    fn step35_attn_pre_wo(&self, e: &Engine, fa: &FullAttnLayer, mut g3: Vec<CudaSlice<f32>>,
+                          hg: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, t: usize,
+                          cache: Option<&mut Cache>, il: usize, seq_end: usize)
+                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (hd, nkv, nh, rbase, scale, swa) = self.step35_geom(il);
+        let eps = self.cfg.rms_eps;
+        let s = self.cfg.step35.as_ref().unwrap();
+        let win = s.sliding_window as usize;
+        let n_rot = s.n_rot(il as u32) as usize;
+
+        let v = g3.pop().unwrap();
+        let k0 = g3.pop().unwrap();
+        let q0 = g3.pop().unwrap();
+
+        // q/k RMSNorm over head_dim rows (attn_q_norm/attn_k_norm [128] F32), then the
+        // per-layer PARTIAL NEOX rope: n_rot = 64 on full layers (dims 64..127 pass through
+        // unrotated), 128 on SWA. rope_freqs (llama3-style per-dim factors) on FULL only.
+        let mut q = e.uninit(t * nh * hd)?;
+        e.rms_norm(&q0, fa.q_norm.float_data(), &mut q, hd, nh * t, eps)?;
+        let mut k = e.uninit(t * nkv * hd)?;
+        e.rms_norm(&k0, fa.k_norm.float_data(), &mut k, hd, nkv * t, eps)?;
+        let ff = if swa { None } else {
+            self.step35_aux.as_ref().and_then(|a| a.rope_freqs.as_ref())
+        };
+        e.rope_neox2(&mut q, &mut k, pos_d, hd, n_rot, nh, nkv, t, rbase, 1.0, ff)?;
+
+        let mut attn = e.uninit(t * nh * hd)?;
+        match cache {
+            Some(cache) => {
+                let base_len = {
+                    let kvl = cache.kv[il].as_mut().unwrap();
+                    assert!(kvl.len + t <= cache.max_ctx, "step35 prime: KV overflow");
+                    let base_len = kvl.len;
+                    e.append_kv_quantized_rows(&k, &v, &mut kvl.k, &mut kvl.v, base_len, t,
+                                               kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes,
+                                               kvl.v_tok_bytes, crate::Engine::kv_fp8_on())?;
+                    kvl.len += t;
+                    let new_len = kvl.len as i32;
+                    e.set_i32_one(&mut kvl.len_d, new_len)?;
+                    base_len
+                };
+                let kvl = cache.kv[il].as_ref().unwrap();
+                // Both segmentation seams restore the FULL pre-fix arithmetic: their legacy
+                // arm predicate (`t_kv` below, per-call `seq_end` in prime_cache) AND the
+                // unaligned view offset here. Both halves are load-bearing for the canaries:
+                // on the FA default the predicate arms agree bitwise wherever they can differ
+                // (a t_kv<=win view has no maskable key, so windowed==unwindowed FA bit-for-bit).
+                // That made predicate-only seams INERT under Lever A — first chunkinv35c, then
+                // tickinv35c. The raw offset restores the live segmentation-variant mechanism
+                // on the current FA path: its tile grid starts at the chunk/call boundary.
+                // Read per layer call, never in a measured default.
+                let legacy_tkv = std::env::var("MEMRA_STEP35_SWA_TKV").as_deref() == Ok("1");
+                let legacy_calllocal =
+                    std::env::var("MEMRA_PRIME_CALLLOCAL").as_deref() == Ok("1");
+                // SWA: trim the view to the oldest key any query in this chunk can reach —
+                // ALIGNED DOWN to the FA tile size (BK=32). The raw trim is chunk-DEPENDENT
+                // (off = base_len-(win-1), and base_len is a chunk boundary), and the FA
+                // kernel's online-softmax recurrence groups keys into BK tiles relative to
+                // the VIEW START — so an unaligned off regroups the same absolute keys into
+                // different tiles at different chunk sizes = different (m,l) rounding =
+                // chunk-dependent bits. chunkinv35 caught exactly this on the first FA-arm
+                // battery (first_div == chunk size; raw/leverA-gates-20260807T135541Z.log).
+                // Aligning off to 32 pins tiles to ABSOLUTE key positions for every chunk
+                // size; the <=31 extra leading keys are older than EVERY query's window
+                // (all queries sit at >= base_len, so keys < base_len-(win-1) are masked
+                // for all of them) and a fully-masked key is an exact-0.0 no-op in both
+                // kernels (NEG_INF -> p=0.0; l+=0.0 and O+=0.0 are bitwise identity), so
+                // the floor arm's bits do not move either (gated: G2f, battery 2).
+                let off = if swa {
+                    let raw = base_len.saturating_sub(win - 1);
+                    if legacy_tkv || legacy_calllocal { raw } else { raw & !31usize }
+                } else {
+                    0
+                };
+                let t_kv = base_len + t - off;
+                let k_view = e.view_u8_range(&kvl.k, off * kvl.k_tok_bytes,
+                                             (off + t_kv) * kvl.k_tok_bytes);
+                let v_view = e.view_u8_range(&kvl.v, off * kvl.v_tok_bytes,
+                                             (off + t_kv) * kvl.v_tok_bytes);
+                // CHUNK-INVARIANT PREDICATE: `seq_end` (the request's absolute end position), not
+                // this chunk's `t_kv`. See the doc note — keying on t_kv made P = c*floor(win/c)
+                // rows take FA and the output a function of MEMRA_PRIME_CHUNK.
+                // MEMRA_STEP35_SWA_TKV=1 is the ROLLBACK SEAM to the pre-fix arithmetic — BOTH
+                // halves: this predicate AND the unaligned view offset above (`legacy_tkv`).
+                // It is what gives the step35 chunkinv gate its canary teeth: chunk-VARIANT by
+                // construction, so the invariance assertion MUST break under it (the seam whose
+                // absence made the original canary inert — GAP 1 in research/step37-p2-20260806;
+                // and a predicate-only seam went inert AGAIN under the FA default, battery 2's
+                // CANARY UNEXPECTEDLY MATCHED — see the offset comment). Read per call, not
+                // cached (probes flip it in-process). Never on in a measured default run.
+                let swa_naive = if legacy_tkv { t_kv > win } else { seq_end > win };
+                if swa && swa_naive {
+                    // Windowed mask needed (see the doc note). DEFAULT since lane/pp-prefill
+                    // 2026-08-07: the windowed hd128 FA stamp (`fa_prefill_view_ws_w_hd128`) —
+                    // the anatomy profile measured the f32 floor at 565 ms/layer on a pp4096
+                    // (41% of the whole prime) while the unwindowed hd128 FA family did the
+                    // strictly harder causal-4096 in 3.3 ms. NOTE t_kv can be <= win here
+                    // (a chunk-0 view on a small chunk); the windowed kernel handles that
+                    // identically to the unwindowed one modulo the mask, which is the point.
+                    // NEW NUMERIC CLASS vs the floor (bf16-MMA online softmax vs f32 serial),
+                    // selected on `seq_end` like every arm here, so the class is uniform for
+                    // the whole request at every MEMRA_PRIME_CHUNK — chunkinv holds by the
+                    // same construction as the chunkfix. MEMRA_STEP35_SWA_FA=0 = rollback to
+                    // the f32 floor (the previous numeric config, kept as the A/B seam).
+                    if std::env::var("MEMRA_STEP35_SWA_FA").as_deref() == Ok("0") {
+                        e.sdpa_naive_w_quantized_view(&q, &k_view, &v_view, &mut attn, hd, nh,
+                                                      nkv, t, t_kv, scale, true, win,
+                                                      kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                    } else {
+                        e.fa_prefill_view_ws_w_hd128(&q, &k_view, &v_view, &mut attn, hd, nh,
+                                                     nkv, t, t_kv, scale, true, win,
+                                                     kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                    }
+                } else if std::env::var("MEMRA_NOFA").is_ok() {
+                    e.sdpa_naive_quantized_view(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
+                                                t, t_kv, scale, true,
+                                                kvl.k_tok_bytes, kvl.v_tok_bytes)?;
+                } else {
+                    // seq_end <= win (or a full-attn layer): no query in the WHOLE request can
+                    // reach past the window, so the window mask is a no-op under causal and every
+                    // chunk rides the hd128 dequant-once FA prefill — one arm for the whole
+                    // request either way, which is what makes the chunk size arithmetic-free.
+                    e.fa_prefill_view_ws(&q, &k_view, &v_view, &mut attn, hd, nh, nkv,
+                                         t, t_kv, scale, true,
+                                         kvl.k_tok_bytes, kvl.v_tok_bytes,
+                                         crate::Engine::kv_fp8_on())?;
+                }
+            }
+            None => {
+                // Cacheless prefill (forward/forward_last/t2probe) is MONOLITHIC — there is no
+                // chunk loop on this path, so seq_end == t and the predicate is unchanged. The
+                // assert pins that: if a chunked cacheless prefill is ever added, it must thread
+                // seq_end here too or it re-opens the same door.
+                debug_assert_eq!(seq_end, t, "step35 cacheless prefill is monolithic (seq_end == t)");
+                if swa && seq_end > win {
+                    e.sdpa_naive_w(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true, win)?;
+                } else if std::env::var("MEMRA_NOFA").is_ok() {
+                    e.sdpa_naive(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
+                } else {
+                    e.fa_prefill(&q, &k, &v, &mut attn, hd, nh, nkv, t, t, scale, true)?;
+                }
+            }
+        }
+
+        // HEAD-WISE GATE (step35.cpp:267-285): gate = attn_gate(cur) -> [t, n_head_l];
+        // attn *= sigmoid(gate) broadcast over head_dim. BEFORE wo.
+        let gw = fa.attn_gate.as_ref()
+            .ok_or("step35 layer is missing attn_gate.weight (head-wise attention gate)")?;
+        let gt = e.matmul(gw, hg, t)?;
+        let mut ag = e.uninit(t * nh * hd)?;
+        e.attn_head_gate(&attn, &gt, &mut ag, None, hd, nh, t)?;
+        Ok(ag)
+    }
+
+    /// step35 PREFILL mixer, no cache side effect (the `full_attn` contract: `forward`,
+    /// `forward_last`, t2probe). Post-`wo`.
+    pub(crate) fn step35_attn(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
+                              pos_d: &CudaSlice<i32>, t: usize, il: usize)
+                              -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let g3 = e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], h, t)?;
+        // Monolithic path: the request ends at t (no chunk loop). See step35_attn_pre_wo's note.
+        let ag = self.step35_attn_pre_wo(e, fa, g3, h, pos_d, t, None, il, t)?;
+        Ok(e.matmul(&fa.wo, &ag, t)?)
+    }
+
+    /// step35 PRIME mixer (the `full_attn_prime` contract: append this chunk's K/V into the
+    /// resident quantized cache, attend through the cache view). Post-`wo`.
+    ///
+    /// `seq_end` = the ABSOLUTE end position of the whole prime request (chunk-invariant); it
+    /// selects the SWA arm. See `step35_attn_pre_wo`'s doc note for why it cannot be this chunk's
+    /// own extent.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn step35_attn_prime(&self, e: &Engine, fa: &FullAttnLayer, h: &CudaSlice<f32>,
+                                    hx: Option<&CudaSlice<u8>>, pos_d: &CudaSlice<i32>, t: usize,
+                                    cache: &mut Cache, il: usize, seq_end: usize)
+                                    -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let g3 = match hx {
+            Some(xh) => e.matmul_group_xh(&[&fa.wq, &fa.wk, &fa.wv], h, xh, t)?,
+            None => e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], h, t)?,
+        };
+        let ag = self.step35_attn_pre_wo(e, fa, g3, h, pos_d, t, Some(cache), il, seq_end)?;
+        Ok(e.matmul(&fa.wo, &ag, t)?)
+    }
+
+    /// step35 T=1 decode attention (post-`wo`, matching `full_attn_decode_pre`'s contract).
+    /// `pre_q` = the attn-input norm's q8_1 pair when the caller took the norm-fusion lever
+    /// (then `h` is a zero-length placeholder and EVERY projection here — including the gate —
+    /// must be on the q8_1 fast path; `mixer_in_q8_1_fast` enforces that for step35 by also
+    /// requiring `attn_gate`).
+    ///
+    /// SWA decode is a token-aligned VIEW OFFSET into the quantized cache (the gemma4 R6
+    /// pattern): keys carry absolute rope and the mask is purely positional, so the single
+    /// query at `len-1` attending the last `win` rows IS the windowed result — no mask kernel.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn step35_decode_attn(&self, e: &Engine, fa: &FullAttnLayer, il: usize,
+                          h: &CudaSlice<f32>,
+                          pre_q: Option<(&CudaSlice<i8>, &CudaSlice<f32>)>,
+                          pos_d: &CudaSlice<i32>, cache: &mut Cache)
+                          -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (hd, nkv, nh, rbase, scale, swa) = self.step35_geom(il);
+        let eps = self.cfg.rms_eps;
+        let s = self.cfg.step35.as_ref().unwrap();
+        let win = s.sliding_window as usize;
+        let n_rot = s.n_rot(il as u32) as usize;
+        let n_embd = self.cfg.n_embd as usize;
+        let gw = fa.attn_gate.as_ref()
+            .ok_or("step35 layer is missing attn_gate.weight (head-wise attention gate)")?;
+
+        let (q0, k0, v0, gt) = match pre_q {
+            Some((hq, hdq)) => {
+                debug_assert!(e.uses_q8_1_fast(gw),
+                    "step35 pre-quantized decode requires attn_gate on the q8_1 fast path \
+                     (h is a zero-length placeholder here) — see mixer_in_q8_1_fast");
+                let (a, b, c) = match e.matmul_q8_fused3(&fa.wq, &fa.wk, &fa.wv, hq, hdq)? {
+                    Some(t3) => t3,
+                    None => (e.matmul_pre(&fa.wq, hq, hdq, h, 1)?,
+                             e.matmul_pre(&fa.wk, hq, hdq, h, 1)?,
+                             e.matmul_pre(&fa.wv, hq, hdq, h, 1)?),
+                };
+                let gt = e.matmul_pre(gw, hq, hdq, h, 1)?;
+                (a, b, c, gt)
+            }
+            None => {
+                if e.uses_q8_1_fast(&fa.wq) && e.uses_q8_1_fast(&fa.wk)
+                    && e.uses_q8_1_fast(&fa.wv) && e.uses_q8_1_fast(gw) {
+                    let (hq, hdq) = e.quantize_q8_1(h, 1, n_embd)?;
+                    let (a, b, c) = match e.matmul_q8_fused3(&fa.wq, &fa.wk, &fa.wv, &hq, &hdq)? {
+                        Some(t3) => t3,
+                        None => (e.matmul_pre(&fa.wq, &hq, &hdq, h, 1)?,
+                                 e.matmul_pre(&fa.wk, &hq, &hdq, h, 1)?,
+                                 e.matmul_pre(&fa.wv, &hq, &hdq, h, 1)?),
+                    };
+                    let gt = e.matmul_pre(gw, &hq, &hdq, h, 1)?;
+                    (a, b, c, gt)
+                } else {
+                    (e.matmul(&fa.wq, h, 1)?, e.matmul(&fa.wk, h, 1)?,
+                     e.matmul(&fa.wv, h, 1)?, e.matmul(gw, h, 1)?)
+                }
+            }
+        };
+
+        let mut q = e.uninit(nh * hd)?;
+        e.rms_norm(&q0, fa.q_norm.float_data(), &mut q, hd, nh, eps)?;
+        let mut k = e.uninit(nkv * hd)?;
+        e.rms_norm(&k0, fa.k_norm.float_data(), &mut k, hd, nkv, eps)?;
+        let ff = if swa { None } else {
+            self.step35_aux.as_ref().and_then(|a| a.rope_freqs.as_ref())
+        };
+        e.rope_neox2(&mut q, &mut k, pos_d, hd, n_rot, nh, nkv, 1, rbase, 1.0, ff)?;
+
+        if std::env::var("MEMRA_NOFA").is_ok() {
+            return Err("MEMRA_NOFA (naive f32 SDPA) is incompatible with the quantized KV \
+                        cache; unset MEMRA_NOFA to use fa_decode".into());
+        }
+        let kvl = cache.kv[il].as_mut().unwrap();
+        e.append_kv_quantized(&k, &v0, &mut kvl.k, &mut kvl.v, kvl.len,
+                              kvl.kv_dim_k, kvl.kv_dim_v, kvl.k_tok_bytes, kvl.v_tok_bytes,
+                              crate::Engine::kv_fp8_on())?;
+        kvl.len += 1;
+        let (off, t_kv) = if swa && kvl.len > win { (kvl.len - win, win) } else { (0, kvl.len) };
+        let k_view = e.view_u8_range(&kvl.k, off * kvl.k_tok_bytes,
+                                     (off + t_kv) * kvl.k_tok_bytes);
+        let v_view = e.view_u8_range(&kvl.v, off * kvl.v_tok_bytes,
+                                     (off + t_kv) * kvl.v_tok_bytes);
+        let mut attn = e.uninit(nh * hd)?;
+        e.fa_decode_kvmod(&q, &k_view, &v_view, &mut attn, hd, nh, nkv, t_kv, scale,
+                          kvl.k_tok_bytes, kvl.v_tok_bytes, crate::Engine::kv_fp8_on())?;
+
+        let mut ag = e.uninit(nh * hd)?;
+        e.attn_head_gate(&attn, &gt, &mut ag, None, hd, nh, 1)?;
+        Ok(e.matmul(&fa.wo, &ag, 1)?)
+    }
+}
+
 // ===================================================================================== //
 //  gemma-4 E4B (per-layer embeddings + KV-sharing) — FIRST-LIGHT forward.               //
 //  Dedicated simple path (Stage-B matmuls, per-row causal attention over the quantized  //
@@ -7150,7 +7964,12 @@ impl HybridModel {
     /// fast; the prefill fa arms come later.
     pub(crate) fn gemma4_e4b_prime(&self, e: &Engine, tokens: &[u32], cache: &mut Cache)
                                    -> Result<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
-        assert_eq!(cache.pos, 0, "e4b prime is fresh-prompt only (v0)");
+        // Err, not assert (2026-08-07, lane/gemma4-serve-gaps): same served-chunked-prompt
+        // process-kill as gemma4_prime — refuse per-request.
+        if cache.pos != 0 {
+            return Err("e4b prime is fresh-prompt only (v0) — prime the full prompt in one \
+                        call or decode tokenwise".into());
+        }
         let n_embd = self.cfg.n_embd as usize;
         let t = tokens.len();
         let (ld, x) = self.gemma4_e4b_trunk(e, tokens, 0, cache, true)?;
@@ -7243,4 +8062,3 @@ pub struct G4DcSlots {
     f0: CudaSlice<f32>, sn: CudaSlice<f32>,
     hn: CudaSlice<f32>, logits: CudaSlice<f32>,
 }
-

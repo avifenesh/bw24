@@ -1,0 +1,19 @@
+=== lane/step-draft #87 preflight gate 20260807T000622Z
+=== commit: d3585836 on lane/step-draft
+=== NOTE: no GPU needed — the preflight decides before any CUDA context exists.
+=== rig (for the record, contention and all): 768 MiB, 24463 MiB
+########## ARM H: the #87 preflight refuses BEFORE any GPU work ##########
+  ok: H: refused
+  ok: H: cites the quarantine issue
+  ok: H: cites the receipts
+  ok: H: quotes the measured cause
+  ok: H: names the fix
+  ok: H: no CUDA context created
+  ok: H: refused before the weight load
+########## ARM I/quarantine: preflight must NOT fire (MEMRA_SERVE_SPEC=0) ##########
+  ok: I/quarantine: no spurious refusal
+  ok: I/quarantine: reached the engine (preflight passed it through)
+########## ARM I/doorshut: preflight must NOT fire (MEMRA_PP_STAGES=1) ##########
+  ok: I/doorshut: no spurious refusal
+  ok: I/doorshut: reached the engine (preflight passed it through)
+=== FAILS=0

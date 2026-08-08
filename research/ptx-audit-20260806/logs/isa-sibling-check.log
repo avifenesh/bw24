@@ -1,0 +1,9 @@
+# Does a DEEPER-K equal-math sibling exist for each family? ptxas is the oracle.
+# nvcc 13.1, -gencode arch=compute_120a,code=sm_120a
+F=1  REJECTED: Illegal matrix shape '.m16n8k32' for instruction 'mma'
+F=2  REJECTED: Illegal matrix shape '.m16n8k32' for instruction 'mma'
+F=3  REJECTED: Unexpected instruction types specified for 'mma'
+F=4  REJECTED: Incorrect instruction type specified for mma with shape '.m16n8k64'
+F=5  REJECTED: Incorrect instruction type specified for mma with shape '.m16n8k64'
+F=6  REJECTED: Illegal matrix shape '.m16n8k32' for instruction 'mma'
+F=7  REJECTED: Illegal matrix shape '.m16n8k128' for instruction 'mma'

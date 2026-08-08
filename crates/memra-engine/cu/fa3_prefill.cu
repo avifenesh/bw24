@@ -41,6 +41,11 @@ template<int N> __device__ __forceinline__ void wgmma_wait() {
 __device__ __forceinline__ void bar_sync(int id, int cnt) {
     asm volatile("bar.sync %0, %1;" :: "r"(id), "r"(cnt));
 }
+// rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md
+//   NOT-APPLICABLE on sm_120a: wgmma is an sm_90a (Hopper) instruction and does not exist in
+//   the sm_120a ISA -- unmeasurable on this rig, and no instruction is emitted here in the
+//   shipped build. build.rs compiles this file with -DMEMRA_FA3_STUB on sm_120a, so the
+//   whole wgmma body is stubbed out of the shipped object.
 __device__ __forceinline__ void wgmma_m64n64k16_bf16(float acc[32], unsigned long long da,
                                                      unsigned long long db, int scale_d) {
     asm volatile(

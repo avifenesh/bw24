@@ -1,0 +1,6 @@
+rep 0 (base->meter): base: p50 491.3ms p95 492.2ms  meter: p50 492.8ms p95 495.0ms
+rep 1 (meter->base): base: p50 496.0ms p95 497.9ms  meter: p50 494.3ms p95 496.3ms
+rep 2 (base->meter): base: p50 497.4ms p95 508.0ms  meter: p50 498.4ms p95 499.5ms
+rep 3 (meter->base): base: p50 499.4ms p95 501.8ms  meter: p50 498.7ms p95 500.5ms
+rep 4 (base->meter): base: p50 499.4ms p95 502.1ms  meter: p50 499.5ms p95 501.9ms
+pooled N=100/arm interleaved x5: p50 base 496.3ms meter 496.1ms (-0.03%), p95 base 502.1ms meter 501.1ms (-0.19%) -> PASS (<0.5% p95 bar)

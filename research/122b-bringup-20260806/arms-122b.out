@@ -1,0 +1,15 @@
+=== ARM a0-default :  ===
+ARM a0-default exit=101 verdict=MISMATCH nan_lines=1
+=== ARM a1-deep0 : MEMRA_FA_DEEP=0 ===
+ARM a1-deep0 exit=101 verdict=MISMATCH nan_lines=1
+=== ARM a2-v4off : MEMRA_FA_V4=0 ===
+ARM a2-v4off exit=0 verdict=MATCH nan_lines=0
+=== ARM a3-v43off : MEMRA_FA_V4=0 MEMRA_FA_V3=0 ===
+ARM a3-v43off exit=0 verdict=MATCH nan_lines=0
+=== ARM a4-v432off : MEMRA_FA_V4=0 MEMRA_FA_V3=0 MEMRA_FA_V2=0 ===
+ARM a4-v432off exit=0 verdict=MATCH nan_lines=0
+=== ARM a5-novec : MEMRA_NO_FA_VEC=1 ===
+ARM a5-novec exit=0 verdict=MATCH nan_lines=0
+=== ARM a6-oracle : MEMRA_FAST=0 ===
+ARM a6-oracle exit=101 verdict=MISMATCH nan_lines=1
+ALL ARMS DONE

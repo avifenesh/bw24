@@ -1,0 +1,8 @@
+
+
+=== TASK ===
+Diagnose the crash. Walk through the likely cause given the selector registration log right before it, then propose a concrete fix with code. Then list two regression tests you would add.
+
+=== THOUGHT PROCESS ===
+1.  **Analyze the Error**: The traceback shows a `KeyError` raised in `selectors.py` line 193 (`get_key`). The error message is `'11 is not registered'`. This happens inside `_drive` at line 88.
+2.  **Analyze the Context**: The log shows `[worker-2] selector registered fd=

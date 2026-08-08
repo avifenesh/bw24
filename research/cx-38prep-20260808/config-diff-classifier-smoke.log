@@ -1,0 +1,15 @@
+--- GO-WITH-GATES synthetic ---
+DIFF [GO-WITH-GATES] intermediate_size: ref=17408 -> new=17664
+DIFF [GO-WITH-GATES] max_position_embeddings: ref=262144 -> new=524288
+FP8 metadata: PASS - official Qwen 3.6 block-128 metadata contract
+
+2 architecture diffs, 0 hard stops
+--- STOP-ARCH synthetic ---
+DIFF [STOP-ARCH] layer_types_match_count: ref=True -> new=False
+DIFF [STOP-ARCH] num_attention_heads: ref=24 -> new=25
+DIFF [STOP-ARCH] rope_parameters: ref={'mrope_interleaved': True, 'mrope_section': [11, 11, 10], 'partial_rotary_factor': 0.25, 'rope_theta': 10000000, 'rope_type': 'default'} -> new={'mrope_interleaved': True, 'mrope_section': [11, 11, 10], 'partial_rotary_factor': 0.25, 'rope_theta': 1000000, 'rope_type': 'default'}
+DIFF [GO-WITH-GATES] layer_types_count: ref=64 -> new=63
+FP8 metadata: PASS - official Qwen 3.6 block-128 metadata contract
+
+4 architecture diffs, 3 hard stops
+STOP synthetic exit=1 (expected 1)

@@ -1,0 +1,5 @@
+ed268fdaa29c39f640b41219bc2de142  target/release/kernel-check
+0b6b50ec1494b3b01a01c0511c6cb511  target/release/decode-batch-gate
+ed916b6c5c56cba57bce2dcca138029a  target/release/run-gen
+fc5b730fcc4fa29bc616f0ce577978ac  target/release/run-spec
+3d203a1de069c02675997013e8af1a4b  target/release/memra-server

@@ -148,6 +148,10 @@ namespace memra_accprobe_mma {
     }
 
     // ---- ARM S32: the floor's MMA, verbatim. D(s32) += A(s8) * B(s8). ----
+    // rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md
+    //   16.06 cyc/warp-MMA, 309.7 TOP/s = fastest int8 form; nothing deeper exists (ptxas rejects
+    //   m16n8k64.s8). OPTIMAL. This whole file is probe-only (bin accprobe_bench, never a serving
+    //   path) -- see the MMA FORM block on the F32 arm below, which is where the rate mattered.
     static __device__ __forceinline__ void mma_s32(
             int * __restrict__ d, const int * __restrict__ a, const int b0, const int b1) {
         asm("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
@@ -157,13 +161,49 @@ namespace memra_accprobe_mma {
 
     // ---- ARM F32: the SAME m16n8k32 shape and the SAME A/B/D fragment ABI, f32 accumulate over
     // e4m3 operands. This is the exact op cu/mmq_fp8_blk.cu (v2) accumulates in. sm_100a+/sm_120a. ----
+    //
+    // MMA FORM — READ THIS BEFORE CITING THIS INSTRUMENT'S DELTA (added 2026-08-06, lane/rp-on-st).
+    // The F32 arm's ONE instruction has two PTX spellings on sm_120a that compute the identical
+    // e4m3xe4m3 product, at DIFFERENT issue intervals (research/w4a8-prefill-20260806 slices 3-4,
+    // clock64 + full-GPU cudaEvent, NACC=1..16 ILP control):
+    //
+    //   kind::f8f6f4 (plain)                                32.02 cyc/warp-MMA
+    //   kind::mxf8f6f4.block_scale.scale_vec::1X @ ue8m0     16.06 cyc/warp-MMA
+    //   m16n8k32.s8.s8.s32   (the S32 arm below)             16.06 cyc/warp-MMA
+    //
+    // So the PLAIN form is 2x the interval of the S32 arm's MMA, at the same shape — meaning the
+    // "f32 vs s32 accumulate" single-variable claim was NOT single-variable while this arm used the
+    // plain form: the accumulator class and the MMA issue interval moved together, and the +19.8/+20.2
+    // delta_pp the fp8-v3 gate published (research/fp8v3-gate-20260805/) is the SUM of both.
+    // The block_scale form at the ue8m0 identity scale is bit-identical to the plain form (0/128
+    // accumulator elements differ, live-operand controls at 2^1/2^-1 exact) and issues at the S32
+    // arm's interval, so it is the form that makes this instrument actually single-variable.
+    //
+    // ACCPROBE_F32_PLAIN=1 (build-time, -DMEMRA_ACCPROBE_PLAIN_MMA) reproduces the ORIGINAL plain-form
+    // arm — keep it: the published delta belongs to that arm and its receipts must stay reproducible.
+    //
+    // rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md — the rates quoted above
+    // were re-measured independently by the repo-wide audit (12 forms, 3 reruns, SASS-census verified)
+    // and CONFIRMED: plain 32.03, block_scale 16.06, s8-k32 16.06. Default arm = the fast one.
+    // Verdict: OPTIMAL (default), and the plain arm behind MEMRA_ACCPROBE_PLAIN_MMA is a deliberate
+    // receipt-reproduction door, not a rate defect.
+#define MEMRA_ACCPROBE_UE8M0_ONE 0x7F7F7F7Fu   // four ue8m0 bytes, each 2^0
     static __device__ __forceinline__ void mma_f32(
             float * __restrict__ d, const int * __restrict__ a, const int b0, const int b1) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1000
+#ifdef MEMRA_ACCPROBE_PLAIN_MMA
         asm("mma.sync.aligned.kind::f8f6f4.m16n8k32.row.col.f32.e4m3.e4m3.f32 "
             "{%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
             : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
             : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+#else
+        asm("mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::1X"
+            ".f32.e4m3.e4m3.f32.ue8m0 "
+            "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3},{%10},{0,0},{%11},{0,0};"
+            : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+            : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1),
+              "r"(MEMRA_ACCPROBE_UE8M0_ONE), "r"(MEMRA_ACCPROBE_UE8M0_ONE));
+#endif
 #else
         // Pre-Blackwell has no .kind::f8f6f4. The F32 arm fails closed rather than silently
         // measuring something else; the S32 arm still builds and runs everywhere.

@@ -12,10 +12,21 @@ edges of batched serving.
 > same SKU and ~2x between a 188-SM and an 82-SM board. The open gaps stated below travel
 > with the wins.
 
-memra's engine owns one GPU per process (`Engine::new(0)`; `CUDA_VISIBLE_DEVICES` is the
-placement mechanism). Multi-GPU serving is therefore a **replica fleet**: N `memra-server`
-processes fronted by an admission proxy. Tensor parallelism is a separate in-progress build
-(M0 comms floor measured — ARCHITECTURE-H100.md).
+Multi-GPU serving has two shapes, and which one applies is decided by whether the model fits
+on one card:
+
+- **Replica fleet** (the default for a model that fits): N independent `memra-server`
+  processes, one engine per GPU (`Engine::new(0)`; `CUDA_VISIBLE_DEVICES` is the placement
+  mechanism), fronted by an admission proxy. This is the throughput shape — see
+  [Fleet tooling](#fleet-tooling).
+- **Pipeline-parallel PP-2** (for a model that fits only across the pair): ONE engine
+  process, the layer trunk cut into stages, each stage's weights and KV resident on its own
+  card. Opt-in via `MEMRA_PP_STAGES` / `MEMRA_PP_DEVICES`; see
+  [Pipeline-parallel serving](#pipeline-parallel-pp-2-serving) below for what is gated and
+  what is refused.
+
+Tensor parallelism is neither — it is a separate in-progress build (M0 comms floor measured
+— ARCHITECTURE-H100.md).
 
 ## Fleet tooling
 
@@ -28,6 +39,7 @@ processes fronted by an admission proxy. Tensor parallelism is a separate in-pro
 | `tools/serve-proxy.py` | least-outstanding reverse proxy with per-backend admission cap (default 8 = the engine's exactness-tier batch width and the two-replicas-per-GPU anti-thrash bound). Bounded FIFO queue with deadline → 429 + Retry-After; `/health` + `/metrics` JSON |
 | `tools/load-serve.py` | concurrent OpenAI-format load harness: aggregate output tok/s, p50/p95 latency, JSONL per load point |
 | `tools/serve-smoke.sh` | OpenAI-surface smoke gate for a single server |
+| `deploy/systemd/memra-server.service` | example unit for a **single supervised instance** (the other deployment shape — `serve-fleet.sh` is the systemd-free multi-replica path). `Type=notify` with `READY=1` after the models load and the socket binds, `WATCHDOG=1` pings only while inference is live, `STOPPING=1` + `EXTEND_TIMEOUT_USEC` so a drain is not SIGKILLed, and exit 70 (unrecoverable GPU) distinguished from exit 1 (bad config). Copy, do not symlink: every path is site-specific and the value is the supervision contract in the directive choices, each commented with the failure it prevents |
 
 ## Measured numbers (Qwen3.5-9B Q8_0; receipts in `research/`)
 
@@ -59,10 +71,29 @@ processes fronted by an admission proxy. Tensor parallelism is a separate in-pro
   `GraphSession` replay amortized the same launch overhead this removes outright, so with the
   fast path in place the door is a net loss at every length measured out to mt=1024 and
   `MEMRA_GS_MIN=384` must NOT be lowered (FLAGS §serve; `research/servepath-p2-20260805/`).
-- **Spec fast lane:** MTP speculative serving is a single-stream latency tier — 1.82x plain
-  serving at c=1 on the 27B (131.8 vs 72.5 tok/s); plain batching overtakes between c=2 and
-  c=4, so spec and bulk tiers run as separate server processes (`MEMRA_SERVE_SPEC`;
-  `research/spec-serving-20260801/`).
+- **Spec fast lane, now CONCURRENCY-GATED inside one process** (lane/spec-gate, 2026-08-07 —
+  this supersedes the "run spec and bulk as separate server processes" guidance): MTP
+  speculative serving is a single-stream latency tier — 1.82x plain serving at c=1 on the 27B
+  (131.8 vs 72.5 tok/s) — and plain batching overtakes between c=2 and c=4 because the spec
+  path is a serial burst QUEUE, not a contended one (phase (a) steps each spec session's whole
+  burst in a host loop; phase (c) excludes spec rows from batched decode). Pooling the verify
+  is REFUTED at a 16-column exact-kernel width ceiling (`research/spec-scaling-20260806/`), so
+  the answer is scheduling policy: **one server now admits spec only while `active+1 <= 2` and
+  DEMOTES live spec sessions into the batched phase at `active >= 4`**, with `active==3` a
+  hysteresis band and demotion one-way per session. The handoff is a real cache transfer
+  (`(cache, next_pred)` into the session's cache + `device_next`, a carried pending flushed
+  first) and is byte-exact for greedy: a session demoted mid-generation emits a stream
+  byte-identical to one batched from the start. Measured q9 on the 5090, N=5 interleaved: the
+  gated curve tracks spec at c=1-2 (251.2 tok/s, 1.81x over batched) and batched at c=4-8
+  (504.7 tok/s, 2.03x over always-spec), with per-stream p50 at c=8 equal to batched's 1.963s
+  rather than spec's 3.973s. Sampled and constrained spec sessions do not demote (their
+  `next_pred` is a greedy/unmasked argmax) and stay on the serial path, bounded by the admit
+  ceiling. One residual, disclosed: a first-wave TTFT p95 transient (0.423s vs never-spec's
+  0.017s at c=4) confined to the at-most-`LOW` sessions admitted before a load ramp — p50
+  matches never-spec; set `MEMRA_SPEC_GATE_LOW=0` to never admit spec if cold-ramp p95
+  outweighs c=1 throughput. Flags: `MEMRA_SPEC_GATE` (rollback seam),
+  `MEMRA_SPEC_GATE_LOW`/`_HIGH`. Receipts: `research/spec-serving-20260801/`,
+  `research/spec-gate-20260806/`.
 - **The plain-serve c=1 gap (task #70) is closed by the fast path above — with one cell
   pending re-measure and one still open.** Phase 1 measured serve c=1 trailing the naked
   CLI **−11.74%** on a Q8_0 27B cell (`memra-server` 46.09 tok/s, N=3 median, vs `run-gen`
@@ -82,6 +113,48 @@ Greedy serving is **isolated-identical under concurrent load at defaults**: a re
 output tokens are byte-identical whether it arrives alone or inside a full batch. This is
 gated, not assumed — the serve gate replays the same prompts at c=1 and c=16 and
 byte-compares every stream.
+
+**Read the gate's exact scope before quoting the contract as unconditional.** The gate runs
+16 prompts at **96 max_tokens** with all sessions arriving together, i.e. at *equal* depth.
+Outside that shape a 768-token greedy request diverged from its own solo reference at byte
+1347 (≈ token **331**) when it shared batched decode with sessions **staggered to different
+depths**, and on a second run the divergence moved to byte 2379 (lane/spec-gate receipt,
+`research/spec-gate-20260806/logs/exact/`, arm `REF_LOAD`).
+
+**lane/iso-gap (task #91, 2026-08-07) reproduced that receipt on demand and attributed it —
+the two mechanisms this paragraph used to name are both innocent** (receipts
+`research/iso-gap-20260807/`):
+
+- *Depth staggering moves nothing.* At the engine tick, with the program family held fixed,
+  a co-resident session at ANY other depth — including across a `fa_split_keys` ladder-rung
+  boundary, B=2..8, three rungs, 300-step horizons — changes **zero bits** of a session's
+  logits (`iso-gap-probe`, 8 arms + canary). `decode_step_batch`'s rung guard is
+  per-session-correct: every row either shares one rung (the seqs kernel then derives each
+  session's split partition from its OWN `t_kv` — the ONE-PARTITION law) or all rows take the
+  per-seq eager loop. The property is now pinned by the `isogap` fast-gate arm, which places
+  the straddle per-rig.
+- *The real carrier is the solo↔batched **program flip at the co-residence boundary**.* A solo
+  session runs the m=1 fused trunk (`MEMRA_SERVE_B1FAST`) or GraphSession replay
+  (`MEMRA_SERVE_GS`); the moment a second session arrives mid-stream, its ticks flip to the
+  batched body — a *different documented FP composition* (`decode-batch-gate` gate1's config
+  jurisdiction), and a near-tie can flip. Measured: solo-vs-loaded diverges at byte 659 under
+  defaults, while with the program family pinned (`MEMRA_SERVE_B1FAST=0 MEMRA_SERVE_GS=0`)
+  solo and loaded streams are **byte-identical** — and the loaded default stream equals the
+  pinned stream byte-for-byte, so the flip accounts for the *entire* divergence. The moving
+  byte (1347 → 2379; reproduced 1248 → 1361 at a fixed 2 s co-arrival delay) is the
+  **arrival-tick jitter** of the flip boundary, and a co-resident arriving after the stream
+  finished (6 s delay) leaves it byte-identical.
+
+So the honest statement of the contract today: **byte-identical at equal depth (gated to 96
+tokens) and depth-isolation-clean within a program family (the `isogap` gate); a session whose
+co-residency CHANGES mid-stream crosses the solo↔batched config boundary, and its stream may
+legally differ from its solo twin from that tick on — the token-level cross-config gap this
+doc already documents for `MEMRA_SERVE_B1FAST`.** Deployments that need solo-vs-loaded
+byte-equality pin one program family (`MEMRA_SERVE_B1FAST=0 MEMRA_SERVE_GS=0`) and pay the
+measured solo cost (−8.33% q9 decode-only at c=1; the flag table below). It is also why
+lane/spec-gate had to test its demotion handoff at a pinned batch shape
+(`MEMRA_SPEC_DEMOTE_AT`) rather than by triggering it with load — under load, no comparison
+isolates the property under test.
 
 The contract is over **tokens**, not over the FP program that produces them, and since
 2026-08-05 (`MEMRA_SERVE_B1FAST`, serve-path phase 2) a solo tick deliberately runs a
@@ -168,6 +241,87 @@ pre-admission-wait receipts; ~27 sessions fit — since the VRAM-aware admission
 overflow queues instead of erroring). Set `MEMRA_CTX` to the workload — 2048 clears the
 same cell (machine-specific config per the flags doctrine).
 
+## Pipeline-parallel (PP-2) serving
+
+For a model that fits only across two cards. Receipts:
+[`research/pp2-batch-20260806/`](../research/pp2-batch-20260806/) (batched decode),
+[`research/pp2-spec-20260806/`](../research/pp2-spec-20260806/) (the spec verdict),
+[`research/pp2-hardening-20260806/`](../research/pp2-hardening-20260806/) (the fail-closed
+guard). Rig for all three: 2x RTX PRO 6000 Blackwell Server Edition 96 GB, sm_120a, CUDA
+13.2, SPOT box — **rented**, not owned. Flag reference: [FLAGS.md](FLAGS.md) `MEMRA_PP_*`.
+
+The serving config, minimally:
+
+```bash
+MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1 \
+MEMRA_SERVE_SPEC=0 \
+MEMRA_MODELS="big=/path/to/model.gguf" memra-server
+```
+
+`MEMRA_SERVE_SPEC=0` is **load-bearing, not tidiness** (see below). The server logs
+`[pp] cross-device transport: stage0=dev0 stage1=dev1` when the split is live — a config that
+silently did not split is the failure mode that banner exists to rule out.
+
+**Exactness: the split adds zero deviation.** `decode-batch-gate --mode pp` records a
+reference with the door OFF over the same loaded weights, replays the same token sequence
+through the split, and compares every f32 logit of every row of every step bit by bit.
+**0 differing bits** on all seven configs — `dev01`, `dev10` (reversed placement),
+`singledev` (seam only, one card), `split5` (uneven cut), N=4 (`devices 0,0,1,1`), q27 (64
+layers), and `wide` (B=12/16 under the `MEMRA_DECODE_BATCH_CAP=16` door). The B=1 fast path
+is its own gate arm (arm 4) against the eager split, since it carries the accepted m=1 fusion
+FP gap vs the batched body by design: **3,973,120 f32 logits bit-identical, 0 differing
+bits**, across the same six configs.
+
+**Cost: the boundary transfer does not bite at m>1.** q9, 64 steps, 512-token prompts,
+greedy, N=5 rep-major interleaved in one lock hold on one binary (medians; cross-run
+comparison would be clock-drift invalid):
+
+| arm | B=1 | B=4 | B=8 |
+|---|---|---|---|
+| door shut, single device | 208.4 | 489.3 | 654.0 |
+| split dev01 (**the serving config**) | **204.7** | 487.0 | 646.9 |
+| ratio | 0.982x | **0.995x** | **0.989x** |
+
+So batched PP-2 costs **0.5–1.5%** at B=4/8/16, and of that, transport is 0.986–0.997x of the
+seam — almost all of the small loss is the seam, not PCIe. Both placement orders agree within
+0.3%. Aggregate scaling survives the split: B=8 reaches 3.65x B=1's aggregate.
+
+The B=1 row has history worth keeping: opening the pp door originally dropped every solo
+session off the m=1 fusion chain (the `b1_fast` guard included `pp_cuts().is_none()`), a
+permanent **−14.9%** tax on exactly the request shape an interactive 2-card box serves. Fixed
+by giving the split its own B=1 path — each stage runs its layer range through
+`decode_layers_eager`. `MEMRA_SERVE_B1FAST=0` is the rollback control and still measures the
+old 177 (0.851x).
+
+**Why `MEMRA_SERVE_SPEC=0`.** Speculative serving over PP-2 is *correct* — the verify trunk
+takes its own stage split and the bit-identity battery is 7/7 ALL GREEN — and it is still
+**not shippable for concurrent serving**:
+
+- On the reversed placement it provokes a deterministic `CUDA_ERROR_ILLEGAL_ADDRESS` that is
+  **sticky for the CUDA context**: once it fires, every later `new_session` inherits it. At
+  c=4 that is **100% of requests lost** (0/48, wall 0.008 s), reproducible 3/3.
+- On the other placement it is ~20x slow.
+- The same placement with spec OFF is 96/96 clean and the fastest arm measured.
+
+So PP-2 serves the **plain** path today. An artifact carrying an embedded MTP head self-specs
+by default, which is why the flag must be explicit: without it every request funnels into the
+verify trunk. `serve-smoke.sh` over the split (PP-2 dev01, spec off) returns **0 failed
+checks** across `/models`, non-stream chat, SSE streaming, `/v1/completions`, greedy
+determinism, 3 concurrent chats, and long generation — identical to the door-shut control,
+i.e. the split adds nothing observable to the OpenAI surface.
+
+**What refuses, deliberately.** The four decode paths that have no stage split
+(`decode_step_batch`'s unsplit body, `decode_step_dc`, the graph capture wrapping dc, and
+`decode_step_t*` spec verify) **fail closed** under an open pp door with a sharded
+cross-device placement, behind one shared guard (`pp::refuse_unsplit_if_remote`). They were
+not wrong, they were a silent perf cliff with a green battery: an unsplit trunk peer-reads
+every remote stage's weights every step, measured **7.4 vs 208.9 tok/s at B=1 (28x)** and
+**47.4 vs 657.0 at B=8 (13.9x)**. Exactness was never affected (peer reads return identical
+bytes), which is exactly why a refusal rather than a warning was the right call.
+`MEMRA_PP_ALLOW_UNSPLIT_BATCH=1` re-admits them as a measurement door only;
+`MEMRA_PP_SHARD=0` is the non-measurement escape (weights all home — full speed, forfeits the
+capacity PP-2 exists for).
+
 ## OpenAI tools surface (serve-tools lane, 2026-08-02)
 
 `/v1/chat/completions` accepts `tools`, `tool_choice` (`"auto"`|`"none"`; `"required"` and
@@ -186,10 +340,28 @@ parsing only — zero engine changes**:
   `finish_reason:"tool_calls"`); argument values coerce per the declared JSON-schema types.
   **Malformed policy:** a block that does not parse is surfaced verbatim as content — never
   an error, never dropped bytes; unterminated blocks flush raw at end of generation.
-- `reasoning_effort` `none|minimal|low` → the template's `enable_thinking=false` no-think
-  switch; `medium|high`/absent → the template default (open `<think>`). Models without the
-  switch ignore the parameter. `reasoning: {enabled, effort}` (OpenRouter form) maps the
-  same way.
+- **`reasoning_effort` — one surface, per-arch native thinking control** (owner directive
+  2026-08-07: every supported model is a thinking model). The reasoning-capable-model
+  convention: `low|medium|high` = thinking ON at that budget, `none|minimal` = thinking
+  OFF, **absent = the model's own default** (never overridden — no silent behavior change
+  for existing deployments). `reasoning: {enabled, effort}` (OpenRouter form) maps the same
+  way; `{enabled: false}` is the explicit off, `{enabled: true}` thinking on at the
+  template default budget. Unknown values 400. Per-model mapping (goldens rendered from
+  each REAL shipped template: `research/step-sku-20260807/render-thinking-goldens.py`):
+
+  | model class | native mechanism | absent (default) | none/minimal | low | medium | high |
+  |---|---|---|---|---|---|---|
+  | Qwen3.5/3.6, Ornith, AgentWorld, KAT (qwen ChatML class) | `enable_thinking` switch | thinking **ON** (open `<think>\n`, the template default) | closed `<think>\n\n</think>\n\n` | open `<think>` | open `<think>` | open `<think>` |
+  | Gemma-4 family (12B/26B/31B/E4B) | `enable_thinking`, template default **false** | thinking **OFF** (closed `<\|channel>thought\n<channel\|>`) | closed channel | `<\|think\|>` system token + open turn | same | same |
+  | Hy3 | template's own `reasoning_effort:` `no_think\|low\|high` | `no_think` (its jinja default) | `no_think` | `low`, open `<think:opensource>` | `low` (clamp — no medium level) | `high`, open think |
+  | Step-3.7-Flash (`step35`) | `Reasoning: {level}` string in the system turn; `<think>` tail **unconditional** | no `Reasoning:` line (template default) | `Reasoning: low` (clamp — no off level) | `Reasoning: low` | `Reasoning: medium` | `Reasoning: high` |
+
+  Level strings reach only templates that consume one (spawn-time `effort_levels` probe,
+  keyed on the jinja's own `reasoning_effort is defined` input test — true for step35 and
+  Hy3); binary-switch templates are driven by the on/off half alone, so prompts on models
+  that never read a level cannot be perturbed by it. Serve-smoke receipts:
+  `research/step-sku-20260807/raw/effort-smoke-*.log` (step35),
+  `research/step-sku-20260807/raw/think-smoke-*.log` (qwen + gemma4 arms).
 - **Isolation:** non-tools traffic bypasses the tools renderer AND the emission parser
   entirely (legacy render path, byte-identical streams); tools traffic is generation-
   identical for the identical rendered prompt (raw-completions bijection gate). `usage`
@@ -215,14 +387,32 @@ gated by the official `openai` Python SDK against a live server
   at build); the id echoes as the `x-request-id` response header. The first stream delta
   carries `role:"assistant"`. Error bodies are the OpenAI object —
   `{"error": {"message","type","param","code"}}` — and mid-stream worker errors arrive as
-  a final `data:` error chunk + `[DONE]`, never a named SSE event. SSE keep-alive
-  comments flow every 5s (long-prompt prefill streams nothing before first token;
-  OpenRouter cancels silent streams).
+  a final `data:` error chunk + `[DONE]`, never a named SSE event. SSE keep-alive comments
+  flow every 5s (long-prompt prefill streams nothing before first token; OpenRouter cancels
+  silent streams).
+
+  **Precondition — which surface you are talking to.** Everything in this section describes the
+  **OpenAI-shape** surface, and the stream terminator + the mid-stream error shape are gated on
+  `chat || openai_compat()` (main.rs:1966, 2007). `openai_compat()` is true when
+  `MEMRA_COMPAT=openai`, or when `MEMRA_COMPAT` is unset **and `MEMRA_API_KEY` is set** — the pi
+  setup. On a **native-default** server (no `MEMRA_COMPAT`, no `MEMRA_API_KEY`) a streaming
+  `/v1/completions` does the opposite of the sentence above: it emits a named `event: error` and a
+  named `event: done`, with **no `data: [DONE]`**. That is deliberate, not a bug — native clients
+  are memra's own tools, which do parse named events, and the validation harnesses rely on it.
+  `/v1/chat/completions` is always OpenAI-shape (`chat` is true regardless). The shipped unit sets
+  `MEMRA_COMPAT=openai` (`deploy/systemd/memra-server.service:92`), so a deployed server matches
+  this section — but if you are testing a bare `memra-server` and your SDK reads a silent hang,
+  this is why.
 - **Reasoning separation:** on think-open prompts, `<think>` text routes to
   `message.reasoning` / `delta.reasoning` (+ `reasoning_details`, the OpenRouter
   dialect); `content` is post-think only. `include_reasoning:false` (or
   `reasoning: {exclude: true}`) drops the separated text. Non-think models keep
-  byte-identical no-parser streams.
+  byte-identical no-parser streams. **Gemma-4 dialect** (lane/gemma4-serve-gaps,
+  2026-08-07): `<|channel>thought\n…\n<channel|>` blocks route to `reasoning` the same
+  way — tags, the channel label and the bracketing newlines are syntax — and the splitter
+  runs on *every* gemma4 chat request (channels can open mid-stream even under the
+  closed-channel default). Turn-end control tokens (`<turn|>`, `<end_of_turn>`,
+  `<|im_end|>`) stop generation (`eog_ids()` union) and never reach the client as text.
 - **`max_tokens` omitted** ⇒ context-bounded budget (session ctx − prompt, capped at the
   model's trained context) — the OpenAI default-when-omitted semantics, not a silent
   128-token truncation. Explicit `max_tokens`/`max_completion_tokens` honored exactly.
@@ -254,25 +444,238 @@ gated by the official `openai` Python SDK against a live server
   accepted and ignored. Streams exclude stop-sequence text exactly like non-stream
   responses (holdback buffer).
 
-## Gateway listing surface (serve-tail lane, 2026-08-04)
+## Gateway listing surface
 
-The OR-listing tail — the last three surface gaps between memra and a marketplace
-gateway listing — is closed and battery-gated (`research/serve-tail-20260804/`):
+OpenRouter's current Provider Monitor schema is version **2.4**, but it is not the old
+flat/catalog shape: new integrations declare typed `input_modalities` and
+`output_modalities`, with pricing and capacity nested on the modality they belong to.
+The older flat provider document remains supported only for existing integrations.
 
-- **`/v1/models` OR-schema:** each entry carries `context_length` (from the loaded
-  plan's config), `architecture` (`modality`, `tokenizer`, `instruct_type` — probed at
-  spawn from the model itself, not hardcoded), and an OR-convention `pricing` stub.
-  Unknowns are honest `null`s, never guesses.
-- **Rate-limit headers:** `X-RateLimit-Limit` / `-Remaining` / `-Reset` on both
+memra keeps three views separate because the current provider schema rejects unknown
+fields (`additionalProperties: false`):
+
+- **`GET /models`** keeps the historical OpenAI-style body byte-for-byte:
+  `{"object":"list","data":[{"id":"<alias>","object":"model"}]}`. Existing pill/Hermes
+  consumers stay on this default.
+- **`GET /models?schema=openrouter`** is the OpenRouter Provider Monitor 2.4 document
+  for a new provider integration. Use this full URL for the OpenRouter application.
+- **`GET /v1/models`** keeps the existing catalog-style enrichment
+  (`context_length`, `architecture`, `pricing`, `top_provider`) for current clients.
+  It is not the strict Provider Monitor document.
+
+The Provider Monitor view derives what the process knows:
+
+- `id` and `name` are the exact `MEMRA_MODELS` alias.
+- Text `max_context_length` and `tokenizer` come from the loaded model.
+- Streaming and supported generation parameters come from the real HTTP surface;
+  `tools` and `reasoning` appear only when the loaded template exposes them.
+
+Everything else is operator-declared in a TOML file named by
+`MEMRA_MODEL_METADATA`. The file is optional for local serving. If configured, it is
+parsed before the GPU worker starts; unknown fields, invalid price strings, invalid
+quantization names, zero limits, or aliases absent from `MEMRA_MODELS` are fatal.
+
+```toml
+# /etc/memra/models.toml
+[models."provider/model-id"]
+description = "Qwen3.6 27B served by memra."
+quantization = "nvfp4"
+max_prompt_length = 245760
+max_output_length = 16384
+is_ready = true
+# Set the real deployment location before submitting the application:
+# datacenters = [{ country_code = "US", region = "actual-region" }]
+
+[models."provider/model-id".pricing]
+# Per-token USD strings, not per-million-token numbers.
+prompt = "0.000000234"        # $0.234 / 1M input tokens
+cached_prompt = "0.0000000585" # 25% cache-read price
+completion = "0.000001872"    # $1.872 / 1M output tokens
+
+[models."provider/model-id".capacity]
+# Optional honest declarations; omit values that are not measured.
+prompt_tpm = 1000000
+completion_tpm = 500000
+request_rpm = 1000
+concurrency = 16
+```
+
+```bash
+MEMRA_MODELS="provider/model-id=/path/to/model.gguf" \
+MEMRA_MODEL_METADATA=/etc/memra/models.toml \
+memra-server
+
+curl 'http://127.0.0.1:8080/models?schema=openrouter'
+```
+
+Supported metadata fields are `hugging_face_id`, `created`, `quantization`,
+`description`, `max_prompt_length`, `max_output_length`, `is_ready`, `is_free`,
+`discount_to_user`, `openrouter_slug`, `datacenters`, `zdr`, and `hipaa`.
+`pricing` accepts `prompt`, `cached_prompt`, `cache_write`, `completion`,
+`internal_reasoning`, and `request`; `capacity` accepts `prompt_tpm`,
+`cached_prompt_tpm`, `completion_tpm`, `request_rpm`, and `concurrency`.
+Prices and capacities are omitted when undeclared. memra never turns an absent price
+into `"0"`; use an explicit zero only for a genuinely free SKU.
+
+The remaining gateway controls are battery-gated (`research/serve-tail-20260804/`):
+
+- **Rate-limit headers:** `X-RateLimit-Limit` / `-Remaining` / `-Reset` (emitted
+  lowercase on the wire, as HTTP/2 requires; capitalized here by convention — a client
+  parsing headers into a case-sensitive dict must key on `x-ratelimit-*`) on both
   completion routes with concurrency-slot semantics — a per-lane atomic gauge whose
   RAII slot rides the SSE stream to completion, so `Remaining` is truthful for the
   whole life of a stream. Sheds carry `429 + Retry-After`; `MEMRA_RL_RESET_S` is the
   no-signal fallback for `Reset` (with traffic, Reset = mean tokens/request x p50 step
   latency).
-- **Graceful drain:** SIGTERM flips `/health` to `"draining"`, new completion requests
-  get `503 + Retry-After`, in-flight requests — streams included — run to `[DONE]`
-  within the `MEMRA_DRAIN_S` deadline (default 30s), then the process exits 0. Live
-  receipt: a 1024-token stream completed mid-drain.
+- **Graceful drain:** SIGTERM flips `/health` to `status:"draining"` (still **200** — see
+  Health below) and `/readyz` to **503**, new completion requests get `503 + Retry-After`,
+  in-flight requests — streams included — run to `[DONE]` within the `MEMRA_DRAIN_S`
+  deadline (default 30s), then the process exits 0. Live receipt: a 1024-token stream
+  completed mid-drain.
+
+## Health, readiness, and fault handling (serve-hardening lane, 2026-08-06)
+
+Receipts: `research/serve-hardening-20260806/`. Example unit:
+`deploy/systemd/memra-server.service`.
+
+**The full route table**, since the sections above only introduce routes as they become
+relevant (bind address `MEMRA_ADDR`, default `127.0.0.1:8080`):
+
+| route | notes |
+|---|---|
+| `GET /health`, `GET /livez` | the same handler — inference liveness (below) |
+| `GET /readyz` | routability (below) |
+| `GET /v1/models` | the existing catalog-style enriched listing |
+| `GET /models` | the byte-compatible OpenAI-style listing used by existing clients and smoke gates |
+| `GET /models?schema=openrouter` | strict OpenRouter Provider Monitor schema 2.4; operator metadata comes from `MEMRA_MODEL_METADATA` |
+| `POST /v1/completions` | raw-prompt completions. **Streaming shape depends on `MEMRA_COMPAT`** — see the compatibility precondition above |
+| `POST /v1/chat/completions` | always OpenAI-shape |
+| `GET /metrics` | counters + the cache-hit metering surface (below) + the `spec` acceptance block |
+| `GET /yield/metrics` | the dark-lane yield view |
+
+**`/health` == `/livez` — inference liveness, not process liveness.** The GPU worker is
+ONE `std::thread` owning the CUDA context. `/health` used to answer `{"status":"ok"}` off
+the axum task, so a worker panic or a wedged card left a permanently green health check in
+front of a box answering nothing. It now derives from a heartbeat the scheduler loop stamps
+every iteration, plus a phase:
+
+| worker phase | `/health` | why |
+|---|---|---|
+| `loading` | 503 | weights are not resident; the process answers nothing yet. On a FIRST load the port is not bound yet (bind follows the load), so a probe sees connection-refused — the same verdict for k8s and `serve-fleet.sh`. This state is reached over HTTP during a **respawn**, which is the case that matters |
+| `idle` | 200 at any beat age | the worker blocks in `rx.recv()` — an idle server legitimately stamps nothing for hours, and a naive age check would call every quiet server dead |
+| `busy` | 200 while the beat advances, 503 past `MEMRA_HEALTH_STALL_S` (120s) | work in flight must make progress; the bound covers a max-context prefill tick (see FLAGS for the derivation) |
+| `dead` / fault latched | 503 immediately | worker panic or fatal Xid — a latch, not a timeout, so the flip is instant |
+
+The response body is `{status, models, worker:{phase, beat_age_ms, tick_max_ms,
+stall_threshold_ms, generation, xid_warnings}}`, plus a top-level `detail` on a red (which is
+where a quoted panic payload lands). `status` is `ok` / `draining` / `unhealthy` on
+`/health`-`/livez` and `ready` / `not_ready` on `/readyz`. So a red is self-explaining and
+`tick_max_ms` — the longest scheduler iteration this process actually observed — is the live
+receipt for revisiting the threshold.
+
+Every red probe 503 follows the same retry-header contract as request-path overloads.
+Worker-related `/health` and `/readyz` failures use the worker supervisor's 2-second respawn
+backoff (`Retry-After: 2` + `retry-after-ms: 2000`). A draining `/readyz` uses
+`MEMRA_DRAIN_S`, clamped to the SDK-honored 1..=60 second window, with the matching millisecond
+twin. Retryable probe responses never carry the contradictory `x-should-retry: false`.
+
+**`/readyz` — should traffic be routed here?** Ready = model loaded AND worker alive AND
+not draining. Unready is NOT a restart request: draining and loading are healthy states
+that simply must not be routed to, which is exactly why liveness and readiness are
+separate endpoints (k8s deprecated `/healthz` at v1.16 for this split). Queue pressure
+deliberately does not flip readiness — the interactive lane queues FIFO and never sheds,
+so a deep queue is work in progress; capacity backpressure belongs on the request path.
+`tools/serve-proxy.py` probes `/readyz` for rotation; `tools/serve-fleet.sh` probes
+`/health` for its restart decision. vLLM has no readiness endpoint (503 only on
+`EngineDeadError`) and TGI a single `/health`.
+
+**Worker panic → supervised.** The worker thread runs inside `catch_unwind`: a panic marks
+health dead with the quoted panic payload, then ONE respawn is attempted after a **`2 x attempt`
+second** backoff — 2 s at the default max of 1 (`MEMRA_WORKER_RESPAWN`; the sleep exists so a
+panic from a transient device condition gives the driver time to settle instead of re-hitting it
+immediately) — and failing that the process exits **70** so the supervisor restarts it whole.
+**Two distinct paths reach exit 70**, and an operator reading `systemctl status` should be able to
+tell them apart: the respawn budget running out (`STATUS=worker unrecoverable; exiting`), and a
+respawn whose **weight reload itself failed** (`STATUS=respawn load failed; exiting`) — the second
+is not a panic, and it exits rather than looping because a load failure will not fix itself.
+Exit 70 is sysexits' `EX_SOFTWARE`, chosen so it reads distinctly from the startup FATAL paths,
+which exit 1 ("the engine died" vs "bad config"). One attempt, deliberately — CUDA errors are sticky per process, so a
+respawn loop against a poisoned context produces a box that looks alive and serves nothing.
+Proved on a real CUDA worker, not only in tests (`MEMRA_PANIC_AFTER` fault injection,
+`research/serve-hardening-20260806/logs/worker-death.txt`): panic → 503 on all three routes
+with the quoted payload in `detail` within ~200 ms → weights reloaded → `generation` 0 → 1 →
+the respawned worker served a real completion; with `MEMRA_WORKER_RESPAWN=0` the process
+exited 70 and the port went refused. A request that arrived during the dead window was
+**served by the respawn** — the supervisor owns the command channel across restarts, so
+queued work survives a worker death.
+
+**GPU faults (`MEMRA_GPU_WATCH`).** A watcher thread tails Xid lines (`/dev/kmsg`, falling
+back to `journalctl -k -f`) and latches unhealthy on the fatal classes
+(48/64/79/94/95/119/120), counting the rest as warnings. It also probes `nvidia-smi` for
+uncorrectable ECC and row-remap failures every `MEMRA_GPU_WATCH_S` seconds (default 60 — the
+audit's published detection commitment is "checks every 60 s", so treat it as a stated fact about
+the instrumentation rather than a free knob). The design constraint: Blackwell's worst wedge
+(Xid 119/120, GSP RPC timeout) emits nothing to the process **and hangs the query tools**,
+so the probe runs as a killed-on-deadline child and its own timeout
+(`MEMRA_GPU_PROBE_TIMEOUT_S`) is the alarm. Health reads only atomics, so a hung
+`nvidia-smi` can never block a health answer. A GPU fault survives a worker respawn: a new
+thread on a wedged card is not recovery.
+
+**The supervision contract (`deploy/systemd/memra-server.service`) has three couplings you can
+break silently.** The unit is an example to copy, but these are not stylistic choices — each is
+sized against a server-side default, and changing one side alone produces a unit that looks
+correct and misbehaves only during a failure:
+
+| directive | value | the coupling |
+|---|---|---|
+| `WatchdogSec` | 180 | MUST exceed `MEMRA_HEALTH_STALL_S` (default 120). The heartbeat that feeds `/health` also feeds systemd, so a watchdog under the legitimate-stall bound restarts a *healthy* server mid-prefill. Raise both together if you raise `MEMRA_MAX_SESSIONS` or the context |
+| `TimeoutStopSec` | 60 | MUST exceed `MEMRA_DRAIN_S` (default 30), or systemd SIGKILLs a drain that is finishing streams correctly. The server also sends `EXTEND_TIMEOUT_USEC`; the static floor covers a build that does not |
+| `TimeoutStartSec` | 600 | MUST exceed the slowest cold load (~120 s measured for a 27B NVFP4 from page cache; cold NVMe on a large bank is slower). Startup silence is a load, not a hang |
+| `StartLimitIntervalSec` / `StartLimitBurst` | 3600 / 4 | systemd's defaults (10 s / 5) are sized for millisecond daemons and **cannot trip at all** here — 5 starts do not fit in 10 s when each start takes ~120 s, so a crash loop restarts forever instead of failing the unit for a human. 4 starts per hour ≈ "if it cannot survive four full loads, page someone" |
+| `RestartSec` / `RestartSteps` / `RestartMaxDelaySec` | 10 / 4 / 160 | a card that just threw an Xid needs the driver to settle; a tight loop makes recovery less likely. The ramp needs systemd ≥ 254 — on older systemd delete the last two lines and keep the flat 10 s |
+| `OOMPolicy` | `kill` | the default `stop` reaps only the offending process, and the kernel OOM killer can take out ONE thread — classically the worker — leaving a process that accepts connections and can never serve them, which is the exact invisible death this lane removes. **Host memory only**: CUDA OOM is the 503 above, never a process kill |
+
+Two more worth knowing before you deploy. `Type=notify` + `NotifyAccess=main` means `READY=1`
+fires after the models load **and** the socket binds — `systemctl start` returning is a real
+readiness signal, which is why `TimeoutStartSec` must be generous. And Xid visibility can be
+silently absent: `kernel.dmesg_restrict=1` makes `/dev/kmsg` root-only, so an unprivileged unit
+sees Xids only through `journalctl`; grant `AmbientCapabilities=CAP_SYSLOG` +
+`CapabilityBoundingSet=CAP_SYSLOG` or accept the fallback to the probe-hang and ECC/remap
+detectors, which need no kernel log. The watcher logs which source it got, so this is never a
+silent downgrade. The unit is deliberately **not** `ProtectSystem=strict` — model paths,
+`/dev/nvidia*`, and the CUDA cache need real filesystem access, and a wrong sandbox fails at
+load time looking like a model bug.
+
+**Error taxonomy.** Every engine failure used to be `400 invalid_request_error` — which no
+OpenAI SDK retries, and which a router cannot distinguish from a malformed request. The
+class now comes from the producer:
+
+| condition | status | `type` | `code` | retry headers |
+|---|---|---|---|---|
+| malformed field, bad template, bad `response_format` | 400 | `invalid_request_error` | — | `x-should-retry: false` |
+| prompt ≥ context cap | 400 | `invalid_request_error` | `context_length_exceeded` | `x-should-retry: false` |
+| unknown model id | 400 | `invalid_request_error` | `model_not_found` | `x-should-retry: false` |
+| dark-lane QoS shed (`x-lane` judge/harvest over budget) | 429 | `rate_limit_error` | `rate_limit_exceeded` | `Retry-After: 2` + `retry-after-ms: 2000` |
+| out of VRAM / step-OOM past its park budget / worker restarting | 503 | `server_error` | `overloaded` | `Retry-After: 5` + `retry-after-ms: 5000` |
+| step, prefill, graph or constraint fault | 500 | `server_error` | `engine_error` | none (not time-bounded) |
+| new request arriving during a drain | 503 | `server_error` | `draining` | `Retry-After: MEMRA_DRAIN_S` (≤60) + matching `retry-after-ms` |
+| unknown `x-lane` value | 400 | `invalid_request_error` | `invalid_lane` | `x-should-retry: false` |
+| batch-class api key requesting `x-lane: interactive` | 403 | `authentication_error` | — | `x-should-retry: false` |
+| bad / disabled api key | 401 / 403 | `authentication_error` | — | `x-should-retry: false` |
+| worker channel dropped (`cmd_tx.send` fails) | 503 | `server_error` | `overloaded` | `Retry-After: 2` + `retry-after-ms: 2000` |
+
+Unknown model is a deliberate **400, not 404**: OpenRouter's uptime math counts 404s
+against the provider and excludes 400s, and the `code` is what clients branch on either
+way. `Retry-After` is always integer seconds ≤ 60 (RFC 9110 delay-seconds; litellm honors
+only `0 < v ≤ 60`, openai-python abandons retry past 120s) with a matching
+`retry-after-ms`, which openai-python reads first. A **mid-stream** failure — after the 200
+is committed and no status code is left to change — emits the same error object as a
+`data:` chunk and closes the connection.
+
+The channel-drop path uses the same 2-second constant as the supervisor's first respawn delay, so
+the HTTP hint cannot drift from the recovery ladder. The control-plane probe 503s described above
+also pass through the shared contract builder; there are no bare 503 producers left in
+`crates/memra-server/src`.
 
 ## Safetensors checkpoint serving (serve-st + fp8-ship lanes, 2026-08-04)
 
@@ -404,10 +807,89 @@ re-run unmodified as the no-salt regression).
 **Accounting:** every response shape carries OpenAI-schema usage with the worker-truth split —
 `usage.prompt_tokens`, `completion_tokens`, `total_tokens`, and
 `prompt_tokens_details.cached_tokens` (tokens resumed from ANY cache tier: continuation pool,
-spec resume, or prefix cache). `/metrics` exposes the cumulative split
-(`prompt_tokens_in`/`cached_tokens_in`) plus `prefix_cache_hits`/`entries`/`bytes`. Cached
+spec resume, or prefix cache — the field name providers report cached reads under: OpenAI,
+OpenRouter, and Grok chat all use `prompt_tokens_details.cached_tokens`). Cached
 prefill costs ~0 to serve and bills at 25% of input on the OpenRouter hy3 endpoints — the
 margin lever (`research/or-provider-20260802/REPORT.md`).
+
+## Cache-hit metering (lane/cache-metering, 2026-08-07)
+
+The aggregate receipt surface for the caching economics — the first-listed-week hit-rate
+number is one query away. `GET /metrics` carries (cumulative since process start,
+worker-truth, published every 32nd tick AND on every request retire so a post-workload
+scrape is never stale):
+
+| field | meaning |
+|---|---|
+| `prompt_tokens_in` / `cached_tokens_in` | every prompt token admitted / the subset served from any cache tier |
+| `computed_tokens_in` | `prompt - cached` — the denominator of the revenue multiplier |
+| `cache_hit_token_ratio` | `cached / prompt`, token-weighted — THE hit-rate number |
+| `prefix_cache_hits/misses/inserts/evictions` | prefix-cache probe outcomes + churn |
+| `prefix_cache_hit_tokens` | token-weighted hit mass (sum of served entry lengths) |
+| `prefix_cache_entries/bytes` | resident state |
+| `lcp_histogram` | `{edges, counts}`: one sample per prefix-cache probe — served entry length on a hit, best LCP on a miss. Lower-edge buckets `[0,1,16,32,64,128,256,512,1024,2048,4096]`, last unbounded; `[64,512)` (buckets 4..=6) is the tick-seg segmentation window |
+| `tenants` | per-tenant `{prompt_tokens_in, cached_tokens_in, cache_hit_token_ratio}` rows — absent until the first admit |
+
+`tenants` composes with PC-ISO tenancy: rows key on the TENANT half of the namespace
+(keyring deployments get one row per tenant across its end-user salts, `t:<tenant>`;
+no-keyring deployments key on the raw `cache_salt`, `""` = the default namespace). Rows are
+bounded (256): overflow traffic aggregates under `"(other)"`, so totals stay exact while a
+salt-spraying client cannot grow the map. Spec-tier and non-batched requests never probe the
+prefix cache and are absent from the histogram by construction (their cached tokens still
+count in `cached_tokens_in` via the continuation/spec pools).
+
+**The economics query** (`tools/cache_economics.py <metrics-url-or-json>`): turns a scrape
+into the earning-model row — `revenue_multiplier = billed_prompt_tokens /
+computed_prompt_tokens` at a chosen cached-token billing factor (`--cache-billing-factor`,
+1.0 = cached bills full price, 0.25 = the OR cached-input tier), plus per-tenant multipliers
+and the tick-seg window share. JSON row on stdout (ledger-appendable), summary on stderr.
+
+**Fleet receipt accumulator** (`tools/fleet-meter.sh`): the pre-listing hit-rate receipt for
+controlled replay traffic. A one-shot scrape of `http://127.0.0.1:8002/metrics` appends only
+the UTC timestamp, prompt/cached/computed counters, hit ratio, LCP histogram, tenants, and a
+`restart` marker to `research/fleet-meter/rig5090-fleet.jsonl`. An unchanged scrape is
+idempotently skipped. A failed scrape logs `skip` and exits successfully; it never starts,
+stops, or otherwise mutates the owner-critical server.
+
+**Fleet replay driver** (`tools/fleet-replay.py`): run only in dev-idle windows against the
+existing port-8002 deployment. Its low defaults are five minutes at 3 requests/minute,
+89.5:1 prompt:completion, 12 carried synthetic sessions, four tenant-scoped `cache_salt`
+values, and eight shared 1k-4k-token system-prompt/tool-schema templates; exponential
+inter-arrival times and 2-4-turn session bursts exercise both prefix sharing and continuation.
+Set `MEMRA_API_KEY` to the local deployment key and run
+`tools/fleet-replay.py --duration 300`. Any meter interval driven by this tool is labeled
+**replay-calibrated**: it is a controlled synthetic workload and must never be described as
+organic traffic.
+
+```bash
+tools/fleet-meter.sh --once                         # cron/timer-safe snapshot
+tools/fleet-meter.sh --loop --interval-minutes 30  # foreground accumulator
+python3 tools/fleet-report.py                       # all UTC days
+python3 tools/fleet-report.py --days 7              # rolling weekly view
+```
+
+The example `deploy/systemd/memra-fleet-meter.{service,timer}` runs the one-shot form every
+30 minutes. Copy the units, override their `/opt/memra` path and service account for the
+host, then enable the timer; do not point the meter at a public endpoint.
+
+The report diffs cumulative counters and histograms. A counter regression (or an explicit
+`restart=true`) starts a new segment whose current values count from zero, so restarts never
+produce negative traffic. The first snapshot intentionally counts the server's existing
+cumulative receipt. Later intervals are attributed to the UTC day of their ending snapshot,
+which bounds day-edge uncertainty to the snapshot cadence. Each daily row shows fleet prompt
+tokens, cached/computed splits, hit-token ratio and day-over-day change, the revenue
+multiplier band at cached-token billing factors 0.25 and 1.0, tick-seg `[64,512)` probe
+share, and detected restart count. Revenue and tick-seg math comes directly from
+`tools/cache_economics.py`; the report does not carry a second formula.
+
+**Exactness gate** (`tools/cache-meter-gate.py`, serve-smoke arm 7b): N requests sharing a
+K-token `prompt_ids` prefix must meter exactly — seed/LCP-split requests `cached_tokens: 0`,
+steady-state hits `cached_tokens == K`, a same-prefix request under a different `cache_salt`
+cold (PC-ISO), `/metrics` totals closed-form, histogram bucket-exact, economics row
+crosschecked. 26/26 on the 5090; disabling the cache inverts 16/26 (teeth). Overhead A/B
+(pre-lane binary vs instrumented, both resident, interleaved x5, N=100/arm, prefix-hit
+steady state): p50 −0.03%, p95 −0.19% — no measurable serve overhead (<0.5% p95 bar).
+Receipts: `research/cache-meter-20260807/`.
 
 ## Spec-decode acceptance telemetry (lane/accept-telemetry, 2026-08-05)
 
@@ -499,8 +981,12 @@ running server picks the revocation up on the next poll. `--keys` defaults to
   claim the protected class, by omission or by header.
 - **Rate limits:** per-key `rate_limit` is a concurrency-slot override; the effective
   cap is **min(override, global lane cap)** — the global cap stays authoritative, an
-  override can only narrow. The `X-RateLimit-*` trio reports the binding cap, with
-  `Remaining` counting the tighter of the tenant and lane gauges.
+  override can only narrow. A request that arrives while its tenant already holds every
+  configured slot is rejected before worker admission with `429 rate_limit_exceeded`;
+  two simultaneous arrivals cannot both pass the cap. The `X-RateLimit-*` trio reports
+  the binding cap, with `Remaining` counting the tighter of the tenant and lane gauges.
+  Multiple keys under one tenant intentionally share that tenant's gauge; issue distinct
+  tenants when recipients need independent caps.
 - **Metering seam:** every admitted request logs one flat
   `[meter] admit id=<x-request-id> tenant=<t> lane=<l> model=<m>` line — the public-repo
   half; the private fork's metering layer joins these against the worker-truth usage
@@ -616,13 +1102,92 @@ gone: B128 buys +8.4% (c=1) / +8.5% (c=8) and now trails B32's contended first t
 29 ms round-cadence quantum instead of a 3x cliff — a live owner call, per the
 `MEMRA_SPEC_BURST` row in FLAGS.md.
 
+## Dead-darklane background jobs — valleys carry owner work (lane/darklane-training, 2026-08-07)
+
+The standing lab thesis: idle serve capacity carries owner research/training jobs, yielding
+instantly to paying traffic. This section is the ENGINE mechanics only — which jobs run,
+what a valley is worth, and every scheduling-policy/economics question live in the product
+repo; the seam between the two is exactly `MEMRA_BG_JOB` + the checkpoint protocol below.
+
+**Valley detection** invents no sensor. The scheduler already flips its health phase to
+IDLE precisely when `active` and `queue` are both empty, and the phase stamp refreshes the
+heartbeat — so `phase == IDLE` + heartbeat age IS the idle duration, at zero new hot-path
+cost. The `PENDING_ADMITS` gauge closes the HTTP→worker handoff gap (a submitted request
+the worker hasn't popped is traffic, not idleness). Exposed two ways: **`/metrics
+serve_idle_seconds`** (always published; 0.0 the instant there is any work) and the
+in-process `ValleySignal` hook (`darklane.rs`) the runner polls. Receipt — signal accrues
+while idle, reads 0.0 sampled mid-generation, re-accrues from a fresh epoch after:
+`research/darktrain-20260807/raw/valley-signal.log`.
+
+**The lane class sits BELOW every serving lane.** Harvest is still a *request* class the
+engine admits, schedules, and sheds; a background job is not a request at all — it runs
+only while the engine has NOTHING (no interactive, no judge, no harvest, no queue, no
+pending admits) and yields on the first sign of any of them. The hysteresis is asymmetric
+on purpose: yield fires on the busy EDGE with no debounce (paying traffic never waits for
+a threshold), resume waits a full `MEMRA_VALLEY_S` (default 2 s) of quiet, because a
+between-requests gap in a live conversation is not a valley.
+
+**Yield mechanism v1 — simplest honest first.** The job (`MEMRA_BG_JOB`, arbitrary
+command) is a child process in its own process group; yield is SIGSTOP to the group,
+resume SIGCONT. The bound is the poll interval (`MEMRA_BG_POLL_MS`, 25 ms) plus signal
+delivery — **measured 19.4 ms median / 23.3 ms max** request-fired-to-job-stopped (N=5,
+one per rep, i.e. one poll interval; target <500 ms). Serve-impact stress (N=5 interleaved
+reps, fresh boot per rep per arm, c=8×16 streaming bursts vs an 8-spinner CPU job, 5090):
+burst p95 delta **+0.77%**, TTFT p95 **+1.11%**, agg tok/s **−0.54%** — under the 2% bar
+(`research/darktrain-20260807/raw/bgstress-n5.log`). Two operator truths: a SIGSTOPped
+process KEEPS its memory (VRAM included — the budget is carved out for the life of the
+job, not per valley), and the runner cleans up on drain (CONT→TERM→KILL past grace) while
+PDEATHSIG covers the SIGKILL path, so no orphan ever stays frozen.
+
+**GPU memory discipline** is fits-or-refused at launch: `MEMRA_BG_VRAM_MB` (default 0 =
+CPU-only) is granted only while `min free across visible GPUs >= budget +
+MEMRA_MOE_RESIDENT_HEADROOM_GB` — min, not sum, because on a PP-2 pair both cards carry
+serve shards. Unreadable `nvidia-smi` = refusal (fail closed); a refused job retries next
+valley (headroom moves as sessions retire). v1 enforces fit at launch; staying inside the
+budget at runtime is the job's contract, and the VRAM-aware admission gate defends serving
+against a job that lies the same way it defends against everything else.
+
+**Checkpoint/resume — the training-class seam** (`MEMRA_BG_YIELD_MODE=checkpoint`), for
+jobs whose stopped working set must not squat on VRAM. The "checkpoint callback" is
+process-level: SIGUSR1 to the group means *checkpoint now and exit 75* (EX_TEMPFAIL); the
+runner relaunches the same command next valley and the job resumes from its own file.
+Exit 0 = complete, never relaunched; any other exit = failed, loud, never relaunched. A
+job that outlives `MEMRA_BG_CKPT_GRACE_MS` (5 s) after SIGUSR1 is SIGKILLed — the yield
+bound holds even against a wedged job, and semantics are at-least-once (a training step
+may repeat, never be lost; checkpoint writes must be atomic — write-tmp-then-rename).
+Write single-command jobs as `MEMRA_BG_JOB="exec python3 train.py ..."`: the command runs
+under `sh -c`, and without `exec` the shell parent dies of the unhandled SIGUSR1 before
+the job's exit 75 can propagate. The live-server receipt caught exactly this
+(`raw/ckpt-serve.log`: "job exited None during preemption") — the runner's
+during-preemption branch classifies ANY exit after SIGUSR1 as checkpointed-and-relaunch,
+so the cycle still resumed from step 129 correctly, but `exec` is what makes the
+protocol exit visible.
+Toy proof: `tools/bg-ckpt-counter.py` (counter checkpoints on SIGUSR1, exits 75, resumes
+from the file; the unit test `checkpoint_mode_preempts_and_resumes_counter` pins the whole
+cycle GPU-free). An in-process trainer API can replace this seam later without touching
+the valley/scheduler half.
+
+Observability: `/metrics` gains a `bg` block only when `MEMRA_BG_JOB` is set (state,
+launches/yields/resumes/preempts, ckpt_kills, last yield-signal micros, job pid, budget)
+— unset deployments see the pre-lane payload byte-identical.
+
 ## Knobs
 
 Serving flags (batch cap, device sampling, lean logits, prime batching, spec burst) are
 cataloged in [FLAGS.md §7](FLAGS.md) under "Serving (memra-server)"; fleet topology knobs
 (`GPUS`, `REPLICAS_PER_GPU`, `CAP`, ports, health cadence) are env-overridable at the top of
-`tools/serve-fleet.sh`. The exactness contract holds under batching: the decode-batch gate
-battery (gate1-3, gate3c lean-vs-full) runs inside `tools/validate-h100.sh`.
+`tools/serve-fleet.sh`. The exactness contract holds under batching: `decode-batch-gate` runs
+inside `tools/validate-h100.sh` **twice** — `--mode config --batch 8` (the default-env battery,
+fused tier live in the reference) and `--mode strict --batch 4` under the equalized composition
+(`MEMRA_MMVQ=0 MEMRA_NO_FUSE_NORMQ=1`). Each invocation runs gate1 (B=1 vs `decode_step_h`),
+gate2 (per-seq isolation — batchmates must not change your stream), and gate3, whose three
+sub-checks are (a) device-argmax == host-argmax of the same row, (b) sampled draws at B=N ==
+the same metas at B=1, and (c) `gate3c`, lean-vs-full logits identity. **`gate3c` is a
+sub-check of gate3, not a fourth gate** — gate3 prints one PASS/FAIL line covering all three,
+so a green line is the only signal that (c) ran; the sub-check names surface in the output only
+when one fails. The stage-split modes (`--mode pp`, `--mode ppspec`) SKIP gate1/2/3 by design —
+they are single-device jurisdiction — and neither PP mode is wired into `validate-h100.sh`; PP
+exactness has its own invocations (see [TESTING.md](TESTING.md)).
 
 ## First-token cross-config drift (batched prime) — stated honestly
 
@@ -711,6 +1276,36 @@ What this changes and what it does not:
    reads quantized KV — the same arithmetic long prompts always had past the first boundary.
    Near-tie argmax flips vs the old f32-first-chunk output are the documented contract
    change (quantified teacher-forced in `research/chunkinv-flip-20260805/`), not a bug.
+
+**Scope: this is a per-architecture property.** The fix above is a property of the
+`full_attn_prime_fa_dispatch` path, and the gate runs on the shipped arches. A different
+attention family can re-enter the class through its own door, and one did — twice, both
+closed and both gated: the `step35` bring-up arch (Step-3.7-Flash) was **chunk-DEPENDENT
+past its 512-token SWA window** via kernel *selection* (a chunk whose `t_kv` exceeded the
+window took the f32 windowed floor while a chunk that fit took FA, so the FA rows formed a
+prefix `P = c*floor(win/c)` and the verdict depended only on `P` — pinned by a
+pre-registered 4/4 falsification battery incl. a one-token c=513-vs-512 verdict flip;
+receipts [`research/step37-p2-20260806/`](../research/step37-p2-20260806/), commit `66a81371`).
+**FIXED 2026-08-07 in two stages, both gated:**
+(1) *within one `prime_cache` call* — the SWA arm keys on the request's `seq_end`, not the
+chunk's `t_kv`, making `P` identically 0 at every chunk size; gate `chunkinv35` (+
+`chunkinv35c` canary via `MEMRA_STEP35_SWA_TKV`), default measured +0.009%
+([`research/step35-chunkfix-20260807/`](../research/step35-chunkfix-20260807/));
+(2) *across calls* — serve splits a prompt over SEVERAL `prime_cache` calls (per-tick budgets,
+dark lanes SLO-capped = load-dependent; plus the prefix-cache LCP split), so `prime_cache` now
+carries `queued_after` and `seq_end = cache.pos + t + queued_after` is request-level whatever
+the tick segmentation; gate `tickinv35` (+ `tickinv35c` canary via `MEMRA_PRIME_CALLLOCAL`,
+whose `sp<L>` split arms also pin the off-grid-resume hole — vLLM #51113's second law)
+([`research/tick-seg-20260807/`](../research/tick-seg-20260807/)).
+The SECOND door opened when the SWA prefill moved from the f32 floor to the windowed hd128
+FA stamp (lane/pp-prefill 2026-08-07, `MEMRA_STEP35_SWA_FA` seam): the FA kernel's
+online-softmax tiles group keys relative to the **view start**, and the SWA view offset is
+a chunk boundary — so an unaligned offset regrouped the same absolute keys into different
+BK=32 tiles at different chunk sizes. Closed by aligning the view offset down to the tile
+size (the ≤31 extra leading keys are fully masked for every query — a bitwise no-op in both
+kernels, measured on the floor arm). `chunkinv35` caught the second door on its first
+battery, and its canary (`MEMRA_STEP35_SWA_TKV=1`, restoring BOTH pre-fix halves) is
+verified red-capable (`research/pp-prefill-20260807`, batteries 1-3).
 
 The behavior is **gated in both directions**: fast-gate ids `chunkinv` / `chunkinvc`
 (routed from the `hybrid_forward.rs` map row): the default arm asserts byte-identity naked;

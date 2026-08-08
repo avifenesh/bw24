@@ -2,10 +2,11 @@
 //!
 //! WHY a dedicated thread: the CUDA context is THREAD-AFFINE. `Engine` (and every `CudaStream` /
 //! `CudaSlice` it owns) must only ever be touched from the one thread that created the context.
-//! So we spawn ONE OS thread, build `Engine::new(0)` on it, load every `HybridModel` on it, and
-//! never let an `Engine`/`Cache`/`CudaSlice` cross a thread boundary. Async HTTP handlers run on a
-//! separate tokio runtime and submit work over an `mpsc` channel; each request carries a `tokio`
-//! mpsc Sender back which the worker uses to stream tokens (and a final Done) to that one request.
+//! So we spawn ONE OS thread, build the primary `Engine` on it, load every `HybridModel` on it,
+//! and never let an `Engine`/`Cache`/`CudaSlice` cross a thread boundary. Async HTTP handlers run
+//! on a separate tokio runtime and submit work over an `mpsc` channel; each request carries a
+//! `tokio` mpsc Sender back which the worker uses to stream tokens (and a final Done) to that one
+//! request.
 //!
 //! SCHEDULER LOOP: the worker holds a `Vec<Session>` of active generations. Each iteration it
 //! round-robin steps EVERY active session by exactly ONE `decode_step` (one token of prefill OR
@@ -77,8 +78,93 @@ pub enum Event {
     /// None on non-spec sessions, so the usage surface is byte-identical when spec is off.
     Done { stop_reason: String, n_tokens: usize, n_prompt: usize, n_cached: usize,
            elapsed_s: f64, spec: Option<SpecUsage> },
-    /// The request could not start (bad model name, ctx full at admit, etc).
-    Error(String),
+    /// The request failed. CLASSIFIED at the producer (`EngineError`) — the HTTP layer maps
+    /// the class to a status code instead of calling everything a 400 (G6).
+    Error(EngineError),
+}
+
+/// THE ERROR TAXONOMY (lane/serve-hardening, 2026-08-06; audit gap G6/G16).
+///
+/// WHAT WAS BROKEN: `Event::Error(String)` carried no type information, so `main.rs`'s only
+/// possible mapping was `bad_request(&msg)` — CUDA faults, VRAM exhaustion, tokenizer
+/// failures and genuine client mistakes all left as `400 invalid_request_error`. Two
+/// consequences, both bad: 400 is non-retryable by SDK convention (openai-python retries
+/// 408/409/429/>=500 only), so a transient GPU blip became a hard user-visible failure that
+/// no client would retry; and a real engine fault was invisible in any client's or
+/// aggregator's 5xx error-rate view.
+///
+/// WHERE THE CLASS COMES FROM: the PRODUCER, not a regex over the message. The site that
+/// raises the failure is the only place that knows whether the caller or the box is at
+/// fault, and a string-matching classifier in the HTTP layer would silently reclassify every
+/// time someone reworded an error. The one text-driven rule is deliberate and quoted:
+/// `EngineError::engine()` promotes a message containing the driver's own OOM text to
+/// `Overloaded`, because a CUDA OOM IS capacity — see `is_cuda_oom`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrClass {
+    /// The caller can fix this. -> 400 invalid_request_error.
+    InvalidRequest,
+    /// Prompt does not fit the context. -> 400 + `code: context_length_exceeded`, the
+    /// machine-readable form every client uses to decide "summarize and retry" (G16).
+    ContextLength,
+    /// Unknown model id. -> 400 + `code: model_not_found`.
+    ///
+    /// WHY 400 AND NOT 404: OpenRouter's uptime math counts 404 against the provider while
+    /// 400 is excluded (§2.2), and "you asked for a model this endpoint does not serve" is
+    /// squarely a client error — taking an uptime hit for it would be self-punishment for
+    /// someone else's typo. The `code` is what clients branch on either way.
+    ModelNotFound,
+    /// Admission-time QoS shed: this lane is over its budget RIGHT NOW and a retry in a
+    /// couple of seconds will work. -> 429 + Retry-After. Uptime-neutral at OpenRouter, and
+    /// their own guidance prefers an early 429 to queueing.
+    RateLimit,
+    /// The BOX is out of capacity (VRAM exhausted, step OOM past its park budget). -> 503,
+    /// not 429: "a 429 that a client cannot fix by waiting should not be a 429", and OpenAI
+    /// itself serves overload as 503. This one honestly counts against uptime, because it is
+    /// a request we failed to serve.
+    Overloaded,
+    /// An engine/GPU fault: a step, prefill, graph, or constraint operation failed. -> 500.
+    Engine,
+}
+
+/// A classified failure. `message` stays the exact producer text (quoted, never rewritten —
+/// the evidence-discipline law applies to what the client sees too).
+#[derive(Debug, Clone)]
+pub struct EngineError {
+    pub class: ErrClass,
+    pub message: String,
+    /// OpenAI `error.param` when the failure names a request field.
+    pub param: Option<&'static str>,
+}
+
+impl EngineError {
+    /// Every invalid-request the WORKER can produce names a request field (it has already been
+    /// through request parsing), so there is deliberately no param-less constructor — the
+    /// flags doctrine applies to APIs too: no dead arm.
+    pub fn invalid_param(message: impl Into<String>, param: &'static str) -> Self {
+        Self { class: ErrClass::InvalidRequest, message: message.into(), param: Some(param) }
+    }
+    pub fn context_length(message: impl Into<String>) -> Self {
+        Self { class: ErrClass::ContextLength, message: message.into(), param: Some("messages") }
+    }
+    pub fn model_not_found(message: impl Into<String>) -> Self {
+        Self { class: ErrClass::ModelNotFound, message: message.into(), param: Some("model") }
+    }
+    pub fn rate_limit(message: impl Into<String>) -> Self {
+        Self { class: ErrClass::RateLimit, message: message.into(), param: None }
+    }
+    pub fn overloaded(message: impl Into<String>) -> Self {
+        Self { class: ErrClass::Overloaded, message: message.into(), param: None }
+    }
+    /// An engine fault. A message carrying the DRIVER'S OWN out-of-memory text is promoted to
+    /// `Overloaded` (503 + Retry-After) rather than reported as a 500: the box ran out of
+    /// VRAM, which is a capacity condition a retry can clear, not a bug in the engine. The
+    /// test is `is_cuda_oom` — the same quoted-text predicate the step-OOM park path uses, so
+    /// the two paths can never disagree about what an OOM is.
+    pub fn engine(message: impl Into<String>) -> Self {
+        let message = message.into();
+        let class = if is_cuda_oom(&message) { ErrClass::Overloaded } else { ErrClass::Engine };
+        Self { class, message, param: None }
+    }
 }
 
 /// Per-request spec-decode acceptance summary (lane/accept-telemetry, 2026-08-05): THIS
@@ -103,6 +189,12 @@ pub struct Request {
     /// Tool schemas pre-serialized (client key order preserved) for the template's <tools> block.
     pub tools_json: Vec<String>,
     pub think: memra_tokenizer::chat::ThinkMode,
+    /// step35-dialect reasoning level ("low"/"medium"/"high"), rendered as a string into the
+    /// system turn (`Reasoning: {level}\n\n`). Only set by the HTTP layer when the model's
+    /// template consumes it (`ModelCaps::effort_levels`); None = the template's own default
+    /// (no `Reasoning:` line). Orthogonal to `think`: on switch-carrying templates
+    /// `reasoning_effort` maps to ThinkMode instead and this stays None.
+    pub reasoning_effort: Option<String>,
     pub params: GenParams,
     pub sampler_cfg: SamplerConfig,
     pub stop_strings: Vec<String>,
@@ -159,6 +251,15 @@ pub struct ModelCaps {
     pub tokenizer: String,
     /// chat-template family ("chatml" / "gemma"); None = no template or unrecognized.
     pub instruct_type: Option<String>,
+    /// template consumes a `reasoning_effort` STRING (the step35 dialect: rendered into the
+    /// system turn as `Reasoning: {level}\n\n`). When true, the HTTP layer maps the OpenAI
+    /// `reasoning_effort` body field onto `Request::reasoning_effort` instead of ThinkMode.
+    pub effort_levels: bool,
+    /// gemma4 thought-channel dialect (lane/gemma4-serve-gaps, 2026-08-07): the template's
+    /// `strip_thinking` splits on `<|channel>thought…<channel|>`. When true, chat requests
+    /// arm the gemma-dialect reasoning splitter so thought text routes to `reasoning` and
+    /// the channel tags never reach the client as content.
+    pub gemma_think: bool,
 }
 
 /// Control messages into the worker. Currently just generation requests; /models and /health are
@@ -194,6 +295,28 @@ pub struct Metrics {
     pub prefix_hits: u64,
     pub prefix_entries: u64,
     pub prefix_bytes: u64,
+    /// full prefix-cache counter set (lane/cache-metering, 2026-08-07): misses/inserts/
+    /// evictions were already counted inside PrefixCache but never published; hit_tokens
+    /// is the token-weighted hit mass (sum of entry lengths served) — the numerator the
+    /// economics row wants when hits vary in depth.
+    pub prefix_misses: u64,
+    pub prefix_inserts: u64,
+    pub prefix_evictions: u64,
+    pub prefix_hit_tokens: u64,
+    /// LCP length histogram (lane/cache-metering): one sample per prefix-cache PROBE —
+    /// on a hit, the served entry's token length; on a miss, best_lcp against the pool
+    /// (already computed there for the split-learning signal, so the histogram adds no
+    /// scan). Buckets: [0], [1,16), [16,32), [32,64), [64,128), [128,256), [256,512),
+    /// [512,1024), [1024,2048), [2048,4096), [4096,inf) — the [64,512) window is the
+    /// tick-seg segmentation class. Spec-tier and non-batched requests never probe the
+    /// prefix cache and are absent by construction.
+    pub lcp_hist: [u64; 11],
+    /// Per-tenant prompt accounting [prompt_tokens_in, cached_tokens_in], keyed by the
+    /// TENANT half of the PC-ISO namespace (`meter_key`): keyring deployments aggregate
+    /// one row per tenant across its end-user salts; no-keyring deployments key on the
+    /// raw cache_salt ("" = the default namespace). Bounded at METER_TENANT_CAP rows —
+    /// overflow traffic lands in "(other)" so a salt-spraying client cannot grow the map.
+    pub ns_tokens: HashMap<String, [u64; 2]>,
     /// per-lane QoS counters [interactive, judge, harvest] — the x-lane yield gate
     /// (/yield/metrics, sidecar-compatible shape; lane/dl-metering QoS extraction).
     pub lane_admitted: [u64; 3],
@@ -562,6 +685,28 @@ fn affinity_match(prompt: &[u32], committed: &[u32]) -> AffinityMatch {
 /// chat-template header — common to every request of a model — out of the cache).
 const PREFIX_CACHE_MIN_TOKENS: usize = 64;
 
+/// Max distinct per-tenant metering rows in `Metrics::ns_tokens` (lane/cache-metering).
+/// Past the cap, new tenants/salts aggregate under "(other)" — the totals stay exact,
+/// only per-row attribution saturates. 256 covers any realistic keyring; the bound
+/// exists so an unauthenticated client spraying cache_salt values cannot grow the map.
+const METER_TENANT_CAP: usize = 256;
+
+/// Credit one admitted request's prompt/cached token counts to its tenant row
+/// (lane/cache-metering). The key is the tenant half of the PC-ISO namespace
+/// (`auth::meter_key`); past METER_TENANT_CAP distinct rows, overflow aggregates
+/// under "(other)" so the map is bounded while the totals stay exact.
+fn meter_account(ns_tokens: &mut HashMap<String, [u64; 2]>, cache_ns: &str,
+                 n_prompt: u64, n_cached: u64) {
+    let mk = crate::auth::meter_key(cache_ns);
+    let row = if ns_tokens.contains_key(mk) || ns_tokens.len() < METER_TENANT_CAP {
+        ns_tokens.entry(mk.to_string()).or_default()
+    } else {
+        ns_tokens.entry("(other)".to_string()).or_default()
+    };
+    row[0] += n_prompt;
+    row[1] += n_cached;
+}
+
 /// MEMRA_PREFIX_CACHE_MB (default 256): resident byte budget for the prefix cache. 0 = off.
 fn prefix_cache_budget_bytes() -> usize {
     static B: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
@@ -585,6 +730,140 @@ fn serve_batching() -> bool {
 fn serve_spec_enabled() -> bool {
     static S: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *S.get_or_init(|| std::env::var("MEMRA_SERVE_SPEC").map(|v| v != "0").unwrap_or(true))
+}
+
+
+/// ---- CONCURRENCY-GATED SPEC (lane/spec-gate, task #89, 2026-08-07) ----
+///
+/// THE MEASUREMENT THAT FORCES THIS (research/spec-scaling-20260806, merged fe2b3740, N=3
+/// interleaved on this rig with q9 NVFP4+MTP + the production drafter, K=3, greedy):
+///
+/// | c | spec ON agg | spec OFF agg | S/N  |
+/// |---|-------------|--------------|------|
+/// | 1 | 253.2       | 139.4        | 1.82x WIN  |
+/// | 2 | 252.3       | 223.2        | 1.13x win  |
+/// | 4 | 251.2       | 386.7        | 0.65x LOSS |
+/// | 8 | 249.7       | 525.9        | 0.47x LOSS |
+///
+/// Spec is monotonically FLAT (253.2 -> 249.7 across an 8x load increase) because the spec path
+/// is a QUEUE: `worker.rs` phase (a) steps each spec session's whole burst in a serial host loop
+/// and phase (c) excludes spec sessions from batched decode, so per-round cost moves 1.009x
+/// under 8x load while per-session p50 goes 7.75x. The obvious fix — a batched cross-session
+/// verify — is REFUTED, not untried: the exact-kernel width tier caps a pooled verify at 16
+/// columns (`matmul_decode_exact`'s `(2..=16).contains(&m)`; measured per-column cliff 1.677 ->
+/// 3.887 ms between T=16 and T=17), which is 4 sessions at K=3, and the measured amortization
+/// inside that cap bounds the whole fix at 1.27-1.44x on an arm spec-OFF already beats 2.1x.
+///
+/// So the shippable answer is POLICY: run spec while concurrency is low, take the batched path
+/// when it rises. Two thresholds, not one, because a single threshold at the crossover would
+/// thrash — a session count oscillating across it would pay both paths' costs and neither's
+/// benefit (and every demotion is one-way, see `into_demoted`).
+///
+///   enter/stay spec while active <= T_LOW   (default 2 — the last measured WIN rung)
+///   demote to batched when active >= T_HIGH (default 4 — the first measured LOSS rung)
+///
+/// The hysteresis band (act == 3 here) is the "keep doing what you are doing" zone: a session
+/// already on spec keeps bursting, a new arrival admits batched. That holds mode switches to
+/// O(load crossings) instead of O(ticks).
+///
+/// `MEMRA_SPEC_GATE=0` is the rollback seam (restores the pre-lane always-spec behavior at every
+/// concurrency). Thresholds are `MEMRA_SPEC_GATE_LOW` / `MEMRA_SPEC_GATE_HIGH`.
+fn spec_gate_on() -> bool {
+    static G: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *G.get_or_init(|| std::env::var("MEMRA_SPEC_GATE").as_deref() != Ok("0"))
+}
+
+/// Admit-spec ceiling: a NEW request goes spec only while the active-session count is at or
+/// below this. Default 2 = the highest measured spec-win rung (1.13x at c=2).
+fn spec_gate_low() -> usize {
+    static L: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *L.get_or_init(|| {
+        std::env::var("MEMRA_SPEC_GATE_LOW").ok().and_then(|v| v.parse().ok()).unwrap_or(2)
+    })
+}
+
+/// Demote floor: a LIVE spec session hands its cache to the batched path once the active count
+/// reaches this. Default 4 = the first measured spec-loss rung (0.65x at c=4). Must exceed
+/// `spec_gate_low()` or there is no hysteresis band; a bad pair is clamped, loudly.
+fn spec_gate_high() -> usize {
+    static H: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *H.get_or_init(|| {
+        let raw = std::env::var("MEMRA_SPEC_GATE_HIGH").ok()
+            .and_then(|v| v.parse::<usize>().ok()).unwrap_or(4);
+        let low = spec_gate_low();
+        if raw <= low {
+            let fixed = low + 1;
+            eprintln!("[spec-gate] WARN: MEMRA_SPEC_GATE_HIGH={raw} <= LOW={low} leaves no \
+                       hysteresis band (mode thrash); clamped to {fixed}");
+            fixed
+        } else {
+            raw
+        }
+    })
+}
+
+/// What the load path must SAY (and whether it must refuse) about one model's drafter
+/// attachment. Pure data so the decision is unit-testable without a GPU or a 105 GB artifact —
+/// the whole point of this seam is that the silent-degradation class it removes was invisible
+/// to every gate in the repo (see `research/step-draft-20260807/`).
+#[derive(Debug, PartialEq, Eq)]
+pub enum DraftVerdict {
+    /// A drafter is attached (embedded NextN head or an external `+draft` file). Spec is live
+    /// as far as the load path is concerned; `spec_eligible` still arbitrates per request.
+    Attached,
+    /// No drafter and none was asked for, on an arch whose published artifact ships its MTP
+    /// head as a SEPARATE file. Serving works — it just silently forgoes spec, which is the
+    /// exact defect this lane exists to make audible. WARN, do not refuse.
+    NoDrafterExternalMtpArch,
+    /// No drafter, on an arch whose head (if any) rides in the trunk file. Nothing to say
+    /// beyond the existing load line: an artifact with `nextn=0` here genuinely has no head.
+    NoDrafterQuiet,
+}
+
+/// The drafter-attachment verdict for one loaded model — pure over the four inputs that
+/// decide it, so the refusal and the warning are both pinned by GPU-free tests.
+///
+/// `external_mtp_arch` = "this arch's published artifact ships its MTP head in a separate
+/// GGUF, so `nextn=0` on the trunk does NOT mean the model has no drafter available." Today
+/// that is step35 (Step-3.7-Flash: trunk declares `nextn_predict_layers=0`, the three chained
+/// NextN blocks ship in `Step3.7-flash-mtp-Q8_0.gguf`). It is a property of the ARCH, not of
+/// the file in hand, which is why it cannot be read off the trunk config.
+pub fn draft_verdict(
+    has_drafter: bool,
+    external_mtp_arch: bool,
+) -> DraftVerdict {
+    // (#87 CLOSED, lane/pp2spec-crash 2026-08-08: this fn used to refuse spec + drafter over
+    // a sharded cross-device PP placement — the sticky CUDA_ERROR_ILLEGAL_ADDRESS regime.
+    // Root cause was the ppN reverse-publication hole: stage-stream pool blocks freed while
+    // the primary stream held queued reads, reused by the next burst's stage allocations.
+    // Fixed by `PpNRt::fence_stages_behind` at all three ppN bodies + stage-cache admission;
+    // crash gate 212/212 at c=2..8 on the placement that lost 48/48, run-spec K=1..8 PASS
+    // with acceptance identical to door-shut. research/pp2spec-crash-20260807/.)
+    if has_drafter {
+        return DraftVerdict::Attached;
+    }
+    if external_mtp_arch {
+        DraftVerdict::NoDrafterExternalMtpArch
+    } else {
+        DraftVerdict::NoDrafterQuiet
+    }
+}
+
+/// The one-line operator message for a verdict, or `None` when there is nothing to say.
+/// Separated from `draft_verdict` so the TEXT is testable too — a warning nobody can act on
+/// is the same defect as no warning (the attach spelling has to be IN the line).
+pub fn draft_verdict_message(v: &DraftVerdict, name: &str, path: &str) -> Option<String> {
+    match v {
+        DraftVerdict::Attached | DraftVerdict::NoDrafterQuiet => None,
+        DraftVerdict::NoDrafterExternalMtpArch => Some(format!(
+            "[worker] WARN: {name}: step35: no MTP drafter attached — serving plain decode, \
+             no speculative decoding. This arch ships its MTP/NextN head in a SEPARATE GGUF, \
+             so the trunk's nextn_predict_layers=0 is expected and does NOT mean the model \
+             has no drafter. Attach with MEMRA_MODELS=\"{name}={path}+/path/to/\
+             Step3.7-flash-mtp-Q8_0.gguf\" (the same '+draft' convention every regime drafter \
+             uses; docs/DRAFT-REGIME.md)."
+        )),
+    }
 }
 
 /// Admission transient-reserve override in BYTES (lane/admit-oom, 2026-08-06). This exists for
@@ -681,11 +960,30 @@ struct PrefixCache {
     inserts: u64,
     evictions: u64,
     hit_tokens: u64,
+    /// LCP histogram (lane/cache-metering): one sample per probe — the served entry's
+    /// token length on a hit, `best_lcp` on a miss (both already computed; no new scan).
+    /// Lower-edge buckets `LCP_HIST_EDGES` (see `lcp_bucket`).
+    lcp_hist: [u64; 11],
 }
+
+/// Lower edges of the LCP histogram buckets: bucket i counts samples in
+/// [EDGES[i], EDGES[i+1]), the last bucket [4096, inf). [64,512) — the tick-seg
+/// segmentation window — is exactly buckets 4+5+6.
+pub const LCP_HIST_EDGES: [usize; 11] = [0, 1, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096];
 
 impl PrefixCache {
     fn lcp(a: &[u32], b: &[u32]) -> usize {
         a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
+    }
+
+    /// Histogram bucket index for an LCP sample (see `LCP_HIST_EDGES`).
+    fn lcp_bucket(n: usize) -> usize {
+        LCP_HIST_EDGES.iter().rposition(|&e| n >= e).unwrap_or(0)
+    }
+
+    /// Record one probe outcome into the LCP histogram (hit: entry length; miss: best_lcp).
+    fn record_lcp(&mut self, n: usize) {
+        self.lcp_hist[Self::lcp_bucket(n)] += 1;
     }
 
     fn n_entries(&self) -> usize {
@@ -955,6 +1253,7 @@ struct ReplayPlan {
     chat_turns: Vec<memra_tokenizer::chat::Turn>,
     tools_json: Vec<String>,
     think: memra_tokenizer::chat::ThinkMode,
+    reasoning_effort: Option<String>,
     params: GenParams,
     sampler_cfg: SamplerConfig,
     grammar: Option<crate::constrained::GrammarSpec>,
@@ -1066,24 +1365,71 @@ impl Session {
     }
 }
 
+/// Primary CUDA ordinal for the serving worker. CUDA_VISIBLE_DEVICES already remaps physical GPUs
+/// into a process-local ordinal space, so the non-PP default remains logical device 0. Under PP,
+/// the worker primary follows the LAST device in MEMRA_PP_DEVICES — the HEAD stage's device.
+///
+/// WHY THE LAST, NOT THE FIRST (v0.72 tag-blocker 2, research/v072-fix2-20260808): the sharded
+/// loader puts `output_norm` + the lm head on the LAST stage's engine (`hybrid.rs`:
+/// `e_head = layer_engine(e, n_trunk, n_trunk-1)`), and the spec-serving round loop runs its
+/// whole draft chain on the PRIMARY engine — `mtp_head_forward_dev` op 12 falls back to
+/// `&self.output` for every qwen35-family drafter, so EVERY draft token's head matmul reads the
+/// last stage's biggest tensor. The round's verify-logit consumers (device argmax, accept
+/// kernels, seed gather) read last-stage buffers through the primary context by UVA too. Pinning
+/// the primary to stage 0 (the 5f27c55c shape, MEMRA_PP_DEVICES[0]) therefore made every spec
+/// round pay cross-device head reads on BOTH placement orders: spec+PP-2 serving collapsed
+/// 112.5 -> 17.5 agg tok/s while spec-off (head matmul runs ON the last stage) and engine
+/// run-spec (primary=0 = the last stage on the dev10 placement) stayed fast. Following the head
+/// stage restores the exact topology every 212/212 crash-gate + 112.5 perf receipt validated
+/// (research/pp2spec-crash-20260807), keeps the cx-503b correctness win (the primary is still a
+/// placement device, never an unconditional 0), and fixes the pre-merge dev01 ~20x note — the
+/// same mismatch, from the other end. Gate/bench binaries keep primary=devices[0]: they
+/// deliberately exercise the shared-engine stage-0 case and don't run the serving spec round.
+fn worker_device(pp_devices: Option<&str>) -> Result<usize, String> {
+    let Some(devices) = pp_devices.filter(|v| !v.trim().is_empty()) else {
+        return Ok(0);
+    };
+    let mut last = 0usize;
+    for part in devices.split(',') {
+        let part = part.trim();
+        last = part.parse::<usize>().map_err(|_| {
+            format!(
+                "MEMRA_PP_DEVICES={devices} has invalid device {part:?} \
+                 (want <d0>,..,<dN-1> e.g. 0,1)"
+            )
+        })?;
+    }
+    Ok(last)
+}
+
 /// The worker entry point. Runs on its OWN std::thread. Builds the Engine + loads every model on
 /// THIS thread (CUDA-context affinity), then runs the scheduler loop until the command channel
 /// closes. `models` = (name, gguf_path) pairs. Sends `ready_tx` once load completes (or the error).
+///
+/// `rx` is BORROWED, not owned: the supervisor in `spawn()` keeps the Receiver alive across a
+/// respawn, because dropping it would close the command channel and make every subsequent HTTP
+/// handler's `send` fail permanently — the exact invisible-death this lane exists to remove.
 pub fn run(
     models: Vec<(String, String, Option<String>)>,
-    rx: Receiver<Cmd>,
+    rx: &Receiver<Cmd>,
     ready_tx: Sender<Result<(Vec<String>, HashMap<String, ModelCaps>), String>>,
     metrics: SharedMetrics,
+    health: crate::health::SharedHealth,
 ) {
     // ---- one-time init on the worker thread: Engine + all models resident ----
-    let engine = match Engine::new(0) {
+    let pp_devices = std::env::var("MEMRA_PP_DEVICES").ok();
+    let device = match worker_device(pp_devices.as_deref()) {
+        Ok(device) => device,
+        Err(err) => { let _ = ready_tx.send(Err(err)); return; }
+    };
+    let engine = match Engine::new(device) {
         Ok(e) => e,
         Err(err) => { let _ = ready_tx.send(Err(format!("Engine::new failed: {err}"))); return; }
     };
     // MEMRA_FAST is read ONCE here (same handling as run_gen): the matmul path consults the env var
     // per-call, but logging it once keeps the worker's behavior explicit and stable for the run.
     let fast = std::env::var("MEMRA_FAST").as_deref() != Ok("0");
-    eprintln!("[worker] Engine ready (MEMRA_FAST={})", fast);
+    eprintln!("[worker] Engine ready (device={device}, MEMRA_FAST={})", fast);
 
     let mut loaded: HashMap<String, LoadedModel> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
@@ -1138,23 +1484,61 @@ pub fn run(
         // Per-model regime draft (MEMRA_MODELS "+<draft.gguf>" syntax): replace the embedded
         // MTP head with the standalone regime draft — same load path as MEMRA_MTP_DRAFT but
         // scoped to THIS model, so a multi-model server drafts each model with its own file.
+        //
+        // THIS IS ALSO THE step35 EXTERNAL-MTP ATTACH (lane/step-draft, 2026-08-07). Step-3.7-
+        // Flash ships its three chained NextN blocks in a SEPARATE GGUF, so the trunk parses
+        // `nextn_predict_layers=0` and loads with `mtp == None`. No new spelling was added:
+        // `+draft` already means "replace this model's MTP head with the head in that file",
+        // and `MtpHead::load_draft` already resolves step35's per-layer draft geometry from the
+        // drafter file's own arrays (d316162c). The gap was never the attach syntax — it was
+        // that a step35 model loaded WITHOUT one said nothing. See the verdict below.
         let model = {
             let mut model = model;
             if let Some(dpath) = draft {
                 let dg = match GgufFile::open(dpath) {
                     Ok(g) => g,
-                    Err(err) => { let _ = ready_tx.send(Err(format!("draft {name}: {err}"))); return; }
+                    // REFUSE, don't degrade: a drafter path was GIVEN, so booting without it
+                    // would serve plain decode under a config that explicitly asked for spec.
+                    // The error text is the driver's/loader's own, quoted, never inferred.
+                    Err(err) => {
+                        let _ = ready_tx.send(Err(format!(
+                            "draft {name}: {err} (drafter path {dpath:?} was requested via the \
+                             MEMRA_MODELS '+draft' attach — refusing to start rather than \
+                             silently serving plain decode)")));
+                        return;
+                    }
                 };
                 match memra_engine::hybrid::MtpHead::load_draft(&engine, &dg, &model.cfg) {
                     Ok(head) => {
                         eprintln!("[worker] {name}: regime draft attached ({dpath})");
                         model.mtp = Some(head);
                     }
-                    Err(err) => { let _ = ready_tx.send(Err(format!("draft {name}: {err}"))); return; }
+                    Err(err) => {
+                        let _ = ready_tx.send(Err(format!(
+                            "draft {name}: {err} (drafter path {dpath:?} was requested via the \
+                             MEMRA_MODELS '+draft' attach — refusing to start rather than \
+                             silently serving plain decode)")));
+                        return;
+                    }
                 }
             }
             model
         };
+
+        // LOUD DRAFTER SEMANTICS (lane/step-draft, 2026-08-07). The silent-degradation class
+        // this closes: `spec_eligible` requires `lm.model.mtp.is_some()`, so a step35 trunk
+        // served without a drafter took plain decode on every request with NO log line saying
+        // so — named as defect (A) in `research/step37-p2-20260806/PROGRESS.md`. A server that
+        // forgoes its whole felt-latency story must say it out loud.
+        //
+        // The verdict is computed from a PURE function (`draft_verdict`) so both branches are
+        // pinned by GPU-free tests. (#87's spec-over-PP-2 refusal used to live here too —
+        // CLOSED 2026-08-08, see `draft_verdict`; spec+PP-2 now serves, gates in
+        // research/pp2spec-crash-20260807/.)
+        let verdict = draft_verdict(model.mtp.is_some(), model.cfg.arch.is_step35());
+        if let Some(msg) = draft_verdict_message(&verdict, name, path) {
+            eprintln!("{msg}");
+        }
 
         let eos_id = tok.eos_id();
         eprintln!("[worker]   loaded {name:?}: {} layers, eos={eos_id}", model.cfg.n_layer);
@@ -1187,14 +1571,31 @@ pub fn run(
                 else if t.contains("<start_of_turn>") { Some("gemma".to_string()) }
                 else { None }
             }),
+            // Templates that CONSUME a `reasoning_effort` input, keyed on the jinja input
+            // test itself (`reasoning_effort is defined`) — true for step35 (renders
+            // `Reasoning: {level}` into the system turn) and hy3 (renders
+            // `reasoning_effort:{no_think|low|high}` into its header), false for the
+            // qwen/gemma4 classes (binary `enable_thinking`, carried by ThinkMode instead).
+            effort_levels: t.is_some_and(|t| t.contains("reasoning_effort is defined")),
+            // keyed on the dialect's own thought-channel marker in the shipped template
+            // (research/step-sku-20260807/templates/gemma4-12b-qat.chat_template.jinja:
+            // strip_thinking splits on `<|channel>`). Template-keyed like every other cap —
+            // a gemma4 GGUF without its template falls back to ChatML rendering, where
+            // arming a channel splitter would be guessing.
+            gemma_think: t.is_some_and(|t| t.contains("<|channel>")),
         };
         eprintln!("[worker] {n}: template caps tools={} think={} think_switch={} chat_ok={} \
-                   ctx={} tok={:?} instruct={:?}",
+                   effort_levels={} gemma_think={} ctx={} tok={:?} instruct={:?}",
                   caps.tools_branch, caps.qwen_think, caps.think_switch, caps.chat_ok,
-                  caps.context_length, caps.tokenizer, caps.instruct_type);
+                  caps.effort_levels, caps.gemma_think, caps.context_length, caps.tokenizer,
+                  caps.instruct_type);
         (n.clone(), caps)
     }).collect();
     let _ = ready_tx.send(Ok((order.clone(), caps)));
+    // INFERENCE LIVENESS (G5): weights are resident and the scheduler loop is about to run —
+    // /health and /readyz go green HERE, not when the HTTP listener binds. Also clears the
+    // fault latch, which is what makes a respawn's success observable.
+    health.mark_ready();
 
     // Per-model decode chunk width (inc3 3a): computed once — model tensors and mirrors
     // are fixed after load.
@@ -1203,6 +1604,21 @@ pub fn run(
     for (n, c) in &chunk_caps {
         eprintln!("[worker] {n}: decode chunk cap {c}{}",
                   if *c > 8 { " (exact-16 tier)" } else { "" });
+    }
+    // EAGER-ONLY models (lane/gemma4-serve-gaps, 2026-08-07): no batched decode arm, no
+    // batched prime core, no step-wise graph capture — every batched-scheduler entry point
+    // below routes around them (per-session eager decode, monolithic prefill, no graph
+    // promotion, no prime batching). Before this route existed, ONE request to a gemma4
+    // model on the default scheduler panicked the worker on decode_step_batch's gemma4
+    // assert, the respawn re-panicked on the queued request, and the process FATALed
+    // (research/gemma4-serve-20260807/raw/repro-panic-server-*.log).
+    let eager_only: std::collections::HashSet<String> = loaded.iter()
+        .filter(|(_, lm)| eager_only_model(lm))
+        .map(|(n, _)| n.clone()).collect();
+    for n in &eager_only {
+        eprintln!("[worker] {n}: EAGER-ONLY serving (gemma4 class — no batched decode arm): \
+                   per-session eager decode, monolithic prefill, no graph promotion, \
+                   no prime batching");
     }
 
     // ---- scheduler loop ----
@@ -1236,6 +1652,11 @@ pub fn run(
     let mut n_tokens_out = 0u64;
     let mut n_prompt_in = 0u64;
     let mut n_cached_in = 0u64;
+    // Per-tenant prompt/cached split (lane/cache-metering): keyed by the tenant half of
+    // the PC-ISO namespace (auth::meter_key). Bounded: past METER_TENANT_CAP distinct
+    // keys, new traffic aggregates under "(other)" — a salt-spraying client cannot grow
+    // worker memory. Updated once per ADMIT (request-frequency, never per-token).
+    let mut ns_tokens: HashMap<String, [u64; 2]> = HashMap::new();
     let mut lane_admitted = [0u64; 3];
     let mut lane_shed = [0u64; 3];
     let mut lane_completed = [0u64; 3];
@@ -1251,16 +1672,34 @@ pub fn run(
     // decode tick inside the SLO age IS an SLO breach the percentile window can't see.
     let mut last_interactive_decode = Instant::now();
     let mut tick_n: u64 = 0;
+    // SPEC GATE (lane/spec-gate): how many live sessions this worker has handed from the spec
+    // burst path to batched decode. The thrash observable — under a correct hysteresis band
+    // this counts LOAD CROSSINGS, not ticks (a per-tick demotion count would mean the band is
+    // too narrow or the handoff is failing and re-firing).
+    let mut n_demoted = 0u64;
 
     loop {
         // 1. Drain pending commands. Block ONLY when there is no work at all (no active sessions),
         //    otherwise poll non-blocking so the decode loop keeps interleaving.
         if active.is_empty() && queue.is_empty() {
+            // IDLE PHASE (G5): about to block indefinitely in recv() with zero work. An idle
+            // worker legitimately stamps no heartbeat for hours, so the phase — not the beat
+            // age — is what /health reads here. Stamped on BOTH sides of the block so the
+            // beat is already fresh the instant work arrives (see health.rs).
+            health.set_phase(crate::health::PHASE_IDLE);
             match rx.recv() {
-                Ok(cmd) => handle_cmd(cmd, &loaded, &order, &mut queue),
+                Ok(cmd) => {
+                    health.set_phase(crate::health::PHASE_BUSY);
+                    handle_cmd(cmd, &loaded, &order, &mut queue);
+                }
                 Err(_) => break, // all senders dropped -> shutdown
             }
         }
+        // BUSY PHASE: work is in flight, so the beat MUST advance every iteration. The
+        // stamp is a bare atomic store (no mutex, no syscall) — unlike the metrics publish
+        // below it is NOT throttled, because a heartbeat sampled every 32nd tick would give
+        // health a 32-tick blind spot at exactly the moment a tick stops returning.
+        health.beat_busy();
         loop {
             match rx.try_recv() {
                 Ok(cmd) => handle_cmd(cmd, &loaded, &order, &mut queue),
@@ -1311,8 +1750,8 @@ pub fn run(
                     requeue.push_back(req);   // waits (FIFO), never shed
                 } else {
                     lane_shed[lane.idx()] += 1;
-                    let _ = req.tx.send(Event::Error(format!(
-                        "shed:{}:lane at capacity, retry", lane.as_str())));
+                    let _ = req.tx.send(Event::Error(EngineError::rate_limit(format!(
+                        "lane {} is at capacity, retry", lane.as_str()))));
                 }
                 continue;
             }
@@ -1325,8 +1764,8 @@ pub fn run(
                 && last_interactive_decode.elapsed().as_secs_f32() * 1000.0 > policy.slo_p99_ms;
             if !policy.admit(lane, &mut step_stats, starved) {
                 lane_shed[lane.idx()] += 1;
-                let _ = req.tx.send(Event::Error(format!(
-                    "shed:{}:interactive p99 over budget, retry", lane.as_str())));
+                let _ = req.tx.send(Event::Error(EngineError::rate_limit(format!(
+                    "lane {} shed: interactive p99 over budget, retry", lane.as_str()))));
                 continue;
             }
             // VRAM-AWARE ADMISSION (lane/fast-router, 2026-08-02). Evidence: c=16 on the
@@ -1441,12 +1880,16 @@ pub fn run(
             let model_key = req.model.clone();
             let free_before = engine.ctx().mem_get_info().map(|(f, _)| f).ok();
             match admit(&engine, &loaded, &mut reuse, &mut spec_reuse, &mut spec_sizing,
-                        &mut px, *req) {
+                        &mut px, active.len(), *req) {
                 Ok(s) => {
                     n_admitted += 1;
                     lane_admitted[lane.idx()] += 1;
                     n_prompt_in += s.n_prompt as u64;
                     n_cached_in += s.n_cached as u64;
+                    // per-tenant split (lane/cache-metering): the tenant half of the
+                    // PC-ISO namespace; bounded map, overflow lands in "(other)".
+                    meter_account(&mut ns_tokens, &s.cache_ns,
+                                  s.n_prompt as u64, s.n_cached as u64);
                     active.push(s);
                     if !session_vram_cost.contains_key(&model_key) {
                         if let (Some(fb), Ok((fa, _))) = (free_before, engine.ctx().mem_get_info()) {
@@ -1496,7 +1939,7 @@ pub fn run(
                     Ok(true) => {}
                     Ok(false) => finished.push(i),
                     Err(err) => {
-                        let _ = active[i].tx.send(Event::Error(format!("step error: {err}")));
+                        let _ = active[i].tx.send(Event::Error(EngineError::engine(format!("step error: {err}"))));
                         finished.push(i);
                     }
                 }
@@ -1525,7 +1968,7 @@ pub fn run(
                             match lm.model.decode_step(&engine, pend, s.cache.as_mut().unwrap()) {
                                 Ok(l) => { s.last_logits = l; s.fed.push(pend); }
                                 Err(err) => {
-                                    let _ = s.tx.send(Event::Error(format!("degrade: {err}")));
+                                    let _ = s.tx.send(Event::Error(EngineError::engine(format!("degrade: {err}"))));
                                     finished.push(i);
                                 }
                             }
@@ -1559,7 +2002,21 @@ pub fn run(
                 // chain already has (spec.rs sctr_inc), so it is wiring, not new math.
                 let constr_graph_ok = s.constraint.is_none()
                     || (!constrain_host() && devsample_meta(s).is_some());
+                // EAGER-ONLY models never graph-promote (lane/gemma4-serve-gaps): the
+                // step-wise capture body (decode_step_dc_cap_masked) walks the GENERIC
+                // qwen-class layer stack — over gemma4 weights that is silently wrong
+                // logits (the round-45 g12 argmax-INIT class), not an error.
+                // step35 never graph-promotes either (lane/step35-batched-decode): the
+                // capture walks full_attn_decode_dc_inner, which REFUSES step35 by design
+                // (the SWA offset KV view is inexpressible in the len_d-derived dc kernels,
+                // plus per-layer n_head capture) — and a capture-time refusal lands on the
+                // degrade-with-cache-consumed path, which kills the request. So a solo
+                // greedy step35 session with budget >= gs_min died with "graph promote
+                // failed" instead of decoding eagerly. Named exclusion; the dc gap itself
+                // stays a named refusal in decode.rs.
                 if s.graph.is_none() && s.spec.is_none() && s.sampler.is_greedy()
+                    && !eager_only.contains(&s.model)
+                    && loaded[&s.model].model.cfg.step35.is_none()
                     && constr_graph_ok
                     && s.lane == crate::lanes::Lane::Interactive
                     && s.budget >= gs_min
@@ -1577,7 +2034,7 @@ pub fn run(
                                 (memra_engine::forward::argmax(&row) as u32, Some(m))
                             }
                             Err(err) => {
-                                let _ = s.tx.send(Event::Error(format!("constraint mask: {err}")));
+                                let _ = s.tx.send(Event::Error(EngineError::engine(format!("constraint mask: {err}"))));
                                 finished.push(0);
                                 (0, None)
                             }
@@ -1596,7 +2053,7 @@ pub fn run(
                         Err(err) => {
                             // capture failed with the cache consumed — degrade the session
                             // via the graph-less error path (rare: capture-time errors only).
-                            let _ = s.tx.send(Event::Error(format!("graph promote failed: {err}")));
+                            let _ = s.tx.send(Event::Error(EngineError::engine(format!("graph promote failed: {err}"))));
                             finished.push(0);
                         }
                     }
@@ -1626,7 +2083,7 @@ pub fn run(
                             }
                         }
                         if let Some(err) = mask_err {
-                            let _ = s.tx.send(Event::Error(format!("constraint mask: {err}")));
+                            let _ = s.tx.send(Event::Error(EngineError::engine(format!("constraint mask: {err}"))));
                             finished.push(0);
                         } else {
                         let lm = &loaded[&s.model];
@@ -1650,7 +2107,7 @@ pub fn run(
                                 eprintln!("[worker] graph session step FAILED \
                                            (model {}): {err}", s.model);
                                 let _ = s.tx.send(Event::Error(
-                                    format!("graph step failed: {err}")));
+                                    EngineError::engine(format!("graph step failed: {err}"))));
                                 finished.push(0);
                             }
                         }
@@ -1659,6 +2116,137 @@ pub fn run(
                         step_stats.record(t_g.elapsed().as_secs_f32() * 1000.0);
                         last_interactive_decode = Instant::now();
                         }
+                    }
+                }
+            }
+            // (a-) SPEC DEMOTION (lane/spec-gate, task #89, 2026-08-07). The admit gate above
+            // keeps NEW arrivals off the serial spec queue, but sessions admitted while the box
+            // was quiet keep bursting after load arrives — and each one holds a whole burst of
+            // the tick (~21 ms at B=32/K=3) that the batched rows wait behind. So a live spec
+            // session hands its cache to the batched path once the active count reaches T_HIGH.
+            //
+            // EXACTNESS (the non-negotiable bar). At a burst boundary the session invariant is
+            // `cache.pos == committed.len()` — every committed row's trunk KV/recurrent state is
+            // exactly what a plain prime of that token sequence would have produced — and
+            // `next_pred` is the argmax of the verify's logits for the last committed row, which
+            // is bit-identical to plain decode's logits there (that identity IS the greedy accept
+            // walk's basis). Handing (cache, next_pred) over therefore continues the stream from
+            // a state the batched path cannot distinguish from one it produced itself:
+            // `device_next` makes the next batched tick emit `next_pred` and feed it into this
+            // same cache, exactly as `advance_sample_emit` does for any batched row. See
+            // `SpecSession::into_demoted`.
+            //
+            // A carried pending (the default partial-accept tail) must COMMIT first — its bonus
+            // row is emitted but deliberately absent from the cache, and handing over a cache
+            // that is one row short of the emitted stream would silently drop a token.
+            // `spec_flush_pending` is that commit, and it is byte-identical to the pre-carry
+            // tail. It costs one T=1 trunk pass, once per demotion (never per burst).
+            //
+            // WHO IS EXCLUDED, and why (stated, not hidden):
+            //   * SAMPLED sessions — `next_pred` on the sampled tail is the commit pass's ARGMAX,
+            //     so handing it over would inject a greedy token into a sampled stream. The
+            //     sampled tail keeps no logits row to draw from, and adding a per-burst
+            //     [n_vocab] D2H (1.36 ms at the 9B's 248k vocab) to enable a rare handoff is the
+            //     wrong trade. Sampled spec sessions stay on spec until they end.
+            //   * CONSTRAINED sessions — `next_pred` is the UNMASKED verify argmax; emitting it
+            //     could produce a grammar-illegal token.
+            // Both residuals are BOUNDED by the admit gate: at most `spec_gate_low()` sessions
+            // can be on the spec path at any time, so the worst case is that many serial bursts,
+            // not a full concurrency ladder's worth.
+            //
+            // ONE-WAY BY DESIGN (v1). Demotion drops the MTP draft scratch and the persistent
+            // draft-graph context; re-promoting on drain-down would mean an `mtp_kv_fill` over
+            // the whole committed history plus a fresh graph capture, i.e. NOT the "symmetric and
+            // cheap" handoff the re-promotion option was conditioned on. A demoted session stays
+            // demoted until it ends. New arrivals get spec again the moment the count falls back
+            // to T_LOW, so the policy still tracks a draining load — per REQUEST, not per session.
+            //
+            // TESTABILITY (`MEMRA_SPEC_DEMOTE_AT`, diagnostics-only). Load-triggered demotion can
+            // never be a clean exactness test: the trigger needs concurrent sessions, and a loaded
+            // batch is not bit-identical to a solo one (measured pre-existing property — batch-vs-
+            // solo decode diverges on its own with spec OFF and this gate absent, because
+            // `fa_decode_batch_seqs_v4` carries one `split_keys` for rows at different depths and
+            // the batched-linear tier changes with B). Both the arrival timing and the batch
+            // composition are then nondeterministic, so a diff cannot attribute a divergence to
+            // the HANDOFF. This door forces the demotion at a fixed generated-token count with NO
+            // load at all, holding B=1 across the boundary: the only difference from a plain
+            // batched run is that the first N tokens came off the spec path. That isolates exactly
+            // the property this lane must prove. Never set in production.
+            let demote_at: Option<usize> = {
+                static D: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+                *D.get_or_init(|| std::env::var("MEMRA_SPEC_DEMOTE_AT").ok()
+                    .and_then(|v| v.parse().ok()))
+            };
+            if spec_gate_on() || demote_at.is_some() {
+                let n_live = active.len() - finished.len();
+                let forced = demote_at.is_some_and(|n| {
+                    active.iter().enumerate().any(|(i, s)| {
+                        !finished.contains(&i) && s.spec.is_some() && s.generated.len() >= n
+                    })
+                });
+                if n_live >= spec_gate_high() || forced {
+                    for i in 0..active.len() {
+                        if finished.contains(&i) { continue; }
+                        let s = &mut active[i];
+                        if s.spec.is_none() { continue; }
+                        // exclusions above: sampled + constrained keep the spec path.
+                        if !s.sampler.is_greedy() || s.constraint.is_some() { continue; }
+                        // forced mode (test door): only the session past the pinned token count,
+                        // and only it — a peer still short of N keeps bursting.
+                        if let Some(n) = demote_at {
+                            if s.generated.len() < n { continue; }
+                        } else if n_live < spec_gate_high() {
+                            continue;
+                        }
+                        // a session that has not bursted yet has no cache state to hand over
+                        // (its prompt is still queued as the spec turn-1 suffix) — it stays on
+                        // spec for this tick and demotes at its next boundary.
+                        let sess = s.spec.as_ref().unwrap();
+                        if sess.committed_len() == 0
+                            || (!sess.demote_ready() && !sess.has_pending()) { continue; }
+                        let mut sess = s.spec.take().unwrap();
+                        let lm = &loaded[&s.model];
+                        if sess.has_pending() {
+                            if let Err(err) = lm.model.spec_flush_pending(&engine, &mut sess) {
+                                // UNRECOVERABLE, and said so honestly: the flush consumed the
+                                // pending before failing, so the session holds neither a pending
+                                // nor a next_pred — its next continuation burst would trip the
+                                // engine's primed-session assertion. Retire with the quoted cause
+                                // rather than hand back a session that cannot burst.
+                                eprintln!("[spec-gate] demote flush FAILED (model {}): {err}",
+                                          s.model);
+                                let _ = s.tx.send(Event::Error(EngineError::engine(format!(
+                                    "spec demote flush failed: {err}"))));
+                                finished.push(i);
+                                continue;
+                            }
+                        }
+                        // Re-check the handoff shape BEFORE consuming the session:
+                        // `into_demoted` takes `self`, so a None there would drop the caches of
+                        // a live request. Should be unreachable (flush clears pending and sets
+                        // next_pred) — loud no-op, session handed straight back.
+                        if !sess.demote_ready() {
+                            eprintln!("[spec-gate] demote SKIPPED: session not in handoff shape \
+                                       after flush (model {}); staying on spec", s.model);
+                            s.spec = Some(sess);
+                            continue;
+                        }
+                        let committed = sess.committed_len();
+                        let Some((cache, next)) = sess.into_demoted() else { continue };
+                        debug_assert_eq!(cache.pos, s.fed.len(),
+                            "demote handoff: cache rows != fed tokens");
+                        s.cache = Some(cache);
+                        s.device_next = Some(next);
+                        s.prefill_done = true;
+                        s.last_logits.clear();
+                        n_demoted += 1;
+                        let why = match demote_at {
+                            Some(n) => format!("FORCED at DEMOTE_AT={n} (test door)"),
+                            None => format!("{n_live} active >= HIGH={}", spec_gate_high()),
+                        };
+                        eprintln!("[spec-gate] demoted session to batched decode: {why} \
+                                   (model {}, committed {committed}, generated {})",
+                                  s.model, s.generated.len());
                     }
                 }
             }
@@ -1726,7 +2314,7 @@ pub fn run(
                             None => {
                                 // cannot rebuild the request (no prompt to replay) — the
                                 // pre-fix honest error, quoted.
-                                let _ = s.tx.send(Event::Error(format!("step error: {err}")));
+                                let _ = s.tx.send(Event::Error(EngineError::engine(format!("step error: {err}"))));
                                 finished.push(i);
                             }
                         }
@@ -1738,7 +2326,7 @@ pub fn run(
                                       active[i].model, active[i].oom_retries,
                                       step_oom_retries(), active[i].generated.len());
                         }
-                        let _ = active[i].tx.send(Event::Error(format!("step error: {err}")));
+                        let _ = active[i].tx.send(Event::Error(EngineError::engine(format!("step error: {err}"))));
                         finished.push(i);
                     }
                 }
@@ -1778,6 +2366,8 @@ pub fn run(
                             && s.lane == crate::lanes::Lane::Interactive
                             && s.fed.is_empty()
                             && s.cache.as_ref().is_some_and(|c| c.pos == 0)
+                            // eager-only models have no batched prime core (engine refuses)
+                            && !eager_only.contains(&s.model)
                             // prefix-cache LCP split primes alone (the boundary snapshot
                             // needs a per-session stop inside the prompt; concat can't stop).
                             && s.snapshot_at.is_none()
@@ -1858,7 +2448,7 @@ pub fn run(
                 match prefill_tick(&engine, &loaded, &mut px, s, budgets[0]) {
                     Ok(_) => {}
                     Err(err) => {
-                        let _ = s.tx.send(Event::Error(format!("prefill error: {err}")));
+                        let _ = s.tx.send(Event::Error(EngineError::engine(format!("prefill error: {err}"))));
                         finished.push(i);
                     }
                 }
@@ -1866,10 +2456,40 @@ pub fn run(
             // (c) batched decode, interactive rows first (stable sort by lane index: chunks
             // fill with protected-class rows before dark rows).
             let t_decode = Instant::now();
+            // (c-) EAGER-ONLY per-session decode (lane/gemma4-serve-gaps, 2026-08-07):
+            // models with no batched decode arm advance through step_session — the legacy
+            // round-robin body, whose decode_step routes to the supported eager arm
+            // (gemma4_decode_step_h) — INSIDE the batched scheduler, one token per tick per
+            // session. Before this route, these sessions entered the batched chunks below
+            // and decode_step_batch's gemma4 assert KILLED THE WORKER on the first request
+            // (research/gemma4-serve-20260807/raw/repro-panic-server-*.log). They are
+            // excluded from the batched chunks by the `decoding` filter beneath.
+            for i in 0..active.len() {
+                if finished.contains(&i) { continue; }
+                if !eager_only.contains(&active[i].model) { continue; }
+                if active[i].spec.is_some() || !active[i].prefill_done
+                    || active[i].cache.is_none() { continue; }
+                let was_interactive = active[i].lane == crate::lanes::Lane::Interactive;
+                match step_session(&engine, &loaded, &mut active[i], &mut spec_telem) {
+                    Ok(true) => {
+                        // prefill_done rows: Ok(true) == one token emitted (decode phase).
+                        n_tokens_out += 1;
+                        lane_tokens[active[i].lane.idx()] += 1;
+                        if was_interactive { last_interactive_decode = Instant::now(); }
+                    }
+                    Ok(false) => finished.push(i),
+                    Err(err) => {
+                        let _ = active[i].tx.send(Event::Error(
+                            EngineError::engine(format!("step error: {err}"))));
+                        finished.push(i);
+                    }
+                }
+            }
             let mut decoding: Vec<usize> = (0..active.len())
                 .filter(|&i| !finished.contains(&i)
                         && active[i].spec.is_none() && active[i].prefill_done
-                        && active[i].cache.is_some())
+                        && active[i].cache.is_some()
+                        && !eager_only.contains(&active[i].model))
                 .collect();
             decoding.sort_by_key(|&i| active[i].lane.idx());
             let mut had_interactive = false;
@@ -1886,7 +2506,7 @@ pub fn run(
                         // sampler, so this row rides the same lean tick as everyone else.
                         if let Err(err) = stage_grammar_mask(&engine, &mut active[i]) {
                             let _ = active[i].tx.send(Event::Error(
-                                format!("constraint mask: {err}")));
+                                EngineError::engine(format!("constraint mask: {err}"))));
                             finished.push(i);
                             continue;
                         }
@@ -1976,7 +2596,7 @@ pub fn run(
                     }
                     Err(err) => {
                         for &i in &idxs {
-                            let _ = active[i].tx.send(Event::Error(format!("batch step: {err}")));
+                            let _ = active[i].tx.send(Event::Error(EngineError::engine(format!("batch step: {err}"))));
                             finished.push(i);
                         }
                     }
@@ -1991,8 +2611,13 @@ pub fn run(
                 let n_int = active.iter()
                     .filter(|s| s.lane == crate::lanes::Lane::Interactive).count();
                 let n_pref = active.iter().filter(|s| !s.prefill_done).count();
-                eprintln!("[tick] act={} int={} priming={} ready={} decode_ms={:.1}",
-                          active.len(), n_int, n_pref, ready.len(),
+                // `spec` + `demoted` (lane/spec-gate): the policy's own observables — how many
+                // rows are on the serial burst path this tick, and the cumulative handoff count
+                // (thrash = this climbing per tick instead of per load crossing).
+                let n_spec = active.iter().filter(|s| s.spec.is_some()).count();
+                eprintln!("[tick] act={} int={} priming={} ready={} spec={} demoted={} \
+                           decode_ms={:.1}",
+                          active.len(), n_int, n_pref, ready.len(), n_spec, n_demoted,
                           t_decode.elapsed().as_secs_f32() * 1000.0);
             }
             // (d) dark-lane prefill, ADAPTIVE: the tick period IS the client TPOT, so dark
@@ -2032,7 +2657,9 @@ pub fn run(
                     if s.spec.is_some() || s.prefill_done || s.graph.is_some()
                         || s.snapshot_at.is_some()
                         || !s.cache.as_ref().is_some_and(|c| c.pos == s.fed.len()) { continue; }
-                    if !s.fed.is_empty() && loaded[&s.model].model.cfg.gemma4.is_some() { continue; }
+                    // eager-only models never join a prime batch (no batched prime core —
+                    // the engine refuses fresh AND carried since lane/gemma4-serve-gaps).
+                    if eager_only.contains(&s.model) { continue; }
                     let cap = budgets[li].min(adaptive_cap);
                     if ql < min_t || dsum + ql > cap { continue; }
                     if dlane.is_some_and(|l| l != li) { continue; }
@@ -2089,7 +2716,7 @@ pub fn run(
                 let chunk = budgets[li].min(adaptive_cap);
                 if chunk < memra_engine::hybrid_forward::PRIME_MIN_T { break; }
                 if let Err(err) = prefill_tick(&engine, &loaded, &mut px, s, chunk) {
-                    let _ = s.tx.send(Event::Error(format!("prefill error: {err}")));
+                    let _ = s.tx.send(Event::Error(EngineError::engine(format!("prefill error: {err}"))));
                     finished.push(i);
                 }
                 break; // one dark chunk per tick — the headroom budget is tick-global
@@ -2109,6 +2736,15 @@ pub fn run(
             let s = active.remove(i);
             let pool_key = s.pool_key(); // before the partial moves below (PC-ISO park key)
             n_completed += 1;
+            // G5 fault injection (MEMRA_PANIC_AFTER, unset in every real deployment): panic
+            // the worker here, with a live CUDA context and the supervisor above us, so the
+            // catch_unwind -> mark_dead -> respawn -> exit-70 ladder is proved on the wire and
+            // not only against a fake worker in unit tests.
+            if panic_injection_due(n_completed) {
+                panic!("MEMRA_PANIC_AFTER={} fault injection: \
+                        deliberate worker panic after {n_completed} completed request(s)",
+                       panic_after().unwrap_or(0));
+            }
             lane_completed[s.lane.idx()] += 1;
             if s.spec_rounds > 0 { spec_telem_dirty = true; } // force-publish on spec retire
             if let Some(mut sess) = s.spec {
@@ -2186,8 +2822,15 @@ pub fn run(
         // (2026-07-26 live A/B) — publish every 32nd tick. A spec-session retire forces
         // a publish so a one-shot request's acceptance counts land without a 32-tick wait
         // (retires are per-request, not per-token — no hot-path cost class).
+        // LANE/CACHE-METERING: EVERY retire forces a publish (`!finished.is_empty()`),
+        // not just spec retires — otherwise a workload whose last tick lands off the
+        // 32-boundary parks its final prompt/cached counters unpublished while the
+        // worker blocks idle in recv(), and the post-workload /metrics scrape (the
+        // hit-rate receipt query) reads stale totals. Same cost class as the spec
+        // force-publish: per-request, never per-token.
         tick_n = tick_n.wrapping_add(1);
-        if tick_n % 32 == 0 || spec_telem_dirty { if let Ok(mut m) = metrics.lock() {
+        if tick_n % 32 == 0 || spec_telem_dirty || !finished.is_empty() {
+            if let Ok(mut m) = metrics.lock() {
             spec_telem_dirty = false;
             m.admitted = n_admitted;
             m.completed = n_completed;
@@ -2199,6 +2842,12 @@ pub fn run(
             m.prefix_hits = px.hits;
             m.prefix_entries = px.n_entries() as u64;
             m.prefix_bytes = px.total_bytes as u64;
+            m.prefix_misses = px.misses;
+            m.prefix_inserts = px.inserts;
+            m.prefix_evictions = px.evictions;
+            m.prefix_hit_tokens = px.hit_tokens;
+            m.lcp_hist = px.lcp_hist;
+            m.ns_tokens = ns_tokens.clone();
             m.lane_admitted = lane_admitted;
             m.lane_shed = lane_shed;
             m.lane_completed = lane_completed;
@@ -2245,8 +2894,8 @@ fn handle_cmd(
     match cmd {
         Cmd::Generate(req) => {
             if !loaded.contains_key(&req.model) {
-                let _ = req.tx.send(Event::Error(format!(
-                    "unknown model {:?}; loaded: {:?}", req.model, order)));
+                let _ = req.tx.send(Event::Error(EngineError::model_not_found(format!(
+                    "unknown model {:?}; loaded: {:?}", req.model, order))));
                 return;
             }
             queue.push_back(req);
@@ -2281,6 +2930,7 @@ fn park_requeue(loaded: &HashMap<String, LoadedModel>, s: &Session) -> Option<Bo
         chat_turns: p.chat_turns.clone(),
         tools_json: p.tools_json.clone(),
         think: p.think,
+        reasoning_effort: p.reasoning_effort.clone(),
         params: p.params.clone(),
         sampler_cfg: p.sampler_cfg.clone(),
         stop_strings: s.stop_strings.clone(),
@@ -2297,6 +2947,10 @@ fn park_requeue(loaded: &HashMap<String, LoadedModel>, s: &Session) -> Option<Bo
 /// Build a Session: tokenize the prompt (worker owns the Tokenizer), allocate the per-session Cache,
 /// build the per-session Sampler. The prompt is NOT primed here — it's fed one token per scheduler
 /// tick so prefill of a new session interleaves with other sessions' decode (the BASE-4 interleave).
+/// `n_active` = live session count at admit time, the SPEC GATE's policy metric (see
+/// `spec_gate_on`). This request would be number `n_active + 1`, so the gate compares
+/// `n_active + 1 <= spec_gate_low()`.
+#[allow(clippy::too_many_arguments)]
 fn admit(
     engine: &Engine,
     loaded: &HashMap<String, LoadedModel>,
@@ -2304,8 +2958,9 @@ fn admit(
     spec_reuse: &mut HashMap<PoolKey, Vec<SpecReuseEntry>>,
     spec_sizing: &mut SpecSizing,
     px: &mut PrefixCache,
+    n_active: usize,
     req: Request,
-) -> Result<Session, (tokio::sync::mpsc::UnboundedSender<Event>, String)> {
+) -> Result<Session, (tokio::sync::mpsc::UnboundedSender<Event>, EngineError)> {
     let lm = &loaded[&req.model];
     // PC-ISO: every reuse-pool probe below scans ONLY this (model, namespace) pool.
     let pool_key: PoolKey = (req.model.clone(), req.cache_ns.clone());
@@ -2318,6 +2973,7 @@ fn admit(
         chat_turns: req.chat_turns.clone(),
         tools_json: req.tools_json.clone(),
         think: req.think,
+        reasoning_effort: req.reasoning_effort.clone(),
         params: req.params.clone(),
         sampler_cfg: req.sampler_cfg.clone(),
         grammar: req.grammar.clone(),
@@ -2331,9 +2987,11 @@ fn admit(
     } else if !req.chat_turns.is_empty() {
         // ISOLATION CONTRACT (serve-tools lane): a request with no tools features renders
         // through the EXACT legacy path — the tools renderer is entered only when the
-        // request carries tools / tool turns / a non-default think switch.
+        // request carries tools / tool turns / a non-default think switch / a
+        // reasoning-effort level (step35 dialect: the level is a render input).
         let plain = req.tools_json.is_empty()
             && req.think == memra_tokenizer::chat::ThinkMode::Default
+            && req.reasoning_effort.is_none()
             && req.chat_turns.iter().all(|t| t.role != "tool" && t.tool_calls.is_empty());
         let rendered = if plain {
             let messages: Vec<_> = req.chat_turns.iter()
@@ -2342,9 +3000,11 @@ fn admit(
             lm.tok.apply_chat_template(&messages, true)
         } else {
             match lm.tok.apply_chat_template_tools(&req.chat_turns, true,
-                                                   &req.tools_json, req.think) {
+                                                   &req.tools_json, req.think,
+                                                   req.reasoning_effort.as_deref()) {
                 Ok(rendered) => rendered,
-                Err(err) => return Err((req.tx, format!("chat template: {err}"))),
+                Err(err) => return Err((req.tx,
+                    EngineError::invalid_param(format!("chat template: {err}"), "messages"))),
             }
         };
         lm.tok.encode(&rendered, true)
@@ -2355,7 +3015,8 @@ fn admit(
         lm.tok.encode(&req.prompt_text, true)
     };
     if prompt.is_empty() {
-        return Err((req.tx, "empty prompt after tokenization".into()));
+        return Err((req.tx, EngineError::invalid_param(
+            "empty prompt after tokenization", "prompt")));
     }
 
     // Context guard mirrors generate_with: prompt + generated must fit ctx_cap.
@@ -2384,8 +3045,10 @@ fn admit(
         (None, max_new) => (prompt.len() + max_new + 8).max(ctx_floor),
     };
     if prompt.len() >= ctx_cap {
-        return Err((req.tx, format!(
-            "prompt ({} tok) >= context cap ({})", prompt.len(), ctx_cap)));
+        // G16: the ONE prompt failure clients branch on programmatically — 400 with
+        // `code: context_length_exceeded`, not an anonymous 400 they must string-match.
+        return Err((req.tx, EngineError::context_length(format!(
+            "prompt ({} tok) >= context cap ({})", prompt.len(), ctx_cap))));
     }
     let room = ctx_cap - prompt.len();
     let budget = req.params.max_new.min(room);
@@ -2443,11 +3106,13 @@ fn admit(
             let factory = lm.constraints.get_or_init(||
                 crate::constrained::ConstraintFactory::new(&lm.tok));
             match factory {
-                Err(err) => return Err((req.tx, format!("constrained decoding: {err}"))),
+                Err(err) => return Err((req.tx, EngineError::invalid_param(
+                    format!("constrained decoding: {err}"), "response_format"))),
                 Ok(f) => {
                     let sc = f.matcher(spec);
                     if let Some(err) = sc.error() {
-                        return Err((req.tx, format!("response_format: {err}")));
+                        return Err((req.tx, EngineError::invalid_param(
+                            format!("response_format: {err}"), "response_format")));
                     }
                     Some(sc)
                 }
@@ -2458,11 +3123,21 @@ fn admit(
     // spec bursts — the grammar truncates acceptance AFTER the exactness verify and forces
     // the masked argmax at the cut slot (generate_spec_session_constrained). Sampled
     // constrained and the MEMRA_CONSTRAIN_HOST oracle keep plain decode.
+    // CONCURRENCY GATE (lane/spec-gate, 2026-08-07): the ADMIT half of the policy — a request
+    // arriving while the box is already busy never enters the serial spec queue in the first
+    // place. `n_active + 1` because this request is about to become active. Measured basis and
+    // the threshold pair: `spec_gate_on`. MEMRA_SPEC_GATE=0 restores always-spec.
+    let spec_gate_ok = !spec_gate_on() || n_active + 1 <= spec_gate_low();
     let spec_eligible = serve_spec
+        && spec_gate_ok
         && (constraint.is_none() || (sampler.is_greedy() && !constrain_host()))
         && (sampler.is_greedy() || sampler.temperature() > 0.0)
         && !greedy_penalized
         && lm.model.mtp.is_some();
+    if !spec_gate_ok && serve_spec && lm.model.mtp.is_some() {
+        eprintln!("[spec-gate] admit batched: {} active (+1) > LOW={} — spec would queue",
+                  n_active, spec_gate_low());
+    }
 
     // CROSS-REQUEST PREFIX CACHE probe (2026-08-02; module doc at PrefixCache). Only when the
     // continuation pool missed, the session won't go spec, and batched scheduling is live.
@@ -2477,7 +3152,10 @@ fn admit(
         if let Some(i) = px.lookup(&pool_key, &prompt) {
             let restored = {
                 let e = &px.entries[&pool_key][i];
-                match Cache::new(engine, &lm.model.cfg, ctx_cap) {
+                // `pp::new_cache`, not `Cache::new` — stage-owned KV under an open ppN door
+                // (see the session-cache site below for the full reason). `prefix_restore`
+                // then copies plane-by-plane into whatever device each layer landed on.
+                match memra_engine::pp::new_cache(engine, &lm.model.cfg, ctx_cap) {
                     Ok(mut c) => match prefix_restore(engine, &mut c, e) {
                         Ok(()) => Ok(ReuseEntry {
                             fed: e.toks.clone(),
@@ -2495,6 +3173,7 @@ fn admit(
                     px.touch(&pool_key, i); // recency-index-aware last_use refresh (Q3)
                     px.hits += 1;
                     px.hit_tokens += entry.fed.len() as u64;
+                    px.record_lcp(entry.fed.len()); // histogram: served-prefix length
                     prefix_hit = true;
                     eprintln!("[prefix-cache] hit: {} of {} prompt tokens from cache (model {})",
                               entry.fed.len(), prompt.len(), req.model);
@@ -2515,6 +3194,7 @@ fn admit(
         if reused.is_none() {
             px.misses += 1;
             let l = px.best_lcp(&pool_key, &prompt);
+            px.record_lcp(l); // histogram: best available LCP on a miss
             if l >= PREFIX_CACHE_MIN_TOKENS && l < prompt.len()
                 && !px.has_key(&pool_key, &prompt[..l])
             {
@@ -2538,9 +3218,19 @@ fn admit(
         None => (None, Vec::new(), Vec::new()),
     };
 
-    // EOS: union of caller-supplied eos + the model's own eos id.
+    // EOS: union of caller-supplied eos + the model's END-OF-GENERATION set (eos + the
+    // turn-end control tokens present in the vocab — llama's special_eog: <|im_end|>,
+    // <turn|>, <end_of_turn>). eog_ids(), not eos_id alone (lane/gemma4-serve-gaps,
+    // 2026-08-07): gemma4's GGUF eos is <eos>=1, but its chat turns end with <turn|> —
+    // with only eos_id in the set, generation blew straight through the turn end and the
+    // client received literal '<turn|><turn|>thought…' as content
+    // (research/gemma4-serve-20260807/raw/postfix-client1-*.json). run_gen and gemma-gate
+    // already stop on eog_ids(); the serve path now matches. The EOS token's text is never
+    // streamed (existing rule), so the turn token also stops leaking as text.
     let mut params = req.params;
-    if !params.eos.contains(&lm.eos_id) { params.eos.push(lm.eos_id); }
+    for id in lm.tok.eog_ids() {
+        if !params.eos.contains(&id) { params.eos.push(id); }
+    }
 
     // Suffix-only prefill on a reuse hit; sampler penalty history replayed over the whole prefix.
     for &t in &seed_fed { sampler.accept(t); }
@@ -2820,22 +3510,32 @@ fn admit(
         }
     }
     // legacy tokenwise cache only when the spec path did NOT take the session (spec owns its own).
+    //
+    // STAGE-OWNED KV (pp2-batch 2026-08-06): `pp::new_cache`, not `Cache::new`. With the ppN
+    // door shut it IS `Cache::new` (one branch, same allocations); with the door open across
+    // devices it allocates each layer's KV/recurrent state through the engine of the STAGE that
+    // runs that layer, and adds the cache-birth barrier. Allocating a serving cache on the
+    // primary under an open door would leave every remote stage peer-reading its OWN cache
+    // every step — the same silent-PCIe class as unsharded weights (13.9-28x on a PRO 6000
+    // pair), and invisible to exactness gates because peer reads are byte-exact.
     let cache = match (&spec, cache) {
         (Some(_), c) => c,        // reuse hit carried a cache? keep it parked as-is (rare; None normally)
         (None, Some(c)) => Some(c),
-        (None, None) => match Cache::new(engine, &lm.model.cfg, ctx_cap) {
+        (None, None) => match memra_engine::pp::new_cache(engine, &lm.model.cfg, ctx_cap) {
             Ok(c) => Some(c),
             Err(err) => {
                 // headroom discipline: the prefix cache yields before a session errors.
                 let evicted = px.evict_all();
                 if evicted > 0 {
                     eprintln!("[prefix-cache] evicted {evicted} entries after cache alloc failure; retrying");
-                    match Cache::new(engine, &lm.model.cfg, ctx_cap) {
+                    match memra_engine::pp::new_cache(engine, &lm.model.cfg, ctx_cap) {
                         Ok(c) => Some(c),
-                        Err(err) => return Err((req.tx, format!("cache alloc failed: {err}"))),
+                        Err(err) => return Err((req.tx,
+                            EngineError::engine(format!("cache alloc failed: {err}")))),
                     }
                 } else {
-                    return Err((req.tx, format!("cache alloc failed: {err}")));
+                    return Err((req.tx,
+                        EngineError::engine(format!("cache alloc failed: {err}"))));
                 }
             }
         },
@@ -2951,6 +3651,18 @@ fn prefill_tick(
         return Ok(0);
     }
     let mut consumed = 0usize;
+    // EAGER-ONLY prime shape (lane/gemma4-serve-gaps, 2026-08-07): gemma4's prime is
+    // fresh-monolithic ONLY — no chunked and no continuation prime (the engine refuses
+    // pos > 0; before it refused, chunk 2 of a >tick-budget prompt KILLED the worker on
+    // gemma4_prime's assert, in both scheduler modes). So: fresh prompts prime WHOLE
+    // (budget uncapped — a long gemma4 prompt trades one long tick for correctness),
+    // carried suffixes (reuse/prefix resume) ride the tokenwise decode_step path, and the
+    // LCP split is skipped (its boundary-stop would turn the tail into a continuation).
+    let eager_mono = eager_only_model(lm);
+    let carried = s.cache.as_ref().is_some_and(|c| c.pos > 0);
+    if eager_mono {
+        s.snapshot_at = None;
+    }
     // PREFIX-CACHE LCP SPLIT: tokens left until the snapshot boundary. Chunks stop exactly
     // there; a residual below the prime floor rides the tokenwise path (unreachable at the
     // current PREFILL_TICK_T, guarded for smaller budgets).
@@ -2958,9 +3670,10 @@ fn prefill_tick(
     if !confidence_trace_enabled()
         && q >= memra_engine::hybrid_forward::PRIME_MIN_T.max(2)
         && budget >= memra_engine::hybrid_forward::PRIME_MIN_T
+        && !(eager_mono && carried)
         && bound_rem.is_none_or(|r| r >= memra_engine::hybrid_forward::PRIME_MIN_T)
     {
-        let mut take = q.min(budget);
+        let mut take = if eager_mono { q } else { q.min(budget) };
         if q - take > 0 && q - take < memra_engine::hybrid_forward::PRIME_MIN_T {
             take = if q <= budget { q } else { take };
         }
@@ -2974,7 +3687,13 @@ fn prefill_tick(
             }
         }
         let chunk: Vec<u32> = s.prefill_queue.drain(..take).collect();
-        let (l, _h, _x) = lm.model.prime_cache(engine, &chunk, s.cache.as_mut().unwrap())?;
+        // REQUEST-LEVEL seq_end (lane/tick-seg, 2026-08-07): the tokens still queued after this
+        // tick are the SAME request — pass them so the engine's arm selection is keyed to the
+        // request's end, not this tick's. Without it the tick budget (dark lanes: 256 AND
+        // SLO-headroom-capped) and the LCP-split boundary steered step35's prefill arithmetic
+        // (budgets 512/256/64 DIFFER 1.813e0 vs monolithic — tickinv35 gate).
+        let (l, _h, _x) = lm.model.prime_cache(engine, &chunk, s.cache.as_mut().unwrap(),
+                                               s.prefill_queue.len())?;
         s.last_logits = l;
         for &tok in &chunk { s.fed.push(tok); s.sampler.accept(tok); }
         consumed = take;
@@ -3006,6 +3725,17 @@ fn prefill_tick(
 /// mask reflects the post-consume grammar state, exactly the set legal for the NEXT token.
 /// No-op (mask_words = 0 -> host fallback) for unconstrained sessions, fallback sampler
 /// configs (penalties/filters host-sample), and the MEMRA_CONSTRAIN_HOST=1 oracle.
+/// EAGER-ONLY predicate (lane/gemma4-serve-gaps, 2026-08-07): models the batched scheduler
+/// must serve through the per-session eager body. gemma4 (12B/26B/31B and E4B): the batched
+/// decode bodies have no arm for its per-layer swa/global geometry + softcapped head (the
+/// engine refuses), `prime_cache_batch` has no gemma4 core, `gemma4_prime` is fresh-only
+/// (no chunked/continuation prime), and the step-wise graph capture walks the generic
+/// qwen-class dc step. One predicate, consumed at every batched entry point, so a future
+/// arch with the same gaps joins by predicate rather than scattered call-site checks.
+fn eager_only_model(lm: &LoadedModel) -> bool {
+    lm.model.cfg.gemma4.is_some() || lm.model.is_gemma4_e4b()
+}
+
 fn stage_grammar_mask(engine: &Engine, s: &mut Session) -> Result<(), String> {
     s.mask_words = 0;
     if s.constraint.is_none() || constrain_host() || devsample_meta(s).is_none() {
@@ -3050,7 +3780,7 @@ fn advance_sample_emit(
         (None, Some(c)) => {
             let mut row = s.last_logits.clone();
             if let Err(err) = c.mask_logits(&mut row) {
-                let _ = s.tx.send(Event::Error(format!("constraint mask: {err}")));
+                let _ = s.tx.send(Event::Error(EngineError::engine(format!("constraint mask: {err}"))));
                 return (false, None);
             }
             s.sampler.sample(&row)
@@ -3068,7 +3798,7 @@ fn advance_sample_emit(
     // schema-violating text as if it conformed.
     if let Some(c) = s.constraint.as_mut() {
         if let Err(err) = c.consume(next) {
-            let _ = s.tx.send(Event::Error(format!("constraint advance: {err}")));
+            let _ = s.tx.send(Event::Error(EngineError::engine(format!("constraint advance: {err}"))));
             return (false, None);
         }
     }
@@ -3116,7 +3846,7 @@ fn advance_token_emit(
     // a real bug: loud stop, never emit schema-violating text as if it conformed.
     if let Some(c) = s.constraint.as_mut() {
         if let Err(err) = c.consume(tok) {
-            let _ = s.tx.send(Event::Error(format!("constraint advance: {err}")));
+            let _ = s.tx.send(Event::Error(EngineError::engine(format!("constraint advance: {err}"))));
             return (false, ());
         }
     }
@@ -3187,12 +3917,36 @@ fn devsample_meta(s: &Session) -> Option<(f32, u64, u32)> {
 
 /// Per-model decode chunk width. MEMRA_DECODE_BATCH_CAP (explicit door) wins; otherwise
 /// models that qualify for the EXACT-16 tier (decode_batch_exact16_ok — every matmul has
-/// a bit-exact b16-class kernel; Q8_0 needs the q8rp mirror) default to chunk 16, the
-/// measured winner on the 5090 (+12% aggregate over chunk 8 at 32 seqs, same mirror
-/// config — research/batched-tick-inc3-20260801/chunksweep.log); everything else keeps
-/// the chunk-8 exactness tier. Isolation contract unchanged either way (gate2
-/// bit-strength PASS at both widths).
+/// a bit-exact b16-class kernel) default to chunk 16, the measured winner on the 5090
+/// (+12% aggregate over chunk 8 at 32 seqs — research/batched-tick-inc3-20260801/
+/// chunksweep.log); everything else keeps the chunk-8 exactness tier. Isolation contract
+/// unchanged either way (gate2 bit-strength PASS at both widths).
+///
+/// The Q8_0 q8rp-mirror precondition was REMOVED 2026-08-06 (lane/rp-on-st): Q8_0's b16
+/// twin existed only in `_rp` form, which made a bandwidth mirror a *correctness*
+/// prerequisite for the tier. With `qmatvec_q8_0_mmvq_b16` (base layout) plus b16 twins
+/// for NVFP4 / Q4_K / Q5_K, the predicate — an ALL over ~500 matmuls — finally admits
+/// real MIXED checkpoints. Before that, one missing class refused the whole model, so
+/// chunk 16 was unreachable for every shipped artifact, GGUF and FP8-ST alike.
 fn chunk_cap_for(lm: &LoadedModel) -> usize {
+    // step35 (lane/step35-batched-decode, 2026-08-08): the REAL batched arm exists —
+    // `step35_decode_batch_layers` carries the per-layer n_head / partial rope / per-session
+    // SWA views / head-wise gate the generic body lacked (the b2ab garbage receipt,
+    // research/step-sku-20260807/raw/b2ab-pre-*.log, was the GENERIC arm running past the
+    // ppn door; that arm is now unreachable for this arch at any B). Chunk cap 8: the
+    // exactness-tier width (IQ4_XS trunk + 288-expert MoE refuse exact16 by predicate —
+    // `decode_batch_exact16_ok` requires non-MoE — so 16 is structurally out). The
+    // MEMRA_STEP35_BATCH=0 rollback seam re-pins B=1 fail-closed (the engine bodies Err on
+    // B>1 under it; this cap is what keeps the scheduler from forming chunks that would
+    // only bounce). MEMRA_DECODE_BATCH_CAP may still narrow BELOW 8, never widen past it.
+    if lm.model.cfg.step35.is_some() {
+        if !HybridModel::step35_batch_on() {
+            return 1;
+        }
+        let cap = std::env::var("MEMRA_DECODE_BATCH_CAP").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(8usize);
+        return cap.clamp(1, 8);
+    }
     if let Some(c) = std::env::var("MEMRA_DECODE_BATCH_CAP").ok().and_then(|v| v.parse().ok()) {
         return usize::clamp(c, 1, 32);
     }
@@ -3409,12 +4163,23 @@ fn step_session(
     // Tails below PRIME_MIN_T keep the tokenwise decode_step path (prime_cache floor).
     if !s.prefill_done {
         let q = s.prefill_queue.len();
-        if !confidence_trace_enabled() && q >= memra_engine::hybrid_forward::PRIME_MIN_T.max(2) {
+        // EAGER-ONLY prime shape (lane/gemma4-serve-gaps): same law as prefill_tick —
+        // gemma4 primes fresh prompts WHOLE (no chunked prime in the engine; chunk 2 used
+        // to kill the worker) and carried suffixes tokenwise (no continuation prime).
+        let eager_mono = eager_only_model(lm);
+        let carried = s.cache.as_ref().is_some_and(|c| c.pos > 0);
+        if !confidence_trace_enabled()
+            && q >= memra_engine::hybrid_forward::PRIME_MIN_T.max(2)
+            && !(eager_mono && carried)
+        {
             // leave a tail chunk >= PRIME_MIN_T if this tick doesn't finish the queue
-            let mut take = q.min(PREFILL_TICK_T);
+            let mut take = if eager_mono { q } else { q.min(PREFILL_TICK_T) };
             if q - take > 0 && q - take < memra_engine::hybrid_forward::PRIME_MIN_T { take = q; }
             let chunk: Vec<u32> = s.prefill_queue.drain(..take).collect();
-            let (l, _h, _x) = lm.model.prime_cache(engine, &chunk, s.cache.as_mut().unwrap())?;
+            // REQUEST-LEVEL seq_end: the rest of prefill_queue is the same request's remainder
+            // (see prefill_tick — the tick-budget segmentation must not steer arithmetic).
+            let (l, _h, _x) = lm.model.prime_cache(engine, &chunk, s.cache.as_mut().unwrap(),
+                                                   s.prefill_queue.len())?;
             s.last_logits = l;
             for &tok in &chunk { s.fed.push(tok); s.sampler.accept(tok); }
         } else if let Some(tok) = s.prefill_queue.pop_front() {
@@ -3608,19 +4373,187 @@ fn finish(s: &Session, reason: StopReason) {
     });
 }
 
+/// FAULT INJECTION (`MEMRA_PANIC_AFTER=<n>`, off unless set): panic the GPU worker thread
+/// after `n` served requests. An explicitly-blocked experimental door in the flags-doctrine
+/// sense, and the ONLY way the G5 supervision path can be exercised against a REAL CUDA
+/// worker — the alternative is trusting that a catch_unwind + respawn + exit-70 ladder built
+/// around a live CUDA context behaves the way its unit tests (which use a fake worker) say it
+/// does. That trust was already misplaced once on this lane: the first supervisor deadlocked
+/// startup, and only a live gate found it. Costs one relaxed atomic load per completed request.
+///
+/// ONE-SHOT PER PROCESS. `n_completed` is per-`run()`, so a per-run trigger re-fires on the
+/// respawned worker the moment it serves its first request — measured: the respawn reloaded
+/// the weights, went green with `generation:1`, then immediately panicked again and exited 70,
+/// which makes "did the recovery actually serve traffic?" unanswerable. Injecting exactly one
+/// panic per process is what proves the recovery half.
+fn panic_after() -> Option<u64> {
+    static P: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *P.get_or_init(|| std::env::var("MEMRA_PANIC_AFTER").ok().and_then(|v| v.parse().ok()))
+}
+
+/// Set once the injected panic has fired, so it fires at most once per process (see above).
+static PANIC_INJECTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// True exactly once, on the `n`th completed request of the process's first worker run.
+fn panic_injection_due(n_completed: u64) -> bool {
+    match panic_after() {
+        Some(n) if n_completed >= n =>
+            !PANIC_INJECTED.swap(true, std::sync::atomic::Ordering::SeqCst),
+        _ => false,
+    }
+}
+
+/// Number of respawn attempts after a worker-thread PANIC before the process fails loudly.
+/// ONE, deliberately: CUDA errors are sticky per process (after an OOM or an Xid the context
+/// is poisoned), so an in-process retry is a long shot — worth exactly one try, because when
+/// it works it saves a ~120 s weight reload, and worth no more, because a respawn loop against
+/// a poisoned context is a box that looks alive and serves nothing. MEMRA_WORKER_RESPAWN=0
+/// disables (straight to loud failure, i.e. let the supervisor restart the process).
+const WORKER_RESPAWN_MAX: u32 = 1;
+
+/// Base delay for the respawn ladder and the HTTP retry hint while the worker is unavailable.
+pub(crate) const WORKER_RESPAWN_BACKOFF_BASE_S: u64 = 2;
+
+fn worker_respawn_max() -> u32 {
+    static R: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *R.get_or_init(|| std::env::var("MEMRA_WORKER_RESPAWN").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(WORKER_RESPAWN_MAX))
+}
+
+/// Exit code when the worker is unrecoverable. `systemd Restart=on-failure` treats any nonzero
+/// as failure; 70 is sysexits' EX_SOFTWARE, so an operator reading `systemctl status` can tell
+/// "the engine died" from "bad config" (exit 1, the startup FATAL paths in main).
+const EXIT_WORKER_UNRECOVERABLE: i32 = 70;
+
 /// Convenience: spawn the worker thread and block until it reports ready (or fails). Returns the
 /// command Sender (clone into the axum state) + the loaded model names + template caps.
+///
+/// SUPERVISION (G5c, lane/serve-hardening 2026-08-06). The worker thread used to be a bare
+/// `spawn(move || run(..))`: a panic inside it unwound that thread ONLY, the process kept
+/// serving HTTP, `/health` stayed green forever, and every request blocked or died on a closed
+/// channel. Now the spawned thread is a SUPERVISOR that:
+///   1. runs the scheduler inside `catch_unwind`, so a panic is caught instead of silently
+///      ending the thread;
+///   2. marks the shared health FAULTED on catch — /health and /readyz flip within
+///      milliseconds, no staleness threshold to wait out;
+///   3. attempts `worker_respawn_max()` respawns with backoff (weights reload; the health
+///      generation counter increments so the recovery is observable);
+///   4. and if that fails, exits the PROCESS loudly — because a memra-server without a GPU
+///      worker cannot serve anything, and `Restart=` restarting the unit whole is the only
+///      reliable CUDA recovery (see `deploy/systemd/memra-server.service`).
+/// A CLEAN return (the command channel closed = every HTTP handler dropped = shutdown) is not
+/// a fault and never respawns.
 #[allow(clippy::type_complexity)]
-pub fn spawn(models: Vec<(String, String, Option<String>)>)
+pub fn spawn(models: Vec<(String, String, Option<String>)>, health: crate::health::SharedHealth)
     -> Result<(Sender<Cmd>, Arc<Vec<String>>, Arc<HashMap<String, ModelCaps>>, SharedMetrics), String> {
+    // (#87's parse-time spec-over-PP-2 preflight refusal lived here — CLOSED 2026-08-08.
+    // The ppN reverse-publication fences make spec+PP-2 serve; receipts and the crash gate
+    // are in research/pp2spec-crash-20260807/.)
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
     let (ready_tx, ready_rx) =
         std::sync::mpsc::channel::<Result<(Vec<String>, HashMap<String, ModelCaps>), String>>();
     let metrics: SharedMetrics = Default::default();
     let m2 = metrics.clone();
+    let h2 = health.clone();
     std::thread::Builder::new()
         .name("memra-gpu-worker".into())
-        .spawn(move || run(models, cmd_rx, ready_tx, m2))
+        .spawn(move || {
+            // The supervisor OWNS the receiver across restarts: `run` borrows it, so a
+            // panicking scheduler cannot take the command channel down with it (dropping the
+            // Receiver would make every future handler send fail with no way back).
+            let rx = cmd_rx;
+            let mut ready_tx = Some(ready_tx);
+            let mut attempt: u32 = 0;
+            loop {
+                let (models, m, h) = (models.clone(), m2.clone(), h2.clone());
+                // A fresh ready channel per attempt; only the FIRST one is the caller's.
+                //
+                // THE VERDICT MUST BE RELAYED CONCURRENTLY, NOT AFTER `run` RETURNS. `run`
+                // sends its load verdict and then blocks in the scheduler for the life of the
+                // process — so reading `rrx` on this thread after `catch_unwind` deadlocks the
+                // whole server: main blocks in `ready_rx.recv()`, never binds the socket, and
+                // the box loads the model and then answers nothing. (Found by serve-smoke,
+                // which timed out waiting for /health with the worker log showing a fully
+                // loaded model — the exact failure class this lane exists to remove, so it is
+                // fitting that the gate caught it.)
+                let (rtx, rrx) = std::sync::mpsc::channel();
+                let caller = ready_tx.take();
+                let load_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let (lf, hr) = (load_failed.clone(), h2.clone());
+                let relay = std::thread::Builder::new()
+                    .name("memra-worker-ready".into())
+                    .spawn(move || {
+                        let verdict = rrx.recv()
+                            .unwrap_or_else(|_| Err("worker died during init".into()));
+                        if let Err(why) = &verdict {
+                            lf.store(true, std::sync::atomic::Ordering::SeqCst);
+                            hr.mark_dead(format!("model load failed: {why}"));
+                        }
+                        // Only the first attempt has a caller waiting; a respawn's verdict is
+                        // observable on /health (phase + generation) instead.
+                        if let Some(tx) = caller {
+                            let _ = tx.send(verdict);
+                        }
+                    });
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run(models, &rx, rtx, m, h)
+                }));
+                // `run` has returned, so its `rtx` is dropped and the relay cannot block.
+                if let Ok(t) = relay { let _ = t.join(); }
+                match outcome {
+                    Ok(()) if load_failed.load(std::sync::atomic::Ordering::SeqCst) => {
+                        // Not a shutdown: the model load itself failed, so `run` returned
+                        // without ever entering the scheduler.
+                        if attempt == 0 {
+                            // The caller (main) got the error and reports it as a startup
+                            // FATAL — do not race it with an exit code of our own.
+                            return;
+                        }
+                        eprintln!("[worker] FATAL: respawn attempt {attempt} could not reload \
+                                   the models — exiting the process so the supervisor can \
+                                   restart it whole");
+                        crate::health::sd_notify("STATUS=respawn load failed; exiting");
+                        std::io::stderr().flush().ok();
+                        std::process::exit(EXIT_WORKER_UNRECOVERABLE);
+                    }
+                    Ok(()) => {
+                        // Clean scheduler exit = the command channel closed (shutdown).
+                        h2.set_phase(crate::health::PHASE_DEAD);
+                        return;
+                    }
+                    Err(payload) => {
+                        // QUOTED, never inferred: the panic message as the panic handler saw
+                        // it (String / &str payloads; anything else says so).
+                        let why = payload.downcast_ref::<String>().cloned()
+                            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                            .unwrap_or_else(|| "non-string panic payload".into());
+                        attempt += 1;
+                        h2.mark_dead(format!("worker thread panicked: {why}"));
+                        eprintln!("[worker] PANIC in the GPU worker thread: {why}");
+                        if attempt > worker_respawn_max() {
+                            eprintln!("[worker] FATAL: worker unrecoverable after {} respawn \
+                                       attempt(s) — exiting the process so the supervisor can \
+                                       restart it whole (CUDA errors are sticky per process; a \
+                                       live HTTP listener with a dead worker serves nothing)",
+                                      attempt - 1);
+                            crate::health::sd_notify("STATUS=worker unrecoverable; exiting");
+                            std::io::stderr().flush().ok();
+                            std::process::exit(EXIT_WORKER_UNRECOVERABLE);
+                        }
+                        // Backoff before reloading weights: a panic caused by a transient
+                        // device condition needs the driver to settle, and an immediate
+                        // reload would just re-hit it.
+                        let backoff = std::time::Duration::from_secs(
+                            WORKER_RESPAWN_BACKOFF_BASE_S * attempt as u64);
+                        eprintln!("[worker] respawn attempt {attempt}/{} in {:?} \
+                                   (reloading weights)", worker_respawn_max(), backoff);
+                        std::thread::sleep(backoff);
+                        h2.mark_respawning();
+                    }
+                }
+            }
+        })
         .map_err(|e| format!("spawn worker thread: {e}"))?;
     match ready_rx.recv() {
         Ok(Ok((names, caps))) => Ok((cmd_tx, Arc::new(names), Arc::new(caps), metrics)),
@@ -3633,6 +4566,80 @@ pub fn spawn(models: Vec<(String, String, Option<String>)>)
 mod tests {
     use super::{summarize_confidence, utf8_delta};
     use super::{PoolKey, PrefixCache, PrefixEntry, PREFIX_CACHE_MIN_TOKENS};
+    use super::{meter_account, HashMap, METER_TENANT_CAP};
+    use super::{draft_verdict, draft_verdict_message, DraftVerdict};
+    use super::worker_device;
+
+    #[test]
+    fn worker_device_defaults_to_cuda_visible_zero_and_follows_the_pp_head_stage() {
+        assert_eq!(worker_device(None), Ok(0));
+        assert_eq!(worker_device(Some("")), Ok(0));
+        // The primary follows the LAST stage (the lm head's device — the spec round's draft
+        // chain reads it every token; see worker_device's doc). The 5f27c55c stage-0 pin was
+        // the v0.72 tag-blocker-2 regressor: 112.5 -> 17.5 agg tok/s on spec+PP-2 serving.
+        assert_eq!(worker_device(Some("1,0")), Ok(0));
+        assert_eq!(worker_device(Some("0,1")), Ok(1));
+        assert_eq!(worker_device(Some(" 3 , 4 ")), Ok(4));
+    }
+
+    #[test]
+    fn worker_device_rejects_an_invalid_pp_device() {
+        // EVERY position is validated (a bad string must refuse at boot, wherever it is).
+        let err = worker_device(Some("gpu0,1")).unwrap_err();
+        assert!(err.contains("invalid device"), "{err}");
+        assert!(err.contains("gpu0"), "{err}");
+        let err = worker_device(Some("1,gpu0")).unwrap_err();
+        assert!(err.contains("gpu0"), "{err}");
+    }
+
+    // ---- drafter attachment: the loud-failure semantics (lane/step-draft, 2026-08-07) ----
+    //
+    // These pin the class of bug that NO gate in this repo could catch: a step35 model served
+    // without its external MTP drafter runs plain decode and produces CORRECT output, so
+    // kernel-check is model-free, run-gen argmax MATCHes, and run-spec is never even reached.
+    // Only a log line can flag it, so the log line is what gets tested.
+
+    #[test]
+    fn step35_without_drafter_warns_and_names_the_attach_spelling() {
+        let v = draft_verdict(false, true);
+        assert_eq!(v, DraftVerdict::NoDrafterExternalMtpArch);
+        let msg = draft_verdict_message(&v, "step", "/m/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf")
+            .expect("a step35 model with no drafter MUST produce a line");
+        // The defect is silence, so the line has to be findable and actionable.
+        assert!(msg.contains("no MTP drafter attached"), "{msg}");
+        assert!(msg.contains("plain decode"), "{msg}");
+        // ACTIONABLE: the exact attach spelling, not just a complaint.
+        assert!(msg.contains("MEMRA_MODELS"), "{msg}");
+        assert!(msg.contains("+/path/to/"), "the '+draft' convention must be spelled: {msg}");
+        // And it must not read as a defect in the artifact — nextn=0 is CORRECT here.
+        assert!(msg.contains("SEPARATE GGUF"), "{msg}");
+        assert!(msg.contains("does NOT mean"), "{msg}");
+    }
+
+    #[test]
+    fn attached_drafter_is_quiet_and_so_is_a_non_step35_model_without_one() {
+        // Attached: nothing to warn about; spec_eligible arbitrates per request from here.
+        // (#87 CLOSED 2026-08-08: a drafter over sharded cross-device PP-2 used to refuse
+        // here — the ppN reverse-publication fences made the regime serve, receipts
+        // research/pp2spec-crash-20260807/. Attached is now unconditional.)
+        let v = draft_verdict(true, true);
+        assert_eq!(v, DraftVerdict::Attached);
+        assert!(draft_verdict_message(&v, "step", "/m.gguf").is_none());
+
+        // A non-step35 model with no head: `nextn=0` there genuinely means no head, and the
+        // existing load line already says the layer count. Warning would be noise on every
+        // plain model the server has ever hosted — which is how a real warning gets ignored.
+        let v = draft_verdict(false, false);
+        assert_eq!(v, DraftVerdict::NoDrafterQuiet);
+        assert!(draft_verdict_message(&v, "q27", "/m.gguf").is_none());
+    }
+
+    // (#87's refusal tests — `spec_over_sharded_pp_refuses_and_points_at_87`,
+    // `the_quarantine_binds_only_where_all_three_conditions_hold`, and
+    // `the_87_refusal_lands_before_the_load_when_a_draft_was_attached` — retired with the
+    // quarantine itself, 2026-08-08. The regime they refused now serves: root cause was the
+    // ppN reverse-publication hole, fixed by `PpNRt::fence_stages_behind`; crash gate
+    // 212/212 at c=2..8, run-spec K=1..8 PASS. research/pp2spec-crash-20260807/.)
 
     /// Device-free PrefixEntry (empty kv/conv/ssm planes) — the namespace-visibility laws
     /// under test live entirely in the host-side key/toks matching.
@@ -3667,6 +4674,66 @@ mod tests {
         assert!(px.lookup(&key("tenant-a"), &toks(PREFIX_CACHE_MIN_TOKENS + 32)).is_some());
         assert!(px.has_covering(&key("tenant-a"), &prefix));
         assert_eq!(px.best_lcp(&key("tenant-a"), &prefix), prefix.len());
+    }
+
+    /// LCP histogram bucketing (lane/cache-metering): edges are lower bounds, the last
+    /// bucket is unbounded, and the [64,512) tick-seg window is exactly buckets 4..=6.
+    #[test]
+    fn lcp_histogram_buckets_are_lower_edge_and_record_samples() {
+        assert_eq!(PrefixCache::lcp_bucket(0), 0);
+        assert_eq!(PrefixCache::lcp_bucket(1), 1);
+        assert_eq!(PrefixCache::lcp_bucket(15), 1);
+        assert_eq!(PrefixCache::lcp_bucket(16), 2);
+        assert_eq!(PrefixCache::lcp_bucket(63), 3);
+        assert_eq!(PrefixCache::lcp_bucket(64), 4);   // tick-seg window opens
+        assert_eq!(PrefixCache::lcp_bucket(127), 4);
+        assert_eq!(PrefixCache::lcp_bucket(128), 5);
+        assert_eq!(PrefixCache::lcp_bucket(256), 6);
+        assert_eq!(PrefixCache::lcp_bucket(511), 6);  // tick-seg window closes
+        assert_eq!(PrefixCache::lcp_bucket(512), 7);
+        assert_eq!(PrefixCache::lcp_bucket(4095), 9);
+        assert_eq!(PrefixCache::lcp_bucket(4096), 10);
+        assert_eq!(PrefixCache::lcp_bucket(1 << 20), 10); // unbounded tail
+        let mut px = PrefixCache::default();
+        px.record_lcp(0);
+        px.record_lcp(100);
+        px.record_lcp(100);
+        assert_eq!(px.lcp_hist[0], 1);
+        assert_eq!(px.lcp_hist[4], 2);
+        assert_eq!(px.lcp_hist.iter().sum::<u64>(), 3);
+    }
+
+    /// Per-tenant metering rows (lane/cache-metering): keyring namespaces collapse to
+    /// their tenant (salts within a tenant share a row), raw salts pass through, and the
+    /// row cap saturates into "(other)" without losing tokens.
+    #[test]
+    fn meter_account_keys_by_tenant_and_bounds_rows() {
+        let mut m: HashMap<String, [u64; 2]> = HashMap::new();
+        // keyring: two salts of one tenant share the row; another tenant gets its own.
+        meter_account(&mut m, &crate::auth::scope_namespace("acme", "u1"), 100, 40);
+        meter_account(&mut m, &crate::auth::scope_namespace("acme", "u2"), 50, 10);
+        meter_account(&mut m, &crate::auth::scope_namespace("blue", ""), 30, 0);
+        assert_eq!(m["t:acme"], [150, 50]);
+        assert_eq!(m["t:blue"], [30, 0]);
+        // no keyring: the raw salt is the row key; "" is the default namespace.
+        meter_account(&mut m, "session-7", 20, 20);
+        meter_account(&mut m, "", 10, 5);
+        assert_eq!(m["session-7"], [20, 20]);
+        assert_eq!(m[""], [10, 5]);
+        // cap: fill to METER_TENANT_CAP distinct rows, then overflow lands in "(other)"
+        // while an EXISTING row keeps accumulating under its own key.
+        let mut m: HashMap<String, [u64; 2]> = HashMap::new();
+        for i in 0..METER_TENANT_CAP {
+            meter_account(&mut m, &format!("s{i}"), 1, 0);
+        }
+        meter_account(&mut m, "one-too-many", 7, 3);
+        meter_account(&mut m, "s0", 2, 1);
+        assert_eq!(m.len(), METER_TENANT_CAP + 1);
+        assert_eq!(m["(other)"], [7, 3]);
+        assert_eq!(m["s0"], [3, 1]);
+        // totals stay exact: sum over rows == sum over requests.
+        let total: u64 = m.values().map(|r| r[0]).sum();
+        assert_eq!(total, METER_TENANT_CAP as u64 + 7 + 2);
     }
 
     #[test]

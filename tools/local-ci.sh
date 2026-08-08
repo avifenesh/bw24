@@ -5,8 +5,9 @@
 #   tools/local-ci.sh --perf         correctness + full perf battery (~15 min)
 #   tools/local-ci.sh --perf-quick   correctness + gemma-31B cells only (~6 min)
 #
-# Correctness stage: kernel-check, run-gen argmax gate, spec self-consistency,
-# VERIFY-GATE logit maxdiff at depth — the standing exactness battery, one command.
+# Correctness stage: kernel-check, run-gen argmax gate, run-spec K=1..8 self-consistency,
+# Gemma stream agreement, and VERIFY-GATE logit maxdiff at depth — the standing exactness
+# battery, one command.
 #
 # Perf stage: the cell battery from research/tune-data/perf-cells.json. Every spec cell
 # records tok/s + ACCEPTANCE + tok/round — the drift class that silently cost the spec
@@ -18,6 +19,11 @@
 # Contributor machines: cells whose model file is absent are SKIPPED cleanly; the
 # correctness stage runs wherever a GPU + at least one model exists. Set
 # MEMRA_MODELS_DIR to your model root (default /data/ai-ml/hf-models).
+#
+# MEMRA_CI_DIRTY_WAIT (default 600s): how long a cell waits for a co-resident GPU process
+# to leave before recording its row as window_clean=false. Latched after the first cell
+# that outwaits it — a permanently-co-resident process (an owner service holding an idle
+# CUDA context) must not turn the perf stage into an unbounded hang.
 #
 # Window discipline (recorded per row, enforced where it can be): no other compute
 # process on the GPU (co-resident engines spill experts and read 10x low), host load
@@ -75,6 +81,7 @@ echo "kernel-check: GREEN"
 # prime-gate (#46): batched-prime vs tokenwise first-token agreement on the mixed prompt
 # set — near-tie flips report, structured divergence or non-determinism exits non-zero.
 Q35="$MODELS/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf"
+Q35_DRAFT="$MODELS/qwen36-35b-moe/draft-35b-owntrim-nvfp4head-q4blk.gguf"
 if [ -f "$Q35" ]; then
     if ! target/release/prime-gate "$Q35" \
             --prompts-file research/prime-gate-coverage-20260802/prompts-mixed.txt \
@@ -84,6 +91,60 @@ if [ -f "$Q35" ]; then
     grep "prime-gate" /tmp/prime-gate-ci.log | tail -2
 else
     echo "prime-gate: SKIP (no q35 model at $Q35)"
+fi
+
+# The standing MTP exactness gate. A naked run-spec invocation sweeps K=1..8; explicitly clear
+# single-K and alternate-mode env so a caller cannot silently narrow or change the gate.
+# The Gemma-4 31B target below uses a separate assistant-drafter API, so its independent
+# stream-agreement check remains on gemma-gate. MEMRA_CI_RUNSPEC=0 skips this sweep.
+if [ "${MEMRA_CI_RUNSPEC:-1}" = "1" ]; then
+    if [ -f "$Q35" ] && [ -f "$Q35_DRAFT" ]; then
+        [ -x target/release/run-spec ] \
+            || cargo build --release -p memra-engine --bin run-spec >/dev/null
+        RUNSPEC_LOG=/tmp/local-ci-run-spec.log
+        runspec_rc=0
+        (
+            unset MEMRA_PROMPT_DIR MEMRA_SPEC_K MEMRA_GEN_ONLY
+            MEMRA_SPEC_TEMP=0 MEMRA_MTP_DRAFT="$Q35_DRAFT" MEMRA_NGEN=32 \
+                MEMRA_PROMPT_FILE=tools/fast-gate/prompts/probe.txt \
+                timeout 900 target/release/run-spec "$Q35"
+        ) 2>&1 | tee "$RUNSPEC_LOG" >/dev/null || runspec_rc=$?
+        runspec_passes=$(grep -c "self-consistency: PASS" "$RUNSPEC_LOG" || true)
+        runspec_ks=$(grep -cE '^\[generate_spec K=[1-8]\]' "$RUNSPEC_LOG" || true)
+        if [ "$runspec_rc" -ne 0 ] || [ "$runspec_passes" -ne 8 ] \
+                || [ "$runspec_ks" -ne 8 ] \
+                || ! grep -q "=== SELF-CONSISTENCY PASS ===" "$RUNSPEC_LOG"; then
+            fail_detail=$(awk '
+                /^\[generate_spec K=[0-9]+\]/ {
+                    k = $0
+                    sub(/^.*K=/, "", k)
+                    sub(/\].*$/, "", k)
+                }
+                /self-consistency: FAIL/ { failed_k = k }
+                /FIRST DIVERGENCE at index [0-9]+:/ && failed_k != "" {
+                    pos = $0
+                    sub(/^.*FIRST DIVERGENCE at index /, "", pos)
+                    sub(/:.*/, "", pos)
+                    print failed_k " " pos
+                    exit
+                }
+            ' "$RUNSPEC_LOG")
+            if [ -n "$fail_detail" ]; then
+                echo "run-spec self-consistency FAIL (K=${fail_detail%% *}, FIRST DIVERGENCE at index ${fail_detail#* })"
+            else
+                echo "run-spec K=1..8 FAIL (exit $runspec_rc, $runspec_passes/8 per-K passes)"
+            fi
+            tail -12 "$RUNSPEC_LOG"
+            exit 1
+        fi
+        echo "run-spec K=1..8 self-consistency: PASS (Qwen 35B, 8/8)"
+    elif [ ! -f "$Q35" ]; then
+        echo "run-spec K=1..8: SKIP (no q35 model at $Q35)"
+    else
+        echo "run-spec K=1..8: SKIP (no q35 draft at $Q35_DRAFT)"
+    fi
+else
+    echo "run-spec K=1..8: SKIP (MEMRA_CI_RUNSPEC=0)"
 fi
 
 G31="$MODELS/gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf"
@@ -204,6 +265,31 @@ if [ "${MEMRA_CI_STRESS:-1}" = "1" ] && [ -x tools/serve-stress-gate.sh ]; then
     tools/serve-stress-gate.sh || { echo "serve-stress FAIL"; exit 1; }
 fi
 
+# SERVED-SPEC ACCEPTANCE + LONG-TEXT ASSERTION (lane/accept-gate, 2026-08-06): the arm that
+# closes a receipted blind spot in THIS battery. research/f8f4-flip-20260806 (merged c506317e)
+# showed a kernel arm move served greedy text in 4 of 6 regime cells at temperature 0 and move
+# spec acceptance up to -9.5pp while EVERY gate above stayed green — because (1) the token
+# goldens stop at 20 tokens and both divergences landed at generated index 22 and 38, (2)
+# `fast-gate --refresh-goldens` after such a change would silently re-pin the new arm, and (3)
+# nothing here compared accepted-draft COUNTS, which are spec throughput, i.e. the product.
+# Each arm was internally self-consistent and reproduced its own goldens, so self-consistency
+# could never see it.
+#
+# This arm asserts, at the production serve config (real regime drafter attached, real serve K):
+# exact (rounds, drafted, accepted) integers — temp 0 makes drafting deterministic — plus the
+# full generated text sha256 to ngen=128, 6.4x past the golden window. In-battery per the H100
+# lane law: gates outside the battery rot silently.
+#
+# Default arm = the smoke tier (ONE model, ONE cell: q27-p1, ~1 min incl. the 16G load) to keep
+# the correctness stage near its ~3 min budget. The full 6-cell matrix (both NVFP4-reachable
+# models x 3 prompt lengths) is `tools/accept-gate.sh --full`, and `--control` adds the
+# second-boot determinism control. Its own teeth: `tools/accept-gate.sh --teeth` sets
+# MEMRA_MMQ_F8F4=1 and REQUIRES the gate to fail — run that whenever the spec/draft or NVFP4
+# prefill path moves. MEMRA_CI_ACCEPT=0 skips.
+if [ "${MEMRA_CI_ACCEPT:-1}" = "1" ] && [ -x tools/accept-gate.sh ]; then
+    tools/accept-gate.sh || { echo "accept-gate FAIL"; exit 1; }
+fi
+
 [ "$MODE" = "--correctness" ] && exit 0
 
 echo "== local-ci: perf stage ($MODE) =="
@@ -248,8 +334,32 @@ run_cell() {
     done
     if window_free_now; then break; fi
     if [ "$cell_try" = 1 ]; then
-        echo "  $id: window went DIRTY mid-cell — waiting + retrying once"
-        while ! window_free_now; do sleep 40; done
+        # BOUNDED wait, LATCHED once (2026-08-07, lane/spec-gate). This loop used to be
+        # `while ! window_free_now; do sleep 40; done` — unbounded, so a PERSISTENT
+        # co-resident deadlocked the whole perf stage and made the honest fallback two
+        # lines below (record with window_clean=false) unreachable. Hit for real: the
+        # owner's hermes-gateway.service holds a 394 MiB idle CUDA context 24/7 on this
+        # box, 0% GPU util, and is not a lane's job to kill — the battery sat in that
+        # loop through 31b-plain-short and produced no rows at all. A gate that hangs
+        # forever is worse than one that records an honestly-labeled row.
+        #
+        # Latched, because the wait is only worth paying for a TRANSIENT joiner: once one
+        # cell has proven the co-resident outlasts the wait, every later cell skips
+        # straight to the labeled retry instead of re-paying it (10 cells x 600 s of
+        # pure sleeping is not a gate, it is a hang with progress output).
+        if [ "${PERSISTENT_CORESIDENT:-0}" = 1 ]; then
+            echo "  $id: window DIRTY, co-resident already known persistent — retrying, row will be window_clean=false"
+        else
+            local wait_left="${MEMRA_CI_DIRTY_WAIT:-600}"
+            echo "  $id: window went DIRTY mid-cell — waiting up to ${wait_left}s + retrying once"
+            while ! window_free_now && [ "$wait_left" -gt 0 ]; do
+                sleep 20; wait_left=$((wait_left - 20))
+            done
+            if ! window_free_now; then
+                PERSISTENT_CORESIDENT=1
+                echo "  $id: co-resident did not leave in ${MEMRA_CI_DIRTY_WAIT:-600}s — treating it as persistent; rows from here are window_clean=false"
+            fi
+        fi
     else
         echo "  $id: DIRTY twice — recording with window_clean=false"
         WINDOW_CLEAN=false

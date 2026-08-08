@@ -1,0 +1,14 @@
+test_mock_server_sees_ratio_salt_and_conversation_carry (test_fleet_replay.FleetReplayTests.test_mock_server_sees_ratio_salt_and_conversation_carry) ... ok
+test_prefix_template_pool_is_realistic_size (test_fleet_replay.FleetReplayTests.test_prefix_template_pool_is_realistic_size) ... ok
+test_sigterm_stops_during_poisson_wait (test_fleet_replay.FleetReplayTests.test_sigterm_stops_during_poisson_wait) ... ok
+test_meter_marks_restart_and_skips_unchanged_snapshot (test_fleet_report.FleetReportTests.test_meter_marks_restart_and_skips_unchanged_snapshot) ... ok
+test_meter_skips_failed_scrape_without_creating_ledger (test_fleet_report.FleetReportTests.test_meter_skips_failed_scrape_without_creating_ledger) ... ok
+test_restart_fixture_daily_deltas_and_economics (test_fleet_report.FleetReportTests.test_restart_fixture_daily_deltas_and_economics) ... ok
+test_contained_path_rejects_parent_escape (test_nvme_builder_safety.NvmeBuilderPathSafetyTests.test_contained_path_rejects_parent_escape) ... ok
+test_mirror_map_v2_pins_both_file_generations (test_nvme_builder_safety.NvmeBuilderPathSafetyTests.test_mirror_map_v2_pins_both_file_generations) ... ok
+test_payload_names_are_strictly_relative_expert_paths (test_nvme_builder_safety.NvmeBuilderPathSafetyTests.test_payload_names_are_strictly_relative_expert_paths) ... ok
+
+----------------------------------------------------------------------
+Ran 9 tests in 1.205s
+
+OK

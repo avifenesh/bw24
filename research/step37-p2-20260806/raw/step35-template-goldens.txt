@@ -1,0 +1,99 @@
+# Step-3.7-Flash (arch step35) chat-template goldens
+# oracle: jinja2 3.1.6 over research/step37-bringup-20260802/raw/chat_template.jinja
+#         (byte-identical to the GGUF tokenizer.chat_template, 5723 chars)
+# bos_token rendered as '' — memra's encode(add_special) supplies BOS (double-BOS trap)
+
+=== plain user
+--- args: {"messages": [{"role": "user", "content": "Hello"}], "add_generation_prompt": true}
+--- rendered (python repr, exact bytes):
+'<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n'
+
+=== system + user
+--- args: {"messages": [{"role": "system", "content": "You are helpful."}, {"role": "user", "content": "Hi"}], "add_generation_prompt": true}
+--- rendered (python repr, exact bytes):
+'<|im_start|>system\nYou are helpful.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n<think>\n'
+
+=== multi-turn (prior assistant is BEFORE last query -> NO think block)
+--- args: {"messages": [{"role": "system", "content": "rules"}, {"role": "user", "content": "task"}, {"role": "assistant", "content": "work"}, {"role": "user", "content": "more"}], "add_generation_prompt": true}
+--- rendered (python repr, exact bytes):
+'<|im_start|>system\nrules<|im_end|>\n<|im_start|>user\ntask<|im_end|>\n<|im_start|>assistant\nwork<|im_end|>\n<|im_start|>user\nmore<|im_end|>\n<|im_start|>assistant\n<think>\n'
+
+=== no generation prompt
+--- args: {"messages": [{"role": "user", "content": "Hello"}], "add_generation_prompt": false}
+--- rendered (python repr, exact bytes):
+'<|im_start|>user\nHello<|im_end|>\n'
+
+=== reasoning_effort, no system
+--- args: {"messages": [{"role": "user", "content": "Hi"}], "add_generation_prompt": true, "reasoning_effort": "high"}
+--- rendered (python repr, exact bytes):
+'<|im_start|>system\nReasoning: high\n\n<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n<think>\n'
+
+=== reasoning_effort + system
+--- args: {"messages": [{"role": "system", "content": "Be terse."}, {"role": "user", "content": "Hi"}], "add_generation_prompt": true, "reasoning_effort": "low"}
+--- rendered (python repr, exact bytes):
+'<|im_start|>system\nReasoning: low\n\nBe terse.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n<think>\n'
+
+=== tools + system
+--- args: {"messages": [{"role": "system", "content": "Be terse."}, {"role": "user", "content": "Weather in Paris?"}], "add_generation_prompt": true, "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}]}
+--- rendered (python repr, exact bytes):
+'<|im_start|>system\nBe terse.\n\n# Tools\n\nYou have access to the following functions in JSONSchema format:\n\n<tools>\n{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...>\n...\n</function> block must be nested within <tool_call>\n...\n</tool_call> XML tags\n- Required parameters MUST be specified\n</IMPORTANT><|im_end|>\n<|im_start|>user\nWeather in Paris?<|im_end|>\n<|im_start|>assistant\n<think>\n'
+
+=== tools, no system
+--- args: {"messages": [{"role": "user", "content": "Weather in Paris?"}], "add_generation_prompt": true, "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}]}
+--- rendered (python repr, exact bytes):
+'<|im_start|>system\n# Tools\n\nYou have access to the following functions in JSONSchema format:\n\n<tools>\n{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...>\n...\n</function> block must be nested within <tool_call>\n...\n</tool_call> XML tags\n- Required parameters MUST be specified\n</IMPORTANT><|im_end|>\n<|im_start|>user\nWeather in Paris?<|im_end|>\n<|im_start|>assistant\n<think>\n'
+
+=== tools + reasoning_effort + system
+--- args: {"messages": [{"role": "system", "content": "Be terse."}, {"role": "user", "content": "Weather?"}], "add_generation_prompt": true, "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}], "reasoning_effort": "medium"}
+--- rendered (python repr, exact bytes):
+'<|im_start|>system\nReasoning: medium\n\nBe terse.\n\n# Tools\n\nYou have access to the following functions in JSONSchema format:\n\n<tools>\n{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...>\n...\n</function> block must be nested within <tool_call>\n...\n</tool_call> XML tags\n- Required parameters MUST be specified\n</IMPORTANT><|im_end|>\n<|im_start|>user\nWeather?<|im_end|>\n<|im_start|>assistant\n<think>\n'
+
+=== assistant tool_calls then tool response
+--- args: {"messages": [{"role": "user", "content": "Weather in Paris?"}, {"role": "assistant", "content": "", "tool_calls": [{"type": "function", "function": {"name": "get_weather", "arguments": {"city": "Paris"}}}]}, {"role": "tool", "content": "{\"temp_c\": 21}"}], "add_generation_prompt": true, "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}]}
+--- rendered (python repr, exact bytes):
+'<|im_start|>system\n# Tools\n\nYou have access to the following functions in JSONSchema format:\n\n<tools>\n{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...>\n...\n</function> block must be nested within <tool_call>\n...\n</tool_call> XML tags\n- Required parameters MUST be specified\n</IMPORTANT><|im_end|>\n<|im_start|>user\nWeather in Paris?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n<tool_call>\n<function=get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool_response\n<tool_response>{"temp_c": 21}</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n'
+
+=== two consecutive tool turns group into ONE tool_response turn
+--- args: {"messages": [{"role": "user", "content": "both"}, {"role": "assistant", "content": "checking", "tool_calls": [{"type": "function", "function": {"name": "a", "arguments": {"x": "1"}}}, {"type": "function", "function": {"name": "b", "arguments": {}}}]}, {"role": "tool", "content": "r1"}, {"role": "tool", "content": "r2"}], "add_generation_prompt": true, "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}]}
+--- rendered (python repr, exact bytes):
+'<|im_start|>system\n# Tools\n\nYou have access to the following functions in JSONSchema format:\n\n<tools>\n{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...>\n...\n</function> block must be nested within <tool_call>\n...\n</tool_call> XML tags\n- Required parameters MUST be specified\n</IMPORTANT><|im_end|>\n<|im_start|>user\nboth<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\nchecking<tool_call>\n<function=a>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call><tool_call>\n<function=b>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool_response\n<tool_response>r1</tool_response><tool_response>r2</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n'
+
+=== assistant with <think> in content (last-turn split)
+--- args: {"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "<think>\nreasoned\n</think>\nanswer"}], "add_generation_prompt": false}
+--- rendered (python repr, exact bytes):
+'<|im_start|>user\nq<|im_end|>\n<|im_start|>assistant\n<think>\nreasoned\n</think>\nanswer<|im_end|>\n'
+
+=== system-role observation turn (not first)
+--- args: {"messages": [{"role": "system", "content": "rules"}, {"role": "user", "content": "q"}, {"role": "system", "content": "obs text", "name": "observation"}], "add_generation_prompt": true}
+--- rendered (python repr, exact bytes):
+'<|im_start|>system\nrules<|im_end|>\n<|im_start|>user\nq<|im_end|>\n<|im_start|>observation\nobs text<|im_end|>\n<|im_start|>assistant\n<think>\n'
+
+=== content NOT trimmed (no |trim in this template)
+--- args: {"messages": [{"role": "user", "content": "  padded  "}], "add_generation_prompt": true}
+--- rendered (python repr, exact bytes):
+'<|im_start|>user\n  padded  <|im_end|>\n<|im_start|>assistant\n<think>\n'
+
+=== user turn that IS a <tool_response> wrapper does NOT move last_query_index
+--- args: {"messages": [{"role": "user", "content": "real question"}, {"role": "assistant", "content": "thinking about it"}, {"role": "user", "content": "<tool_response>r</tool_response>"}], "add_generation_prompt": true}
+--- rendered (python repr, exact bytes):
+'<|im_start|>user\nreal question<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\nthinking about it<|im_end|>\n<|im_start|>user\n<tool_response>r</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n'
+
+=== explicit reasoning_content field on an assistant turn
+--- args: {"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "answer", "reasoning_content": "because"}], "add_generation_prompt": false}
+--- rendered (python repr, exact bytes):
+'<|im_start|>user\nq<|im_end|>\n<|im_start|>assistant\n<think>\nbecause\n</think>\nanswer<|im_end|>\n'
+
+=== assistant AFTER last query with no think markers -> empty reasoning block
+--- args: {"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "plain"}], "add_generation_prompt": false}
+--- rendered (python repr, exact bytes):
+'<|im_start|>user\nq<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\nplain<|im_end|>\n'
+
+=== two tools in the <tools> block
+--- args: {"messages": [{"role": "user", "content": "q"}], "add_generation_prompt": true, "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}, {"type": "function", "function": {"name": "search"}}]}
+--- rendered (python repr, exact bytes):
+'<|im_start|>system\n# Tools\n\nYou have access to the following functions in JSONSchema format:\n\n<tools>\n{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}\n{"type": "function", "function": {"name": "search"}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...>\n...\n</function> block must be nested within <tool_call>\n...\n</tool_call> XML tags\n- Required parameters MUST be specified\n</IMPORTANT><|im_end|>\n<|im_start|>user\nq<|im_end|>\n<|im_start|>assistant\n<think>\n'
+
+=== non-ASCII tool schema (template uses tojson(ensure_ascii=False))
+--- args: {"messages": [{"role": "user", "content": "q"}], "add_generation_prompt": true, "tools": [{"type": "function", "function": {"name": "f", "description": "café"}}]}
+--- rendered (python repr, exact bytes):
+'<|im_start|>system\n# Tools\n\nYou have access to the following functions in JSONSchema format:\n\n<tools>\n{"type": "function", "function": {"name": "f", "description": "café"}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...>\n...\n</function> block must be nested within <tool_call>\n...\n</tool_call> XML tags\n- Required parameters MUST be specified\n</IMPORTANT><|im_end|>\n<|im_start|>user\nq<|im_end|>\n<|im_start|>assistant\n<think>\n'

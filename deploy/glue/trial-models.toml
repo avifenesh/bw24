@@ -1,0 +1,9 @@
+[models."stepfun/step-3.7-flash"]
+hugging_face_id = "stepfun-ai/Step-3.7-Flash-GGUF"
+description = "Free-key Step-3.7-Flash research preview; prices are paper estimates only."
+is_ready = true
+
+[models."stepfun/step-3.7-flash".pricing]
+prompt = "0.000000234"
+cached_prompt = "0.0000000585"
+completion = "0.000001872"

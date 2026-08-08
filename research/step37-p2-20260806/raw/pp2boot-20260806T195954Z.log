@@ -1,0 +1,36 @@
+=== step37-p2 FIRST PP-2 BOOT  20260806T195954Z
+=== commit: lane/step37-p2 @ fdca2df3+dcgate — synced 2026-08-06T19:55:58Z
+=== model:  /home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+index, name, memory.total [MiB], memory.used [MiB]
+0, NVIDIA RTX PRO 6000 Blackwell Server Edition, 97887 MiB, 0 MiB
+1, NVIDIA RTX PRO 6000 Blackwell Server Edition, 97887 MiB, 0 MiB
+               total        used        free      shared  buff/cache   available
+Mem:             499         104         256           0         143         395
+
+########## PP-2 boot + 32-token greedy generate ##########
+lock acquired 2026-08-06T19:59:54Z pid=76832
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision: experts 101.07GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> SLRU cache
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 trunk layers; optional MTP skipped)
+prompt text: "Explain what a pipeline stage is."
+prompt tokens: [0, 65106, 1205, 260, 28499, 6632, 344, 16]
+prefill argmax=6776  decode argmax=6776  logit maxdiff=3.702e-1  MATCH
+prefill 8 tok in 0.3993s = 20.0 tok/s (pp8)
+generated 32 tokens in 1.589s = 20.14 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.134s) [stop: MaxNew]
+tokens: [6776, 5, 223, 20, 16, 20, 16, 20, 86388, 30219, 2742, 6776, 35, 28499, 6632, 344, 1359, 304, 611, 260, 23616, 1082, 270, 12740, 295, 270, 6632, 4800, 11443, 295, 270, 5374]
+MoE cache: 28493 slots | cumulative hits=37779 misses=8301 (hit-rate=82.0%) | Stage-1 baseline = 2678 MB/decode-token (every block, every layer, every token)
+MoE cache STEADY-STATE (32 tokens after warmup): hit-rate=89.0% | 133.5 MB/decode-token (vs 2678 MB/token Stage-1 => 20.1x less PCIe)
+OUTPUT TEXT: "  \n\n# 2.2.2 Pipeline Hazards  \n\nA pipeline stage is said to have a hazard when the instruction in the stage cannot proceed in the normal"
+--- generated text ---
+  
+
+# 2.2.2 Pipeline Hazards  
+
+A pipeline stage is said to have a hazard when the instruction in the stage cannot proceed in the normal
+run-gen exit=0 after 42s
+0, 0 MiB
+1, 0 MiB
+lock released 2026-08-06T20:00:36Z
+=== boot rc=0
+=== done 2026-08-06T20:00:36Z

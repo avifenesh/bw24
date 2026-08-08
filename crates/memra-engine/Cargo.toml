@@ -43,8 +43,16 @@ name = "concat-prime-probe"
 path = "src/bin/concat_prime_probe.rs"
 
 [[bin]]
+name = "iso-gap-probe"
+path = "src/bin/iso_gap_probe.rs"
+
+[[bin]]
 name = "k27div-probe"
 path = "src/bin/k27div_probe.rs"
+
+[[bin]]
+name = "argmax-margin-probe"
+path = "src/bin/argmax_margin_probe.rs"
 
 [[bin]]
 name = "kernel-check"

@@ -1,0 +1,20 @@
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+loaded qwen35 (64 layers); steps=24 batch=1
+pp mode: batched stage-split exactness battery over 64 layers; stages=2 fence=[0, 32, 64] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+pp mode: batches=[1, 4, 8] steps=24 reps=2 (split arm)
+pp mode: B=1 fast path pinned OFF (live default = ON)
+-- B=1: reference recorded (24 steps x 1 rows x 248320 f32, door OFF over the sharded placement)
+pp gate PASS [split B=1 rep0]: 5959680 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [split B=1 rep1]: 5959680 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [unsplit@ppncache B=1]: 5959680 f32 logits BIT-IDENTICAL (0 differing bits)
+-- B=4: reference recorded (24 steps x 4 rows x 248320 f32, door OFF over the sharded placement)
+pp gate PASS [split B=4 rep0]: 23838720 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [split B=4 rep1]: 23838720 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [unsplit@ppncache B=4]: 23838720 f32 logits BIT-IDENTICAL (0 differing bits)
+-- B=8: reference recorded (24 steps x 8 rows x 248320 f32, door OFF over the sharded placement)
+pp gate PASS [split B=8 rep0]: 47677440 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [split B=8 rep1]: 47677440 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [unsplit@ppncache B=8]: 47677440 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [epilogue B=8]: last-stage device sampling + lean park
+pp mode verdict: 0 failing arm(s); stages=2 fence=[0, 32, 64] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+ALL GREEN: batched PP-2 stage-split exactness battery

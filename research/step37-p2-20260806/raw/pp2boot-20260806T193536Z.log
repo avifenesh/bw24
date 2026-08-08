@@ -1,0 +1,23 @@
+=== step37-p2 FIRST PP-2 BOOT  20260806T193536Z
+=== commit: lane/step37-p2 @ fd5607ff (chat template) — synced 2026-08-06T19:23:36Z
+=== model:  /home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+index, name, memory.total [MiB], memory.used [MiB]
+0, NVIDIA RTX PRO 6000 Blackwell Server Edition, 97887 MiB, 0 MiB
+1, NVIDIA RTX PRO 6000 Blackwell Server Edition, 97887 MiB, 0 MiB
+               total        used        free      shared  buff/cache   available
+Mem:             499           9         351           0         143         490
+
+########## PP-2 boot + 32-token greedy generate ##########
+lock acquired 2026-08-06T19:35:36Z pid=68200
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision: experts 44.12GB + trunk 2.36GB vs free 100.88GB (expert budget 96.52GB) -> RESIDENT
+
+thread 'main' (68214) panicked at crates/memra-engine/src/hybrid.rs:963:22:
+need post_attention_norm or ffn_norm
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+run-gen exit=101 after 21s
+0, 0 MiB
+1, 0 MiB
+lock released 2026-08-06T19:35:57Z
+=== boot rc=101
+=== done 2026-08-06T19:35:57Z

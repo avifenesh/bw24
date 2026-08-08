@@ -21,3 +21,7 @@ path = "src/bin/tok_trim.rs"
 [[bin]]
 name = "tok-freq"
 path = "src/bin/tok_freq.rs"
+
+[[bin]]
+name = "tok-parity"
+path = "src/bin/tok_parity.rs"

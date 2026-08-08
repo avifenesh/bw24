@@ -76,6 +76,37 @@ same-backbone DONOR GGUF that carries the block, trimmed with the TARGET's own r
   Qwen3.6-35B-A3B-UD-IQ4_XS (blk.40) → Ornith-1.0-35B, KAT-Coder-V2.5-Dev
   (receipts: `research/ornith-drafters-20260801/`).
 
+## Targets that ship their NextN head as a SEPARATE file (step35 / Step-3.7-Flash)
+
+StepFun publishes the three chained NextN/MTP blocks in their own GGUF
+(`Step3.7-flash-mtp-Q8_0.gguf`), so the trunk parses `nextn_predict_layers=0` and loads
+with no head. **`nextn=0` on this arch does not mean the model has no drafter** — nothing
+needs to be built, the published head just has to be attached:
+
+```bash
+MEMRA_MODELS="step=/models/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf+/models/Step3.7-flash-mtp-Q8_0.gguf" \
+  ./target/release/memra-server
+```
+
+Same `+draft` convention as every regime drafter above; `MEMRA_MTP_DRAFT=<head.gguf>` is
+the global equivalent. The loader resolves step35's PER-LAYER draft geometry (64 vs 96
+q-heads, the SWA(512) window, the head-wise `attn_gate` width) from the drafter file's own
+arrays, so no geometry flags are involved.
+
+Serve a step35 trunk **without** the head and the server says so at load — one WARN naming
+plain decode and the attach string. Point `+draft` at a path that is missing or unloadable
+and the server **refuses to start** with the cause quoted, rather than quietly serving plain
+decode under a config that asked for spec.
+
+**Spec over PP-2 is live (#87 closed 2026-08-08).** The 2026-08-06 quarantine (sticky
+`CUDA_ERROR_ILLEGAL_ADDRESS` at c>=2, `research/pp2-spec-20260806/`) was the ppN
+reverse-publication hole, fixed by `PpNRt::fence_stages_behind` — crash gate 212/212 at
+c=2..8 on the previously-fatal placement, run-spec K=1..8 PASS with acceptance identical
+to door-shut (`research/pp2spec-crash-20260807/`). Spec + a drafter now boots and serves
+over any PP placement; benchmark placement order (dev01 spec-ON measured ~20x slow on the
+2026-08-06 rig — a scheduling property, not a crash). Receipts:
+`research/step-draft-20260807/`.
+
 ## Prebuilt drafts
 
 Every board model's draft (built by exactly this pipeline, from exactly the published

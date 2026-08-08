@@ -6,12 +6,21 @@
 //! decode steps (greedy), medians over reps. Run AFTER decode-batch-gate is green.
 //!
 //! Usage: decode-batch-bench <model.gguf> [--steps 128] [--reps 5] [--batches 1,2,4,8]
+//!
+//! PP-N (pp2-batch 2026-08-06): every cache here comes from `pp::new_cache`, which is
+//! `Cache::new` verbatim with the door shut and `Cache::new_ppn` with it open. Under an open
+//! door this bench previously allocated STAGE-1's KV on dev0 (primary), so the split path's
+//! remote stage peer-read its own cache every step — a measurement that would have understated
+//! batched PP-N and, worse, looked like a stage-split cost rather than a harness bug. The door
+//! must also be set BEFORE this binary loads (weight sharding is load-time), which it is:
+//! the env is read inside `HybridModel::load_*`.
 
-use memra_engine::cache::Cache;
 use memra_engine::forward::argmax;
 use memra_engine::hybrid::HybridModel;
+use memra_engine::pp::new_cache;
 use memra_engine::Engine;
 use memra_gguf::GgufFile;
+use memra_engine::cache::Cache;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
@@ -36,10 +45,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let chunk: usize = rest.iter().position(|a| a == "--chunk")
         .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(8);
 
-    let e = Engine::new(0)?;
+    // Primary device follows MEMRA_PP_DEVICES[0] when set (ppn-gate's convention): stage 0's
+    // engine IS the primary engine, so a mismatch would make BOTH placement orders run stage 0
+    // through a non-primary engine and quietly stop testing the `dev == primary && s == 0`
+    // shared-engine case. Unset = device 0, byte-identical to the historic bench.
+    let primary_dev: usize = std::env::var("MEMRA_PP_DEVICES").ok()
+        .and_then(|v| v.split(',').next().and_then(|s| s.trim().parse().ok()))
+        .unwrap_or(0);
+    let e = Engine::new(primary_dev)?;
     let g = GgufFile::open(&path)?;
     let model = HybridModel::load_without_mtp(&e, &g)?;
-    println!("loaded {} ({} layers); steps={steps} reps={reps} batches={batches:?}",
+    println!("loaded {} ({} layers); steps={steps} reps={reps} batches={batches:?} \
+              primary_dev={primary_dev}",
              g.arch().unwrap_or("?"), model.layers.len());
 
     if let Some(n_seqs) = seqs {
@@ -51,8 +68,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for i in 0..n_seqs {
             let prompt: Vec<u32> = (0..(prompt_t as u32) + i as u32 * 7)
                 .map(|j| 55 + i as u32 * 97 + j * 31).collect();
-            let mut c = Cache::new(&e, &model.cfg, ctx)?;
-            let _ = model.prime_cache(&e, &prompt, &mut c)?;
+            let mut c = new_cache(&e, &model.cfg, ctx)?;
+            let _ = model.prime_cache(&e, &prompt, &mut c, 0)?;
             toks.push(*prompt.last().unwrap());
             caches.push(c);
         }
@@ -103,8 +120,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for i in 0..b_n {
             let prompt: Vec<u32> = (0..(prompt_t as u32) + i as u32 * 7)
                 .map(|j| 55 + i as u32 * 97 + j * 31).collect();
-            let mut c = Cache::new(&e, &model.cfg, ctx)?;
-            let _ = model.prime_cache(&e, &prompt, &mut c)?;
+            let mut c = new_cache(&e, &model.cfg, ctx)?;
+            let _ = model.prime_cache(&e, &prompt, &mut c, 0)?;
             toks.push(*prompt.last().unwrap());
             caches.push(c);
         }
@@ -152,8 +169,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut toks: Vec<u32> = Vec::new();
         for i in 0..b_n {
             let prompt: Vec<u32> = (0..512u32).map(|j| 55 + i as u32 * 97 + j * 31).collect();
-            let mut c = Cache::new(&e, &model.cfg, 640)?;
-            let _ = model.prime_cache(&e, &prompt, &mut c)?;
+            let mut c = new_cache(&e, &model.cfg, 640)?;
+            let _ = model.prime_cache(&e, &prompt, &mut c, 0)?;
             toks.push(*prompt.last().unwrap());
             caches.push(c);
         }

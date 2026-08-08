@@ -14,7 +14,8 @@
 # stays tier-2); their gate is the SELF-CONSISTENCY PASS line plus the same golden pin on
 # the plain-generate `tokens:` line.
 #
-# One model per KERNEL CLASS the dispatch actually forks on (see map.tsv header):
+# Shared-kernel representatives plus variant probes for loader/dispatch surfaces no representative
+# reaches (see map.tsv header and the per-probe notes below):
 g12	argmax	/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
 # g12d: DEPTH probe (the battery's 1736-id depth prompt) — the gemma fp8-KV g-module FA arms
 # (hd512 dpl16 globals + windowed hd256) actually execute at t_kv ~1740; the 19-id gemma
@@ -26,6 +27,8 @@ g12	argmax	/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf	re
 # stable across every observed run; a 20-token golden false-fails ~1/8.
 g12d	argmax	/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf	research/gemma4-bringup/depth-prompt-1736-ids.txt	16	-
 g31	argmax	/data/ai-ml/hf-models/gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
+# e4b is not a redundant Q4_0 golden: it is the only arm that reaches Gemma-4's per-layer
+# embeddings, KV-sharing loader/forward path, and the E4B-only glue kernels.
 e4b	argmax	/data/ai-ml/hf-models/gemma4-e4b-qat-gguf/gemma-4-E4B_q4_0-it.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
 g26	argmax	/data/ai-ml/hf-models/gemma4-26b-a4b-qat-gguf/gemma-4-26B_q4_0-it.gguf	research/gemma4-bringup/e4b-chat-watercycle-ids.txt	20	-
 q9	argmax	/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf	@tools/fast-gate/prompts/probe.txt	20	-
@@ -53,6 +56,8 @@ q35slru	argmax	/data/ai-ml/hf-models/qwen36-35b-moe/Qwen3.6-35B-A3B-UD-IQ4_XS.gg
 aw35	argmax	/data/ai-ml/hf-models/agentworld-35b-gguf/Qwen-AgentWorld-35B-A3B-UD-IQ4_XS.gguf	@tools/fast-gate/prompts/probe.txt	20	-
 o9	argmax	/data/ai-ml/hf-models/ornith-1.0-9b-gguf/ornith-1.0-9b-Q8_0.gguf	@tools/fast-gate/prompts/probe.txt	20	-
 o35	argmax	/data/ai-ml/hf-models/ornith-1.0-35b-gguf/ornith-1.0-35b-Q4_K_M.gguf	@tools/fast-gate/prompts/probe.txt	20	-
+# kat shares qwen35moe geometry, but it is the only arm with non-expert IQ4_XS trunk weights;
+# it alone reaches qmatvec_iq4_XS_dp4a and the dense IQ4_XS MMQ arm.
 kat	argmax	/data/ai-ml/hf-models/kat-coder-v25-dev-gguf/Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf	@tools/fast-gate/prompts/probe.txt	20	-
 # spec probes (ONE K each — the K=1..8 sweep is tier-2).
 # kind=spec  -> run-spec at MEMRA_SPEC_K (qwen MTP/NextN family); gate = SELF-CONSISTENCY PASS
@@ -82,6 +87,56 @@ g31spec	gspec	/data/ai-ml/hf-models/gemma4-31b-qat-gguf/gemma-4-31B_q4_0-it.gguf
 # gate script's header because this lane wrote it wrong twice.
 chunkinv	cmd	tools/chunk-invariance-gate.sh	-	-	-
 chunkinvc	cmd	tools/chunk-invariance-gate.sh	--canary	-	-
+# chunkinv35/chunkinv35c: the SAME assertion on the LAUNCH SKU (Step-3.7-Flash), whose SWA prefill
+# had its own chunk-variant door — different arch, different mechanism, therefore its own arm
+# (lane/step35-chunkfix, research/step35-chunkfix-20260807). Two things make the qwen arm above
+# blind to it: (1) its pinned prompts are 96/147 tokens, BELOW step35's 512-token SWA window, so
+# every chunk took the same kernel and the gate compared one kernel against itself; (2) its canary
+# seam (MEMRA_PRIME_F32CHUNK0) is read in full_attn_prime_fa_dispatch, which step35 never reaches
+# — the canary was INERT on this arch. This arm fixes both: prompt-pp6257 (T=4883, past the
+# window) and the MEMRA_STEP35_SWA_TKV seam (the pre-fix predicate, chunk-variant by construction).
+# The chunk set spans both sides of the defect's closed form P = c*floor(win/c): 4096/513 gave P=0,
+# 512/256/64 gave P=512, and pre-fix those families disagreed pairwise while agreeing within.
+# Artifact is box-staged (MEMRA_STEP37_GGUF or ~/step37/...); SKIPs cleanly when absent.
+chunkinv35	cmd	tools/chunk-invariance-gate.sh	--label step35-swa --prompts research/chunk-invariance-20260805/prompt-pp6257.txt --chunks 4096,513,512,256,64 --seam MEMRA_STEP35_SWA_TKV --steps 24	-	-
+chunkinv35c	cmd	tools/chunk-invariance-gate.sh	--label step35-swa --prompts research/chunk-invariance-20260805/prompt-pp6257.txt --chunks 4096,513,512,256,64 --seam MEMRA_STEP35_SWA_TKV --steps 24 --canary	-	-
+# tickinv35/tickinv35c: the SECOND segmentation axis on the launch SKU — serve's per-tick
+# prime_cache calls (one per scheduler tick), the level ABOVE chunkinv35's inside-one-call split.
+# Each call computed its own seq_end, so step35's SWA arm predicate differed BETWEEN calls:
+# budgets 1024/513 EXACT, 512/256/64 DIFFER 1.813e0 at greedy step 6 (the original defect's exact
+# signature — research/step35-chunkfix-20260807 §9, raw/tickinv35-20260807T022010Z.log). Dark
+# lanes default to budget 256 AND cap by live SLO headroom = LOAD-DEPENDENT segmentation; the
+# interactive lane is reachable via the prefix-cache LCP split (any LCP in [64,512]) — the
+# --splits arms pin that off-grid-resume hole (vLLM #51113's second law). REGISTERED RED by
+# lane/tick-seg 2026-08-07; the fix in the adjacent commits turns it green. Seam
+# MEMRA_PRIME_CALLLOCAL = rollback to per-call seq_end (tick-variant by construction — teeth).
+tickinv35	cmd	tools/tick-invariance-gate.sh	--label step35-tick --prompts research/chunk-invariance-20260805/prompt-pp6257.txt --budgets 0,1024,513,512,256,64 --splits 64,256,512 --seam MEMRA_PRIME_CALLLOCAL --steps 24	-	-
+tickinv35c	cmd	tools/tick-invariance-gate.sh	--label step35-tick --prompts research/chunk-invariance-20260805/prompt-pp6257.txt --budgets 0,1024,513,512,256,64 --splits 64,256,512 --seam MEMRA_PRIME_CALLLOCAL --steps 24 --canary	-	-
+# ppsplit/ppsplitc: the LEVER-B split-vs-unsplit PRIME bit-identity + liveness gate
+# (lane/pp-leverb, research/pp-leverb-20260807/PROGRESS.md §E). Prime has NO pp stage split —
+# under the sharded PP-2 placement dev1 runs ZERO prefill kernels (anatomy receipt) and prime
+# deliberately keeps no refusal (its unsplit walk = the 22% amortized tax AND this gate's
+# reference arm, MEMRA_PRIME_PP=0). REGISTERED RED 2026-08-08: the split arm requires
+# pp::PRIME_SPLIT_CHUNKS to advance, so the gate fails until the per-stage walker lands.
+# Teacher-forced decode steps read the KV the prime wrote — stage-1 KV byte placement is
+# covered, not just returned logits. Needs the 2-GPU placement; SKIPs on single-GPU rigs
+# (the box battery is the authority). ppsplitc = --canary (forces the split arm unsplit;
+# load-bearing at the walker commit — registered now so the flip cannot be forgotten).
+ppsplit	cmd	tools/prime-split-gate.sh	--devices 0,1 --stages 2 --chunks 4096,513 --steps 8	-	-
+ppsplitc	cmd	tools/prime-split-gate.sh	--devices 0,1 --stages 2 --chunks 4096,513 --steps 8 --canary	-	-
+# b2geo35/b2geo35c: batched-decode GEOMETRY on the launch SKU — step35 served at c=2/c=4 on the
+# DEFAULT batched scheduler over PP-2 must return byte-identical greedy text to the c=1 reference
+# AND prove a B>1 batched step35 tick actually ran (spawn-log chunk cap >= 2 + the engine's
+# one-shot [step35-batch] first-B>1 line). The second assertion is what keeps the gate from going
+# vacuously green under the fail-closed B=1 pin (chunk_cap_for=1 makes identity hold trivially).
+# The pre-fix failure was HTTP-200 GARBAGE: over PP-2 a B>1 tick walked the generic Full arm —
+# global n_head=96 over-reading wq on the 12 full-attn layers, 128-dim rope on all 45 layers, no
+# SWA window, no head-wise gate (research/step-sku-20260807/raw/b2ab-pre-20260807T091553Z.log).
+# REGISTERED RED by lane/step35-batched-decode 2026-08-08; the batched arm's commits turn it
+# green. Canary: MEMRA_STEP35_BATCH=0 re-pins B=1 chunks — the evidence assertion must fail.
+# Needs 2 GPUs + the staged artifact; SKIPs cleanly when absent.
+b2geo35	cmd	tools/step35-b2-geometry-gate.sh	-	-	-
+b2geo35c	cmd	tools/step35-b2-geometry-gate.sh	--canary	-	-
 # gwstress: the MEMRA_GRAPH_WARMUPS=1 pool-growth adversarial gate (lane/graph-warmups) —
 # large<->small session cycles + overlap arm force captures over freed async-pool blocks;
 # bit-identity vs eager is the arbiter (#68's class corrupts without faulting) and the
@@ -89,6 +144,38 @@ chunkinvc	cmd	tools/chunk-invariance-gate.sh	--canary	-	-
 # 3 cycles at tier-1; local-ci runs the full 10). Guards capture_graph + the GraphSession
 # capture/recapture path.
 gwstress	cmd	tools/graph-warmup-stress-gate.sh	/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf 3	-	-
+# isogap/isogapc: the STAGGERED-DEPTH serve isolation contract at the engine tick
+# (lane/iso-gap, task #91, research/iso-gap-20260807/): a session's logits bit-identical
+# solo-vs-coresident ACROSS a fa_split_keys rung boundary — the shape both the equal-depth
+# serve gate and the kernel-check seqs-vs-loop pin were blind to (all their depths sit in one
+# rung). The straddle is placed per-rig (--auto scans the SM-keyed ladder), so the arm has
+# teeth on the 82-SM 5090 AND the 188-SM pod. isogapc = canary (wrong token injected into the
+# co-resident arm's feed; comparator must catch it — changes the WORLD, not the label).
+# NOTE the serve-level solo-vs-loaded byte drift (spec-gate REF/REF_LOAD, byte 1347) is NOT
+# this class: it is the documented b_n==1 fused-trunk<->batched-body config flip at the
+# co-residence boundary (measured: O2==O3S==O3L byte-identical under B1FAST=0+GS=0). This arm
+# pins the within-config isolation that fix relies on.
+isogap	cmd	tools/iso-gap-gate.sh	-	-	-
+isogapc	cmd	tools/iso-gap-gate.sh	--canary	-	-
+# amargin/amarginc: the CALIBRATED prefill-vs-decode argmax gate (lane/q8-argmax,
+# research/q8-argmax-20260806/VERDICT.md). run-gen's own gate asserts forward_last and the
+# decode_step loop agree at ONE position (the last) and calls any disagreement a "cache
+# threading bug" — which is how the 27B Q8_0 x board-2048 pair sat red on the 188-SM pod from
+# v0.69.0 through v0.71.0 with nothing wrong: that position is a THREE-WAY near-tie (top-3
+# inside 0.05, prompt median top-2 gap 1.25) and the two configs pick differently. Refuted as
+# causes: the k27 FA-split rung (8/16/1 identical), MEMRA_Q80_G2, chunked prefill, and every
+# fast kernel at once (the MEMRA_FAST=0 f32 oracle flips the same pair).
+# The real hole this closes is COVERAGE: one-position checking makes greenness depend on
+# whether a prompt's LAST token happens to be a near-tie. Measured — the 27B NVFP4 arm the
+# release battery calls green carries a flip at pos 2042 whose margin (0.0184) is SMALLER than
+# the failing arm's (0.0307). This gate checks the last 24 positions and asserts every flip is
+# explained by a margin the config spread can reach across; a WIDE-margin flip (the genuine
+# cache/kernel-bug signature) fails at any position. amarginc is its teeth: it fault-injects a
+# wide-margin flip row and PASSES only if the comparator rejects it.
+# map.tsv dispatches both arms for the forward_last/decode-step implementation surfaces and
+# for this gate's own wrapper/probe; sampled-spec and served acceptance retain samp/accept.
+amargin	cmd	tools/argmax-margin-gate.sh	-	-	-
+amarginc	cmd	tools/argmax-margin-gate.sh	--canary	-	-
 
 
 # c=64 serving concurrency stress (lane/admit-oom, 2026-08-06): 64 staggered streaming clients
@@ -97,3 +184,15 @@ gwstress	cmd	tools/graph-warmup-stress-gate.sh	/data/ai-ml/hf-models/qwen35-9b-n
 # CUDA_ERROR_OUT_OF_MEMORY) into 64/64 paced. ~2 min (server load + ~60s burst). Its teeth arm
 # lives in local-ci's doc, not here: `tools/serve-stress-gate.sh --teeth`.
 sstress	cmd	tools/serve-stress-gate.sh	-	-	-
+
+# accept: SERVED-SPEC ACCEPTANCE + LONG-TEXT assertion (lane/accept-gate, 2026-08-06). Closes
+# the blind spot receipted in research/f8f4-flip-20260806: every probe above is either a
+# 20-token golden or an in-arm self-consistency check, so a change that moves served greedy text
+# at generated index 22+ AND moves spec acceptance by -9.5pp passes all of them. Worse, a
+# --refresh-goldens after such a change silently re-pins the new arm. This probe asserts exact
+# (rounds, drafted, accepted) counts + the full text sha256 to ngen=128 at the PRODUCTION serve
+# config (real regime drafter, real serve K) — the drafter matters because the acceptance sign
+# follows (model x drafter x prompt) and INVERTED between the bare MTP head and the regime
+# drafter on the same models the same day. Smoke tier here (q27-p1, ~1 min); the 6-cell matrix
+# is `--full`. Teeth: `tools/accept-gate.sh --teeth` (MEMRA_MMQ_F8F4=1 must FAIL it).
+accept	cmd	tools/accept-gate.sh	-	-	-

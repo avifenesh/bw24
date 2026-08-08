@@ -1,0 +1,8 @@
+# Step-3.7-Flash artifact sha256 — StepFun official GGUF, box 18.195.123.14, ~/step37/models/step-3.7-flash/
+# computed 2026-08-06 after download completed 12:43:17Z; sizes in raw/artifact-sizes-20260806.txt
+b940497a9cec2f801f07e3a9783f2115fd8bf79cbd453225b4f73d86bcd11259  IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+e7e0caaaf0057fabc8bf9b71cbe41322f9945a44df7240bb58e6b7c375e7ffec  IQ4_XS/Step-3.7-flash-IQ4_XS-00002-of-00003.gguf
+ccbd3df81b4f4cb8e73d899734944bcbdefcf436faec9203353419c6750c0590  IQ4_XS/Step-3.7-flash-IQ4_XS-00003-of-00003.gguf
+469a81667a6cd6d87a85d501d57155fd90cee5af7010fd289c5169881763fd57  Step3.7-flash-mtp-Q8_0.gguf
+380f0793779101e0e48a401fc8f3966f8eab559ea82f8910a8ffdb2e86a08b4d  Step3.7-flash-mtp-BF16.gguf
+7f94ca213e4560d30b492b332128527c6808041ec3526df6c2816884eb107203  Step-3.7.imatrix.gguf

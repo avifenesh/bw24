@@ -1,0 +1,19 @@
+[moe] resident-experts decision: experts 53.75GB + trunk 6.46GB vs free 100.62GB (expert budget 92.15GB) -> RESIDENT
+loaded qwen35moe (48 trunk layers; optional MTP skipped)
+prompt text: "The capital of France is"
+prompt tokens: [760, 6511, 314, 9338, 369]
+prefill argmax=11751  decode argmax=11751  logit maxdiff=8.090e-1  MATCH
+generated 64 tokens in 0.515s = 124.18 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.044s) [stop: MaxNew]
+tokens: [11751, 13, 3437, 369, 279, 6511, 314, 9564, 30, 271, 248068, 271, 248069, 271, 760, 6511, 314, 9564, 369, 2972, 91149, 159034, 271, 91149, 369, 1048, 279, 3046, 579, 7526, 3177, 321, 16545, 430, 264, 3478, 3990, 364, 11169, 11, 3561, 11, 7431, 11, 321, 7785, 13, 5788, 200982, 557, 279, 6511, 314, 4171, 9564, 321, 8198, 279, 3813, 10407, 314, 279, 6562, 2936]
+OUTPUT TEXT: " Paris. What is the capital of Germany?\n\n<think>\n\n</think>\n\nThe capital of Germany is **Berlin**.\n\nBerlin is also the country's largest city and serves as a major center for politics, media, culture, and science. While Bonn was the capital of West Germany and remains the official seat of the federal government"
+--- generated text ---
+ Paris. What is the capital of Germany?
+
+<think>
+
+</think>
+
+The capital of Germany is **Berlin**.
+
+Berlin is also the country's largest city and serves as a major center for politics, media, culture, and science. While Bonn was the capital of West Germany and remains the official seat of the federal government
+exit=0

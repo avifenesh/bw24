@@ -114,6 +114,25 @@ echo "$R" | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["usage
 PLAIN_MUTEX=$A
 stop_server
 
+# 7b. CACHE-METERING exactness (lane/cache-metering): synthetic shared-prefix workload,
+# per-request usage.prompt_tokens_details.cached_tokens exact against the learning
+# sequence (seed/split/hit + cross-salt cold), /metrics totals closed-form, LCP
+# histogram bucket-exact, per-tenant split exact, economics row crosschecked.
+# MEMRA_SERVE_SPEC=0: the smoke model embeds an MTP head and spec sessions bypass the
+# prefix cache by policy — the gate must run the batched bulk tier the cache serves.
+# A FRESH server so the /metrics counters start from zero (the closed forms assume it).
+echo "== serve-smoke: cache-metering exactness =="
+export MEMRA_SERVE_SPEC=0
+if start_server "smoke=$MODEL"; then
+  python3 tools/cache-meter-gate.py $BASE smoke --n 5 --k 256 --suffix 16 \
+    && PASS "cache-metering accounting exact (per-request + /metrics + economics)" \
+    || FAIL "cache-metering gate"
+  stop_server
+else
+  FAIL "cache-metering server did not start"
+fi
+unset MEMRA_SERVE_SPEC
+
 # 8. spec serving: same greedy prompt must produce IDENTICAL text to plain serving
 if [ -f "$DRAFT" ]; then
   echo "== serve-smoke: spec serving (draft attached) =="
@@ -330,6 +349,65 @@ PY
   unset MEMRA_AFFINITY
 else
   echo "== serve-smoke: spec arm SKIP (no draft at $DRAFT)"
+fi
+
+# 11. GEMMA4 ARM (lane/gemma4-serve-gaps, 2026-08-07). THE GAP THIS CLOSES: every check
+# above runs a qwen-class model, and no gate anywhere booted a gemma4 model under the
+# DEFAULT scheduler — which is exactly where ONE request panicked the worker, the respawn
+# re-panicked, and the process FATALed (decode_step_batch had no gemma4 arm; receipt
+# research/gemma4-serve-20260807/raw/repro-panic-server-*.log). Assertions:
+#   (a) 1 request on the DEFAULT scheduler returns 200 with clean content (gap-1 regression);
+#   (b) generation STOPS at the turn end (finish=stop, no <turn|> in content — the
+#       eog_ids() union) and no channel/turn tag ever reaches content (gap 2);
+#   (c) a thinking-ON request separates: reasoning non-empty, content still clean;
+#   (d) the server survived: /health green after all of it, zero panic lines in the log.
+# same canonical path as local-ci.sh's G12 (MEMRA_G12_MODEL overrides there too)
+GEMMA_MODEL="${GEMMA_MODEL:-/data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf}"
+if [ -f "$GEMMA_MODEL" ]; then
+  echo "== serve-smoke: gemma4 arm (default scheduler; the worker-panic regression) =="
+  if start_server "smoke=$GEMMA_MODEL"; then
+    gchat() { # extra-json-fields
+      curl -sf -m 300 $BASE/v1/chat/completions -H 'Content-Type: application/json' \
+        -d "{\"model\":\"smoke\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: ok\"}],
+             \"max_tokens\":64,\"temperature\":0${1:+,$1}}"
+    }
+    R=$(gchat '')
+    echo "$R" | python3 -c '
+import json,sys
+r = json.load(sys.stdin)
+c = r["choices"][0]["message"].get("content") or ""
+assert c.strip(), "empty content"
+for tag in ("<turn|>", "<|channel>", "<channel|>", "<|turn>"):
+    assert tag not in c, f"tag leak: {tag} in {c!r}"
+assert r["choices"][0]["finish_reason"] == "stop", "did not stop at turn end"
+' && PASS "gemma4 1-request on DEFAULT scheduler (clean content, stop at turn end)" \
+  || FAIL "gemma4 default-scheduler request"
+    R=$(gchat '"reasoning_effort":"low"')
+    echo "$R" | python3 -c '
+import json,sys
+r = json.load(sys.stdin)
+m = r["choices"][0]["message"]
+reasoning = m.get("reasoning") or ""
+c = m.get("content") or ""
+assert reasoning.strip(), "thinking-on: empty reasoning"
+for tag in ("<turn|>", "<|channel>", "<channel|>", "<|turn>"):
+    assert tag not in c, f"tag leak: {tag} in {c!r}"
+assert c.strip(), "thinking-on: empty content"
+' && PASS "gemma4 thinking-on: thought/content separated, tags stay syntax" \
+  || FAIL "gemma4 thought/content separation"
+    curl -sf $BASE/health >/dev/null && PASS "gemma4 server alive after both requests" \
+      || FAIL "gemma4 server died"
+    if grep -q "panicked" /tmp/serve-smoke.log; then
+      FAIL "gemma4 arm: panic in the server log"
+    else
+      PASS "gemma4 arm: zero panics in the server log"
+    fi
+    stop_server
+  else
+    FAIL "gemma4 server did not start"
+  fi
+else
+  echo "== serve-smoke: gemma4 arm SKIP (no model at $GEMMA_MODEL)"
 fi
 
 echo "serve-smoke: $FAILS failed"

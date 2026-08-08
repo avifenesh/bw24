@@ -1,0 +1,14 @@
+k16 vs k32 prime-logits byte-compare (md5-pinned binaries, same commit, seam-only diff)
+binaries: run-gen-k16 286cdfdebc258524862c08c885702b8b / run-gen-k32 50b14843e77e5e93658db44ffa313e83
+gemma: 831999/1048576 bytes differ | n=262144 maxdiff=1.656e+00 absmax=17.862 rel=9.273e-02
+  argmax k16=236786 k32=236786 MATCH | top10 set_equal=True order_equal=False
+  top10 k16=[236786, 2699, 236779, 107, 501, 3334, 634, 575, 650, 1340]
+  top10 k32=[236786, 2699, 236779, 107, 3334, 501, 575, 650, 634, 1340]
+kat: 733381/993280 bytes differ | n=248320 maxdiff=6.688e-01 absmax=12.471 rel=5.363e-02
+  argmax k16=271 k32=271 MATCH | top10 set_equal=False order_equal=False
+  top10 k16=[271, 198, 5059, 588, 3053, 1358, 319, 3833, 248044, 248046]
+  top10 k32=[271, 198, 5059, 588, 1358, 3053, 319, 3833, 26, 248044]
+
+VERDICT: NOT bit-identical — the audit's claim held for the s32 accumulator merge but
+missed the f32 fold: k16 rounds C0*d and C1*d separately then adds; k32 rounds (C0+C1)*d
+once. Branch-(b) exactness discipline applies (argmax/spec/closeness gates, not byte bar).

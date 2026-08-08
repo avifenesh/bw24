@@ -1,0 +1,3 @@
+505d6a9c4c3b7c0dde13a89654778ca7  target/release/kernel-check
+5eb89f5e802b5bc991c3d640aa382393  target/release/run-gen
+4394234a4a8ceac521109796b78039f6  target/release/memra-server

@@ -38,10 +38,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let tl = bucket;
         let prompt: Vec<u32> = (0..tl as u32).map(|j| 55 + j * 31).collect();
         let mut c1 = Cache::new(&e, &model.cfg, bucket + steps + 8)?;
-        let (l1, _, _) = model.prime_cache(&e, &prompt, &mut c1)?;
+        let (l1, _, _) = model.prime_cache(&e, &prompt, &mut c1, 0)?;
         let _pool_shift = e.uninit(12345)?;   // perturb subsequent transient addresses
         let mut c2 = Cache::new(&e, &model.cfg, bucket + steps + 8)?;
-        let (l2, _, _) = model.prime_cache(&e, &prompt, &mut c2)?;
+        let (l2, _, _) = model.prime_cache(&e, &prompt, &mut c2, 0)?;
         let (mut ta, mut tb) = (argmax(&l1) as u32, argmax(&l2) as u32);
         let mut div_at: Option<usize> = if ta == tb { None } else { Some(0) };
         for st in 1..=steps {
@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let mut c_e = Cache::new(&e, &model.cfg, bucket + steps + 8)?;
-        let (l_e, _, _) = model.prime_cache(&e, &prompt, &mut c_e)?;
+        let (l_e, _, _) = model.prime_cache(&e, &prompt, &mut c_e, 0)?;
         let mut t_e = argmax(&l_e) as u32;
 
         let mut c_g = Cache::new(&e, &model.cfg, bucket + steps + 8)?;

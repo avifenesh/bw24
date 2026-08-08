@@ -5,12 +5,24 @@
 //! Engine + every loaded HybridModel (CUDA context is thread-affine). Handlers submit `Cmd`s over a
 //! std mpsc channel and receive tokens back over a per-request tokio mpsc channel.
 //!
-//! Endpoints:
-//!   GET  /health                 -> {"status":"ok"|"draining","models":[...]}
-//!   GET  /models                 -> {"data":[{"id":name},...]}  (OpenAI-ish)
-//!   GET  /v1/models              -> OR-schema model list (context_length, architecture,
-//!                                     pricing stub, top_provider; serve-tail 2026-08-04).
+//! Endpoints (the full set — `router()` below is the authority):
+//!   GET  /health, GET /livez     -> the SAME handler (`health_live`): INFERENCE liveness, not
+//!                                     process liveness. {"status":"ok"|"draining"|"unhealthy",
+//!                                     "models":[...], "worker":{phase, beat_age_ms, tick_max_ms,
+//!                                     stall_threshold_ms, generation, xid_warnings}} + a
+//!                                     top-level "detail" on a red. Draining stays 200; dead /
+//!                                     GPU-faulted / stalled / loading is 503 (serve-hardening
+//!                                     2026-08-06).
+//!   GET  /readyz                 -> routability, same payload shape with
+//!                                     "status":"ready"|"not_ready". Unready is NOT a restart
+//!                                     request — draining and loading are healthy-but-unroutable.
+//!   GET  /models                 -> {"data":[{"id":name},...]}  (OpenAI-ish);
+//!                                     ?schema=openrouter -> Provider Monitor schema 2.4.
+//!   GET  /v1/models              -> existing catalog-style model list (context_length,
+//!                                     architecture, pricing stub, top_provider; serve-tail).
 //!   GET  /metrics                -> flat serving counters + step latency percentiles.
+//!   GET  /yield/metrics          -> per-lane x-lane QoS counters + engine-truth step p50/p99
+//!                                     (lane/qos-p95 2026-08-02).
 //!   POST /v1/completions         -> {model,prompt|prompt_ids,max_tokens,temperature?,top_p?,top_k?,
 //!                                     seed?,stop?,chat?,stream?,cache_salt?}. stream=true => SSE
 //!                                     token-by-token; else a single JSON {text,tokens,stop_reason}.
@@ -39,6 +51,14 @@
 /// controllers (the sidecar shape) can share them.
 pub(crate) mod auth;
 pub(crate) mod constrained;
+/// Dead-darklane background jobs (lane/darklane-training, 2026-08-07): valley detection over
+/// worker truth (phase + beat age + pending admits) and a yield-first background job runner —
+/// a lane class BELOW every serving lane. Engine mechanics only; policy lives product-side.
+pub(crate) mod darklane;
+/// Inference-liveness state (lane/serve-hardening, gaps G5 + G24): the worker heartbeat every
+/// health answer is derived from, the Xid/GPU-fault watcher, and the sd_notify half of the
+/// systemd contract. Process liveness is NOT inference liveness — this module is the difference.
+pub(crate) mod health;
 pub(crate) mod lanes { pub use memra_lanes::*; }
 mod toolcall;
 mod worker;
@@ -49,7 +69,7 @@ use std::sync::mpsc::Sender;
 
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::{sse::{Event as SseEvent, Sse}, IntoResponse, Response},
     routing::{get, post},
@@ -63,11 +83,269 @@ use memra_tokenizer::chat::{ThinkMode, ToolCall as TmplToolCall, Turn as TmplTur
 use toolcall::{ParsedToolCall, Piece, ToolStreamParser};
 use worker::{Cmd, Event, ModelCaps, Request, SharedMetrics};
 
+const OPENROUTER_SCHEMA_VERSION: &str = "2.4";
+const JSON_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenRouterMetadataFile {
+    #[serde(default)]
+    models: HashMap<String, OpenRouterModelMetadata>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenRouterModelMetadata {
+    #[serde(default)]
+    hugging_face_id: Option<String>,
+    #[serde(default)]
+    created: Option<u64>,
+    #[serde(default)]
+    quantization: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    max_prompt_length: Option<u64>,
+    #[serde(default)]
+    max_output_length: Option<u64>,
+    #[serde(default)]
+    pricing: OpenRouterPricing,
+    #[serde(default)]
+    capacity: OpenRouterCapacity,
+    #[serde(default)]
+    is_ready: Option<bool>,
+    #[serde(default)]
+    is_free: Option<bool>,
+    #[serde(default)]
+    discount_to_user: Option<f64>,
+    #[serde(default)]
+    openrouter_slug: Option<String>,
+    #[serde(default)]
+    datacenters: Vec<OpenRouterDatacenter>,
+    #[serde(default)]
+    zdr: Option<bool>,
+    #[serde(default)]
+    hipaa: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenRouterPricing {
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    cached_prompt: Option<String>,
+    #[serde(default)]
+    cache_write: Option<String>,
+    #[serde(default)]
+    completion: Option<String>,
+    #[serde(default)]
+    internal_reasoning: Option<String>,
+    #[serde(default)]
+    request: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenRouterCapacity {
+    #[serde(default)]
+    prompt_tpm: Option<u64>,
+    #[serde(default)]
+    cached_prompt_tpm: Option<u64>,
+    #[serde(default)]
+    completion_tpm: Option<u64>,
+    #[serde(default)]
+    request_rpm: Option<u64>,
+    #[serde(default)]
+    concurrency: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct OpenRouterDatacenter {
+    country_code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    region: Option<String>,
+}
+
+impl OpenRouterMetadataFile {
+    fn from_toml(text: &str) -> Result<HashMap<String, OpenRouterModelMetadata>, String> {
+        let file: Self = toml::from_str(text)
+            .map_err(|e| format!("models metadata TOML parse: {e}"))?;
+        for (alias, metadata) in &file.models {
+            validate_openrouter_metadata(alias, metadata)?;
+        }
+        Ok(file.models)
+    }
+}
+
+fn valid_price_string(value: &str) -> bool {
+    let mut parts = value.split('.');
+    let whole = parts.next().unwrap_or_default();
+    let fraction = parts.next();
+    !whole.is_empty()
+        && whole.bytes().all(|b| b.is_ascii_digit())
+        && fraction.is_none_or(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+        && parts.next().is_none()
+}
+
+fn validate_openrouter_metadata(
+    alias: &str,
+    metadata: &OpenRouterModelMetadata,
+) -> Result<(), String> {
+    if alias.is_empty() {
+        return Err("models metadata contains an empty model alias".into());
+    }
+    if let Some(q) = metadata.quantization.as_deref()
+        && !matches!(
+            q,
+            "int4" | "int8" | "fp4" | "mxfp4" | "nvfp4" | "fp6" | "fp8" | "mxfp8"
+                | "fp16" | "bf16" | "fp32"
+        )
+    {
+        return Err(format!(
+            "model {alias:?}: quantization {q:?} is not in the OpenRouter schema 2.4 enum"
+        ));
+    }
+    for (field, value) in [
+        ("pricing.prompt", metadata.pricing.prompt.as_deref()),
+        (
+            "pricing.cached_prompt",
+            metadata.pricing.cached_prompt.as_deref(),
+        ),
+        (
+            "pricing.cache_write",
+            metadata.pricing.cache_write.as_deref(),
+        ),
+        (
+            "pricing.completion",
+            metadata.pricing.completion.as_deref(),
+        ),
+        (
+            "pricing.internal_reasoning",
+            metadata.pricing.internal_reasoning.as_deref(),
+        ),
+        ("pricing.request", metadata.pricing.request.as_deref()),
+    ] {
+        if let Some(value) = value
+            && !valid_price_string(value)
+        {
+            return Err(format!(
+                "model {alias:?}: {field} must be a non-negative per-unit USD decimal string"
+            ));
+        }
+    }
+    for (field, value) in [
+        ("created", metadata.created),
+        ("max_prompt_length", metadata.max_prompt_length),
+        ("max_output_length", metadata.max_output_length),
+        ("capacity.prompt_tpm", metadata.capacity.prompt_tpm),
+        (
+            "capacity.cached_prompt_tpm",
+            metadata.capacity.cached_prompt_tpm,
+        ),
+        (
+            "capacity.completion_tpm",
+            metadata.capacity.completion_tpm,
+        ),
+        ("capacity.request_rpm", metadata.capacity.request_rpm),
+        ("capacity.concurrency", metadata.capacity.concurrency),
+    ] {
+        if let Some(value) = value
+            && value > JSON_SAFE_INTEGER_MAX
+        {
+            return Err(format!(
+                "model {alias:?}: {field} exceeds OpenRouter's JSON safe-integer maximum"
+            ));
+        }
+    }
+    for (field, value) in [
+        ("max_prompt_length", metadata.max_prompt_length),
+        ("max_output_length", metadata.max_output_length),
+        ("capacity.prompt_tpm", metadata.capacity.prompt_tpm),
+        (
+            "capacity.cached_prompt_tpm",
+            metadata.capacity.cached_prompt_tpm,
+        ),
+        (
+            "capacity.completion_tpm",
+            metadata.capacity.completion_tpm,
+        ),
+        ("capacity.request_rpm", metadata.capacity.request_rpm),
+        ("capacity.concurrency", metadata.capacity.concurrency),
+    ] {
+        if value == Some(0) {
+            return Err(format!(
+                "model {alias:?}: {field} must be greater than zero when declared"
+            ));
+        }
+    }
+    if let Some(discount) = metadata.discount_to_user
+        && (!discount.is_finite() || discount >= 1.0)
+    {
+        return Err(format!(
+            "model {alias:?}: discount_to_user must be finite and less than 1"
+        ));
+    }
+    if metadata
+        .openrouter_slug
+        .as_deref()
+        .is_some_and(str::is_empty)
+    {
+        return Err(format!(
+            "model {alias:?}: openrouter_slug must not be empty when declared"
+        ));
+    }
+    for dc in &metadata.datacenters {
+        if dc.country_code.len() != 2
+            || !dc.country_code.bytes().all(|b| b.is_ascii_uppercase())
+        {
+            return Err(format!(
+                "model {alias:?}: datacenter country_code {:?} must be two uppercase ASCII letters",
+                dc.country_code
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn load_openrouter_metadata(
+    models: &[(String, String, Option<String>)],
+) -> Result<HashMap<String, OpenRouterModelMetadata>, String> {
+    let path = match std::env::var("MEMRA_MODEL_METADATA") {
+        Ok(path) => path,
+        Err(_) => return Ok(HashMap::new()),
+    };
+    let p = std::path::Path::new(&path);
+    if !p.is_file() {
+        return Err(format!(
+            "MEMRA_MODEL_METADATA={path:?} is not an existing TOML file"
+        ));
+    }
+    let text = std::fs::read_to_string(p)
+        .map_err(|e| format!("MEMRA_MODEL_METADATA {path:?}: {e}"))?;
+    let metadata = OpenRouterMetadataFile::from_toml(&text)
+        .map_err(|e| format!("MEMRA_MODEL_METADATA {path:?}: {e}"))?;
+    for alias in metadata.keys() {
+        if !models.iter().any(|(name, _, _)| name == alias) {
+            return Err(format!(
+                "MEMRA_MODEL_METADATA {path:?}: model alias {alias:?} is not present in MEMRA_MODELS"
+            ));
+        }
+    }
+    eprintln!(
+        "[server] OpenRouter metadata loaded: {} model(s) from {path}",
+        metadata.len()
+    );
+    Ok(metadata)
+}
+
 #[derive(Clone)]
 struct AppState {
     cmd_tx: Sender<Cmd>,
     models: Arc<Vec<String>>,
     caps: Arc<HashMap<String, ModelCaps>>,
+    openrouter_metadata: Arc<HashMap<String, OpenRouterModelMetadata>>,
     metrics: SharedMetrics,
     /// unix seconds at worker-ready — the /v1/models `created` value (when this server
     /// instance made the model available; the honest timestamp we actually know).
@@ -79,6 +357,14 @@ struct AppState {
     /// per-tenant in-flight gauge (lane/api-keys): keyed by tenant id, same RAII life as
     /// the lane gauge — drives per-key rate-limit overrides + their headers.
     tenant_inflight: TenantGauge,
+    /// inference liveness (lane/serve-hardening, G5): the GPU worker's heartbeat + phase +
+    /// fault latches, shared with the worker thread and the Xid watcher. /health, /livez and
+    /// /readyz read ONLY this — never "the process is up".
+    health: health::SharedHealth,
+    /// dead-darklane background job observability (lane/darklane-training): the runner's
+    /// shared counters + its yield mode, for the /metrics "bg" block. None when MEMRA_BG_JOB
+    /// is unset — the block is absent and the payload byte-identical to pre-lane.
+    bg: Option<(Arc<darklane::BgJobState>, &'static str)>,
 }
 
 // ---- rate-limit headers (serve-tail lane, 2026-08-04; gap-scan F12) ----
@@ -115,18 +401,25 @@ struct InflightGuard {
 }
 
 impl InflightGuard {
-    /// Returns the guard + the (lane, tenant) in-flight counts INCLUDING this request.
-    fn acquire(counts: InflightCounts, lane: lanes::Lane, tenants: TenantGauge,
-               tenant: &str) -> (Self, usize, usize) {
+    /// Atomically enforce a binding tenant cap, then return the guard + the (lane, tenant)
+    /// in-flight counts INCLUDING this request. The tenant mutex closes the two-arrivals-at-
+    /// once race: at cap, exactly one request wins and the other returns the existing count.
+    fn try_acquire(counts: InflightCounts, lane: lanes::Lane, tenants: TenantGauge,
+                   tenant: &str, tenant_cap: Option<usize>)
+        -> Result<(Self, usize, usize), usize>
+    {
         let idx = lane.idx();
-        let n = counts[idx].fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         let nt = {
             let mut m = tenants.lock().unwrap();
             let e = m.entry(tenant.to_string()).or_insert(0);
+            if tenant_cap.is_some_and(|cap| *e >= cap) {
+                return Err(*e);
+            }
             *e += 1;
             *e
         };
-        (InflightGuard { counts, idx, tenants, tenant: tenant.to_string() }, n, nt)
+        let n = counts[idx].fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        Ok((InflightGuard { counts, idx, tenants, tenant: tenant.to_string() }, n, nt))
     }
 }
 
@@ -198,15 +491,18 @@ fn drain_deadline_s() -> u64 {
 
 /// 503 for a request that arrived during drain: OpenAI error object + Retry-After
 /// (the drain window — by then this instance is gone and its replacement is up).
+///
+/// Goes through the SAME retry contract as every engine-fault class (G6): a `code` clients can
+/// branch on, the `retry-after-ms` twin openai-python reads FIRST, and the value clamped to
+/// 60 s because litellm ignores anything above that and openai-python abandons the retry past
+/// 120 s. It predates the taxonomy and was the one 503 on the surface still emitting a bare
+/// `Retry-After` with no code and no ms twin — i.e. a client that trusted `retry-after-ms`
+/// exclusively saw no window at all on the most predictable outage memra has.
 fn drain_response() -> Response {
-    let mut resp = error_response(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "server is draining (shutdown in progress); retry",
-        "server_error", None);
-    if let Ok(v) = axum::http::HeaderValue::from_str(&drain_deadline_s().to_string()) {
-        resp.headers_mut().insert(axum::http::header::RETRY_AFTER, v);
-    }
-    resp
+    let resp = (StatusCode::SERVICE_UNAVAILABLE,
+        Json(error_body("server is draining (shutdown in progress); retry",
+                        "server_error", None, Some("draining")))).into_response();
+    retry_contract_response(resp, Some(drain_deadline_s()))
 }
 
 /// One request's header values, computed at submission time (the "at admit" snapshot).
@@ -257,6 +553,32 @@ impl RateLimit {
             }
         }
         resp
+    }
+}
+
+/// Take the HTTP-layer request slot or reject a tenant whose configured override is already
+/// full. Global interactive capacity still queues as before; this gate exists only when the
+/// key's override is narrower than the lane cap.
+fn acquire_request_slot(st: &AppState, lane: lanes::Lane, tenant: &auth::TenantCtx,
+                        env: &Envelope) -> Result<(InflightGuard, RateLimit), Response> {
+    let global = lane_cap(lane);
+    let tenant_cap = tenant.rate_limit.filter(|&cap| cap < global);
+    match InflightGuard::try_acquire(
+        st.inflight.clone(), lane, st.tenant_inflight.clone(), &tenant.tenant, tenant_cap,
+    ) {
+        Ok((guard, n_inflight, n_tenant)) => {
+            let rl = RateLimit::at_admit(lane, n_inflight, &st.metrics, tenant, n_tenant);
+            Ok((guard, rl))
+        }
+        Err(n_tenant) => {
+            let n_inflight =
+                st.inflight[lane.idx()].load(std::sync::atomic::Ordering::SeqCst);
+            let rl = RateLimit::at_admit(
+                lane, n_inflight, &st.metrics, tenant, n_tenant);
+            let error = worker::EngineError::rate_limit(
+                "api key concurrent request limit reached; retry");
+            Err(rl.attach(with_request_id(&env.id, engine_error_response(&error))))
+        }
     }
 }
 
@@ -452,9 +774,11 @@ struct ChatCompletionReq {
     /// "auto" (default) | "none". "required"/named-function need constrained decoding -> 400.
     #[serde(default)]
     tool_choice: Option<serde_json::Value>,
-    /// OpenAI reasoning effort: none|minimal|low -> the template's no-think switch;
-    /// medium|high -> the template default (open think). Models without a think switch
-    /// ignore the parameter gracefully.
+    /// OpenAI reasoning effort — ONE surface, per-arch native mapping (see `parse_think`'s
+    /// table): low|medium|high = thinking ON at that budget, none|minimal = thinking OFF,
+    /// absent = the model's own default. Binary-switch templates (qwen enable_thinking,
+    /// gemma4) take the on/off half; level-consuming templates (step35 `Reasoning:`,
+    /// hy3 `reasoning_effort:`) also receive the level.
     #[serde(default)]
     reasoning_effort: Option<String>,
     /// OpenRouter object form: {"effort": "...", "enabled": bool, "exclude": bool}
@@ -674,11 +998,134 @@ fn error_body(message: &str, etype: &str, param: Option<&str>, code: Option<&str
 
 fn error_response(status: StatusCode, message: &str, etype: &str, param: Option<&str>)
     -> Response {
-    (status, Json(error_body(message, etype, param, None))).into_response()
+    error_response_coded(status, message, etype, param, None)
+}
+
+/// Same, with an explicit OpenAI `code`. Handler-layer refusals (auth, lane, request parsing)
+/// land here; engine-produced faults land in `engine_error_response`. Both attach
+/// `x-should-retry: false` on a 4xx that retrying the identical bytes cannot fix, so the two
+/// halves of the surface behave identically to a client that retries by status alone.
+fn error_response_coded(status: StatusCode, message: &str, etype: &str,
+                        param: Option<&str>, code: Option<&str>) -> Response {
+    let mut resp = (status, Json(error_body(message, etype, param, code))).into_response();
+    if status.is_client_error() && status != StatusCode::TOO_MANY_REQUESTS
+        && status != StatusCode::REQUEST_TIMEOUT && status != StatusCode::CONFLICT {
+        resp.headers_mut()
+            .insert("x-should-retry", axum::http::HeaderValue::from_static("false"));
+    }
+    resp
 }
 
 fn bad_request(message: &str, param: Option<&str>) -> Response {
     error_response(StatusCode::BAD_REQUEST, message, "invalid_request_error", param)
+}
+
+// ---- engine-fault taxonomy -> HTTP (lane/serve-hardening, G6) --------------------------
+//
+// WHAT THIS REPLACES. Every worker failure — CUDA errors, VRAM exhaustion, admission sheds,
+// tokenizer failures, graph faults — used to funnel into ONE line: `bad_request(&msg, None)`,
+// i.e. HTTP 400 invalid_request_error. That is wrong in both directions and both directions
+// cost money:
+//   * a client SDK never retries a 400 (openai-python retries 408/409/429/>=500 only), so a
+//     transient capacity blip became a hard user-visible failure with no retry;
+//   * a router cannot tell "your request was malformed" from "my GPU fell over", so it keeps
+//     sending traffic to a broken box instead of failing over.
+// The class now comes from the PRODUCER (worker.rs::EngineError), not from re-guessing at the
+// HTTP layer, with exactly one deliberate text rule (`is_cuda_oom` -> Overloaded).
+//
+// THE RETRY CONTRACT, verified against the client code rather than the docs:
+//   * `Retry-After` is INTEGER seconds (RFC 9110 §10.2.3 delay-seconds — a float here is
+//     simply unparseable), and openai-python ABANDONS the retry entirely if the value exceeds
+//     its MAX_RETRY_AFTER_DELAY of 120 s. litellm honors the header only for 0 < v <= 60.
+//     So every value memra emits is an integer and <= 60.
+//   * `retry-after-ms` is read FIRST by openai-python, which lets us express sub-second
+//     backoff to SDKs that support it while the integer header stays correct for everyone
+//     else. Both are sent; they agree.
+//   * `x-should-retry: false` is openai-python's explicit override, used where retrying is
+//     provably pointless (a 400-class fault), so a client that retries by status alone does
+//     not hammer a request that can never succeed.
+const RETRY_AFTER_S_RATE_LIMIT: u64 = 2;   // QoS shed: the lane's own budget window
+const RETRY_AFTER_S_OVERLOADED: u64 = 5;   // VRAM/capacity: needs a session to finish first
+
+/// Status + OpenAI `type` + `code` for one engine error class.
+fn class_http(class: worker::ErrClass) -> (StatusCode, &'static str, Option<&'static str>) {
+    use worker::ErrClass as C;
+    match class {
+        C::InvalidRequest => (StatusCode::BAD_REQUEST, "invalid_request_error", None),
+        C::ContextLength => (StatusCode::BAD_REQUEST, "invalid_request_error",
+                             Some("context_length_exceeded")),
+        C::ModelNotFound => (StatusCode::BAD_REQUEST, "invalid_request_error",
+                             Some("model_not_found")),
+        C::RateLimit => (StatusCode::TOO_MANY_REQUESTS, "rate_limit_error", Some("rate_limit_exceeded")),
+        C::Overloaded => (StatusCode::SERVICE_UNAVAILABLE, "server_error", Some("overloaded")),
+        C::Engine => (StatusCode::INTERNAL_SERVER_ERROR, "server_error", Some("engine_error")),
+    }
+}
+
+/// Retry-After seconds for a class, or None when retrying cannot help.
+fn class_retry_after_s(class: worker::ErrClass) -> Option<u64> {
+    use worker::ErrClass as C;
+    match class {
+        C::RateLimit => Some(RETRY_AFTER_S_RATE_LIMIT),
+        C::Overloaded => Some(RETRY_AFTER_S_OVERLOADED),
+        // An engine fault is not time-bounded: this process may need to be restarted. Say
+        // nothing rather than promise a window we cannot honor — the SDK's own exponential
+        // backoff (500s are retryable by default) is the honest behavior here.
+        C::Engine | C::InvalidRequest | C::ContextLength | C::ModelNotFound => None,
+    }
+}
+
+/// The JSON body for an engine error, shared by the blocking and the streaming paths so a
+/// client sees the SAME object either way.
+fn engine_error_body(e: &worker::EngineError) -> serde_json::Value {
+    let (_, etype, code) = class_http(e.class);
+    error_body(&e.message, etype, e.param, code)
+}
+
+/// Full HTTP response for an engine error: status, OpenAI body, and the retry headers.
+fn engine_error_response(e: &worker::EngineError) -> Response {
+    engine_error_response_with_retry_after(e, class_retry_after_s(e.class))
+}
+
+fn engine_error_response_with_retry_after(
+    e: &worker::EngineError,
+    retry_after_s: Option<u64>,
+) -> Response {
+    let (status, _, _) = class_http(e.class);
+    let resp = (status, Json(engine_error_body(e))).into_response();
+    retry_contract_response(resp, retry_after_s)
+}
+
+/// Apply memra's retry headers to any response body.
+fn retry_contract_response(mut resp: Response, retry_after_s: Option<u64>) -> Response {
+    let status = resp.status();
+    let h = resp.headers_mut();
+    match retry_after_s {
+        Some(secs) => {
+            // Integer seconds in the SDK-honored 1..=60 window (see the contract note above).
+            let secs = secs.clamp(1, 60);
+            if let Ok(v) = axum::http::HeaderValue::from_str(&secs.to_string()) {
+                h.insert(axum::http::header::RETRY_AFTER, v);
+            }
+            if let Ok(v) = axum::http::HeaderValue::from_str(&(secs * 1000).to_string()) {
+                h.insert("retry-after-ms", v);
+            }
+        }
+        None if status.is_client_error() => {
+            // A malformed request, an unknown model, an over-long prompt: retrying the
+            // identical bytes cannot succeed. Say so explicitly.
+            h.insert("x-should-retry", axum::http::HeaderValue::from_static("false"));
+        }
+        None => {}
+    }
+    resp
+}
+
+fn worker_unavailable_response() -> Response {
+    engine_error_response_with_retry_after(
+        &worker::EngineError::overloaded("worker unavailable"),
+        Some(worker::WORKER_RESPAWN_BACKOFF_BASE_S),
+    )
 }
 
 fn stop_reason_to_finish(r: &str) -> &'static str {
@@ -828,19 +1275,38 @@ fn parse_tool_choice(v: &Option<serde_json::Value>) -> Result<ToolChoice, String
     }
 }
 
-/// Map OpenAI `reasoning_effort` / OpenRouter `reasoning` onto the template's think switch.
-/// Absent -> the template's own default (open think on the qwen3.5/3.6 class — verified
-/// against the committed template dumps; NOT overridden here, the byte-identity contract).
+/// Map OpenAI `reasoning_effort` / OpenRouter `reasoning` onto the model's native thinking
+/// control — ONE serve surface, per-arch mechanism (owner directive 2026-08-07: every
+/// supported model is a thinking model).
+///
+/// The OpenAI/OpenRouter convention for reasoning-capable models: `low|medium|high` all mean
+/// reasoning ON at that budget; `none|minimal` request (near-)zero reasoning; OpenRouter's
+/// `reasoning: {enabled: false}` is the explicit off. Absent means the MODEL'S OWN default —
+/// never overridden here (no silent behavior change for existing deployments):
+///
+/// | field value        | ThinkMode | effort level | qwen class      | gemma4        | hy3        | step35            |
+/// |--------------------|-----------|--------------|-----------------|---------------|------------|-------------------|
+/// | (absent)           | Default   | None         | think ON (tmpl) | think OFF     | no_think   | tail always open  |
+/// | none / minimal     | NoThink   | "low"        | closed <think>  | closed channel| no_think   | Reasoning: low    |
+/// | low                | Think     | "low"        | open <think>    | <\|think\|> ON| low        | Reasoning: low    |
+/// | medium             | Think     | "medium"     | open <think>    | <\|think\|> ON| low (clamp)| Reasoning: medium |
+/// | high               | Think     | "high"       | open <think>    | <\|think\|> ON| high       | Reasoning: high   |
+/// | {enabled: false}   | NoThink   | "low"        | closed <think>  | closed channel| no_think   | Reasoning: low    |
+/// | {enabled: true}    | Think     | None         | open <think>    | <\|think\|> ON| low        | (tmpl default)    |
+///
+/// Returns `(think, effort_level)`. `effort_level` rides `Request::reasoning_effort` only
+/// for templates that consume a level string (`ModelCaps::effort_levels`: step35, hy3);
+/// binary-switch templates are carried by `ThinkMode` alone, so their prompts cannot be
+/// perturbed by a level they never read.
 fn parse_think(reasoning_effort: &Option<String>, reasoning: &Option<serde_json::Value>)
-    -> Result<ThinkMode, String> {
+    -> Result<(ThinkMode, Option<String>), String> {
     let mut effort = reasoning_effort.clone();
+    let mut enabled = None;
     if let Some(r) = reasoning {
         match r {
             serde_json::Value::Null => {}
             serde_json::Value::Object(obj) => {
-                if obj.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
-                    return Ok(ThinkMode::NoThink);
-                }
+                enabled = obj.get("enabled").and_then(|v| v.as_bool());
                 if let Some(e) = obj.get("effort").and_then(|v| v.as_str()) {
                     effort = Some(e.to_string());
                 }
@@ -848,13 +1314,23 @@ fn parse_think(reasoning_effort: &Option<String>, reasoning: &Option<serde_json:
             _ => return Err("reasoning must be an object".into()),
         }
     }
-    match effort.as_deref() {
-        None => Ok(ThinkMode::Default),
-        Some("none") | Some("minimal") | Some("low") => Ok(ThinkMode::NoThink),
-        Some("medium") | Some("high") => Ok(ThinkMode::Default),
-        Some(other) => Err(format!(
-            "bad reasoning_effort {other:?} (none|minimal|low|medium|high)")),
+    if enabled == Some(false) {
+        // OpenRouter "thinking off": the strongest off-request either surface can express.
+        return Ok((ThinkMode::NoThink, Some("low".to_string())));
     }
+    let (think, level) = match effort.as_deref() {
+        None => (
+            if enabled == Some(true) { ThinkMode::Think } else { ThinkMode::Default },
+            None,
+        ),
+        Some("none") | Some("minimal") => (ThinkMode::NoThink, Some("low".to_string())),
+        Some("low") => (ThinkMode::Think, Some("low".to_string())),
+        Some("medium") => (ThinkMode::Think, Some("medium".to_string())),
+        Some("high") => (ThinkMode::Think, Some("high".to_string())),
+        Some(other) => return Err(format!(
+            "bad reasoning_effort {other:?} (none|minimal|low|medium|high)")),
+    };
+    Ok((think, level))
 }
 
 /// Validate tool schemas and pre-serialize them for the template's <tools> block; also
@@ -928,26 +1404,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     auth::init_from_env();
 
     let models = parse_models_config();
+    let openrouter_metadata = match load_openrouter_metadata(&models) {
+        Ok(metadata) => metadata,
+        Err(err) => {
+            eprintln!("[server] FATAL: {err}");
+            std::process::exit(1);
+        }
+    };
     eprintln!("[server] starting; models config = {models:?}");
 
+    // Inference-liveness state (G5). Created BEFORE the worker so the whole weight load is
+    // observable as PHASE_LOADING rather than as a gap: /livez and /readyz answer honestly
+    // from the first accepted connection, which is what a supervisor's Type=notify +
+    // WatchdogSec contract and a load balancer's readiness probe both need.
+    let health_state = health::WorkerHealth::new();
+    // GPU-fault watchers (G24) start before the load too: an Xid that fires DURING a 120 s
+    // weight load is exactly the case a post-load watcher misses. spawn_gpu_watch owns the
+    // Xid tail as well (one call, two threads).
+    health::spawn_gpu_watch(health_state.clone());
+    health::spawn_sd_watchdog(health_state.clone());
+
     // Spawn the GPU worker thread and block until every model is loaded (or it fails).
-    let (cmd_tx, model_names, caps, metrics) = match worker::spawn(models) {
+    let (cmd_tx, model_names, caps, metrics) = match worker::spawn(models, health_state.clone()) {
         Ok(v) => v,
-        Err(err) => { eprintln!("[server] FATAL: worker init failed: {err}"); std::process::exit(1); }
+        Err(err) => {
+            eprintln!("[server] FATAL: worker init failed: {err}");
+            health_state.mark_dead(format!("worker init failed: {err}"));
+            health::sd_notify(&format!("STATUS=worker init failed: {err}"));
+            std::process::exit(1);
+        }
     };
     eprintln!("[server] worker ready; serving models: {model_names:?}");
 
+    // Dead-darklane background job runner (MEMRA_BG_JOB; lane/darklane-training): armed
+    // only after the worker is ready — a weight load is PHASE_LOADING, never a valley.
+    let bg_handle = darklane::spawn_from_env(health_state.clone());
+    let bg_state = bg_handle.as_ref().map(|h| {
+        let mode = darklane::BgConfig::from_env()
+            .map(|c| c.yield_mode.as_str()).unwrap_or("stop");
+        (h.state.clone(), mode)
+    });
+
     let state = AppState {
-        cmd_tx, models: model_names, caps, metrics,
+        cmd_tx, models: model_names, caps,
+        openrouter_metadata: Arc::new(openrouter_metadata),
+        metrics,
         started: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs()).unwrap_or(0),
         inflight: Arc::new(Default::default()),
         tenant_inflight: Arc::new(Default::default()),
+        health: health_state.clone(),
+        bg: bg_state,
     };
     let inflight_handle = state.inflight.clone();
     let app = Router::new()
-        .route("/health", get(health))
+        // /health is the historical name (every memra script polls it) and stays the
+        // LIVENESS probe; /livez + /readyz are the k8s-doctrine split (healthz deprecated
+        // upstream at v1.16). Readiness ≠ liveness: draining or a not-yet-loaded model
+        // takes the box out of ROTATION without asking a supervisor to kill it.
+        .route("/health", get(health_live))
+        .route("/livez", get(health_live))
+        .route("/readyz", get(health_ready))
         .route("/models", get(list_models))
         .route("/v1/models", get(list_models_v1))
         .route("/v1/completions", post(completions))
@@ -959,6 +1477,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = std::env::var("MEMRA_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     eprintln!("[server] listening on http://{addr}");
+    // READY=1 only AFTER the models are resident and the socket is bound — the whole point of
+    // Type=notify is that "started" means "can serve". A no-op when NOTIFY_SOCKET is unset
+    // (i.e. every non-systemd run), so it costs nothing outside a unit.
+    health::sd_notify("READY=1\nSTATUS=serving");
     // GRACEFUL DRAIN (gap-scan F11): SIGTERM flips the drain flag (new completion
     // requests 503 immediately; /health reports "draining"), then the shutdown future
     // resolves once every in-flight request finished (the HTTP-layer gauge — streams
@@ -979,6 +1501,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             sigterm.recv().await;
             DRAINING.store(true, std::sync::atomic::Ordering::SeqCst);
+            // STOPPING=1 + EXTEND_TIMEOUT_USEC: tell systemd the stop is deliberate and how
+            // long the drain may legitimately take, so TimeoutStopSec does not SIGKILL a
+            // healthy drain mid-stream (audit's systemd section).
+            health::sd_notify(&format!(
+                "STOPPING=1\nSTATUS=draining\nEXTEND_TIMEOUT_USEC={}",
+                (drain_deadline_s() + 5) * 1_000_000));
             let n: usize = inflight.iter()
                 .map(|c| c.load(std::sync::atomic::Ordering::SeqCst)).sum();
             eprintln!("[server] SIGTERM: draining ({n} in flight, deadline {}s)",
@@ -1002,6 +1530,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .await?;
+    // Background job cleanup on the graceful path: SIGCONT+SIGTERM(+KILL past grace) the
+    // job's process group — a SIGSTOPped orphan would stay frozen forever. The ungraceful
+    // path (server SIGKILL) is covered by PDEATHSIG on the child.
+    if let Some(h) = bg_handle {
+        h.shutdown();
+    }
     Ok(())
 }
 
@@ -1062,7 +1596,33 @@ fn parse_models_config() -> Vec<(String, String, Option<String>)> {
                     eprintln!("[server] FATAL: model {name:?}: {err}");
                     std::process::exit(1);
                 }
-                out.push((name.trim().to_string(), mpath, dpath.map(resolve)));
+                // The DRAFT path gets the same parse-time existence check as the model path
+                // (lane/step-draft, 2026-08-07). It did not, and the asymmetry cost a class of
+                // late failure: a typo'd or unmounted drafter path survived parse, survived the
+                // hf resolve, and only failed after the worker had already spent the whole
+                // trunk load on the GPU — so on a busy card the operator got
+                // `CUDA_ERROR_OUT_OF_MEMORY` on the TRUNK and never learned the drafter path
+                // was wrong at all. Found by this lane's own gate arm D. A drafter must be a
+                // FILE: `load_draft` opens it as a GGUF, so the dir forms `validate_model_path`
+                // admits are not valid here.
+                let dpath = dpath.map(|d| {
+                    let d = resolve(d);
+                    let p = std::path::Path::new(&d);
+                    if !p.exists() {
+                        eprintln!("[server] FATAL: model {name:?}: drafter path {d:?} does not \
+                                   exist (MEMRA_MODELS '+draft' attach). Refusing to start \
+                                   rather than serving plain decode under a config that asked \
+                                   for speculative decoding.");
+                        std::process::exit(1);
+                    }
+                    if !p.is_file() {
+                        eprintln!("[server] FATAL: model {name:?}: drafter path {d:?} is not a \
+                                   file — a '+draft' attach must be a NextN/MTP GGUF file.");
+                        std::process::exit(1);
+                    }
+                    d
+                });
+                out.push((name.trim().to_string(), mpath, dpath));
             } else {
                 eprintln!("[server] WARN: bad MEMRA_MODELS entry {entry:?} (want name=/path[+/draft]); skipping");
             }
@@ -1076,16 +1636,93 @@ fn parse_models_config() -> Vec<(String, String, Option<String>)> {
     ]
 }
 
-async fn health(State(st): State<AppState>) -> impl IntoResponse {
-    // "draining" = the LB/orchestrator not-ready signal (gap-scan F11): the process is
-    // finishing in-flight work and will exit; route new traffic elsewhere.
-    let status = if draining() { "draining" } else { "ok" };
-    Json(json!({ "status": status, "models": *st.models }))
+/// Shared body for both probes: the honest state, plus the numbers that explain it.
+fn health_payload(st: &AppState, status: &str, detail: Option<&str>) -> serde_json::Value {
+    let s = st.health.snapshot();
+    let mut v = json!({
+        "status": status,
+        "models": *st.models,
+        "worker": {
+            "phase": health::phase_name(s.phase),
+            "beat_age_ms": s.beat_age_ms,
+            "tick_max_ms": s.tick_max_ms,
+            "stall_threshold_ms": s.stall_threshold_ms,
+            "generation": s.generation,
+            "xid_warnings": s.xid_warns,
+        },
+    });
+    if let Some(d) = detail {
+        v["detail"] = json!(d);
+    }
+    v
+}
+
+/// LIVENESS (`/health`, `/livez`) — INFERENCE liveness, not process liveness (G5).
+///
+/// WHAT CHANGED AND WHY. The old handler returned 200 whenever the HTTP task was scheduled:
+/// a panicked GPU worker, a wedged GPU, a poisoned CUDA context — all reported "ok" forever,
+/// on a box that answered nothing. Now the answer is derived ONLY from worker state: a
+/// heartbeat the scheduler loop stamps every iteration, the panic/GPU fault latches, and the
+/// load phase.
+///
+/// 503 (dead / GPU-faulted / stalled / still loading) is deliberately a
+/// SUPERVISOR-ACTIONABLE signal — the only recovery for a sticky CUDA fault is restarting the
+/// process, so this endpoint is what makes `Restart=on-failure` + a liveness probe work.
+///
+/// DRAINING stays **200**: a drain is a healthy, deliberate shutdown, and answering 503 here
+/// would invite a supervisor to kill the process in the middle of finishing in-flight
+/// streams. Rotation is `/readyz`'s job — that is the whole reason the two are separate.
+async fn health_live(State(st): State<AppState>) -> impl IntoResponse {
+    if draining() {
+        // "draining" = the LB/orchestrator not-ready signal (gap-scan F11): the process is
+        // finishing in-flight work and will exit; route new traffic elsewhere.
+        return (StatusCode::OK, Json(health_payload(&st, "draining", None))).into_response();
+    }
+    match st.health.live() {
+        Ok(()) => (StatusCode::OK, Json(health_payload(&st, "ok", None))).into_response(),
+        Err(why) => retry_contract_response(
+            (StatusCode::SERVICE_UNAVAILABLE,
+             Json(health_payload(&st, "unhealthy", Some(&why)))).into_response(),
+            Some(worker::WORKER_RESPAWN_BACKOFF_BASE_S),
+        ),
+    }
+}
+
+/// READINESS (`/readyz`) — "should this instance receive traffic right now?"
+///
+/// Ready = model loaded AND worker alive AND not draining. Unready is NOT a request for a
+/// restart: draining and still-loading are both perfectly healthy states that simply must not
+/// be routed to. k8s doctrine (`/livez` + `/readyz`; `healthz` deprecated at v1.16), and ahead
+/// of both vLLM (no readiness endpoint) and TGI (single `/health`).
+///
+/// Queue pressure deliberately does NOT flip readiness: memra's interactive lane queues FIFO
+/// and never sheds, so a deep queue is work in progress, not unreadiness. Capacity backpressure
+/// belongs on the request path as 429/503 (G6), where a client can act on it.
+async fn health_ready(State(st): State<AppState>) -> impl IntoResponse {
+    let is_draining = draining();
+    match st.health.ready(is_draining) {
+        Ok(()) => (StatusCode::OK, Json(health_payload(&st, "ready", None))).into_response(),
+        Err(why) => retry_contract_response(
+            (StatusCode::SERVICE_UNAVAILABLE,
+             Json(health_payload(&st, "not_ready", Some(&why)))).into_response(),
+            Some(if is_draining {
+                drain_deadline_s()
+            } else {
+                worker::WORKER_RESPAWN_BACKOFF_BASE_S
+            }),
+        ),
+    }
 }
 
 /// Flat serving counters + engine-truth step latency percentiles.
 async fn get_metrics(State(st): State<AppState>) -> impl IntoResponse {
     let m = st.metrics.lock().map(|m| m.clone()).unwrap_or_default();
+    // Valley signal (lane/darklane-training): seconds the worker has been COMPLETELY idle
+    // (no active sessions, no queued admissions, no pending HTTP handoffs) — worker truth
+    // via health phase + beat age + the PENDING_ADMITS gauge, no new hot-path cost.
+    // 0.0 the instant there is any work. Always published: the field is the idle sensor
+    // whether or not a background job is configured.
+    let idle_s = darklane::ValleySignal::new(st.health.clone()).idle_seconds();
     let mut body = json!({
         "admitted": m.admitted,
         "completed": m.completed,
@@ -1095,10 +1732,51 @@ async fn get_metrics(State(st): State<AppState>) -> impl IntoResponse {
         // worker-truth prompt caching split (cached = resumed from any KV cache tier).
         "prompt_tokens_in": m.prompt_tokens_in,
         "cached_tokens_in": m.cached_tokens_in,
+        // computed = actually primed; the denominator of the revenue multiplier
+        // (billed prompt tokens / computed prompt tokens — tools/cache_economics.py).
+        "computed_tokens_in": m.prompt_tokens_in.saturating_sub(m.cached_tokens_in),
+        // token-weighted hit ratio: what fraction of admitted prompt tokens were served
+        // from a cache instead of being computed. THE hit-rate receipt number.
+        "cache_hit_token_ratio": if m.prompt_tokens_in > 0 {
+            m.cached_tokens_in as f64 / m.prompt_tokens_in as f64 } else { 0.0 },
         "prefix_cache_hits": m.prefix_hits,
         "prefix_cache_entries": m.prefix_entries,
         "prefix_cache_bytes": m.prefix_bytes,
+        // full prefix-cache counter set (lane/cache-metering): probe outcomes + churn.
+        "prefix_cache_misses": m.prefix_misses,
+        "prefix_cache_inserts": m.prefix_inserts,
+        "prefix_cache_evictions": m.prefix_evictions,
+        "prefix_cache_hit_tokens": m.prefix_hit_tokens,
+        // LCP length histogram: one sample per prefix-cache probe (hit -> served entry
+        // length; miss -> best LCP against the pool). `edges` are lower bucket edges,
+        // last bucket unbounded. The [64,512) window (buckets 4..=6) is the tick-seg
+        // segmentation class — how often real traffic lands there is this histogram's
+        // reason to exist.
+        "lcp_histogram": {
+            "edges": worker::LCP_HIST_EDGES.to_vec(),
+            "counts": m.lcp_hist.to_vec(),
+        },
+        "serve_idle_seconds": (idle_s * 1000.0).round() / 1000.0,
     });
+    // Per-tenant prompt/cached breakdown (composes with PC-ISO tenancy): keyring
+    // deployments key rows by tenant (`t:<tenant>`), no-keyring by raw cache_salt
+    // ("" = the default namespace). ABSENT until the first admit, so a fresh server's
+    // /metrics is otherwise unchanged. Bounded rows; overflow aggregates in "(other)".
+    if !m.ns_tokens.is_empty() {
+        let tenants: serde_json::Map<String, serde_json::Value> = m.ns_tokens.iter()
+            .map(|(ns, [p, c])| (ns.clone(), json!({
+                "prompt_tokens_in": p,
+                "cached_tokens_in": c,
+                "cache_hit_token_ratio": if *p > 0 { *c as f64 / *p as f64 } else { 0.0 },
+            })))
+            .collect();
+        body["tenants"] = serde_json::Value::Object(tenants);
+    }
+    // Background-job block: ABSENT unless MEMRA_BG_JOB armed the runner (pre-lane payload
+    // stays byte-identical for every deployment that doesn't use it).
+    if let Some((bg, mode)) = &st.bg {
+        body["bg"] = bg.to_json(mode);
+    }
     // Spec-decode acceptance telemetry (lane/accept-telemetry — the llama.cpp #26389 /
     // vLLM per-draft-position counter schema). Per model, cumulative since model load
     // (models load once per process — counters reset on restart, never mid-run). The
@@ -1128,12 +1806,303 @@ async fn get_metrics(State(st): State<AppState>) -> impl IntoResponse {
     Json(body)
 }
 
-async fn list_models(State(st): State<AppState>) -> impl IntoResponse {
-    let data: Vec<_> = st.models.iter().map(|m| json!({ "id": m, "object": "model" })).collect();
-    Json(json!({ "object": "list", "data": data }))
+#[derive(Debug, Default, Deserialize)]
+struct ModelsQuery {
+    #[serde(default)]
+    schema: Option<String>,
 }
 
-/// One /v1/models entry in the OpenRouter model schema (serve-tail lane, 2026-08-04).
+fn models_openai_body(models: &[String]) -> serde_json::Value {
+    let data: Vec<_> = models
+        .iter()
+        .map(|m| json!({ "id": m, "object": "model" }))
+        .collect();
+    json!({ "object": "list", "data": data })
+}
+
+fn openrouter_supported_parameters(
+    caps: Option<&ModelCaps>,
+    max_output_length: Option<u64>,
+) -> serde_json::Value {
+    let mut parameters = serde_json::Map::new();
+    for name in [
+        "temperature",
+        "top_p",
+        "min_p",
+        "frequency_penalty",
+        "presence_penalty",
+        "repetition_penalty",
+        "stop",
+    ] {
+        parameters.insert(name.into(), json!({ "type": "unknown" }));
+    }
+    parameters.insert("top_k".into(), json!({ "type": "integer", "min": 0 }));
+    parameters.insert(
+        "seed".into(),
+        json!({ "type": "integer", "min": 0, "max": JSON_SAFE_INTEGER_MAX }),
+    );
+    let mut max_tokens = json!({ "type": "integer", "min": 1, "unit": "token" });
+    if let Some(max) = max_output_length {
+        max_tokens["max"] = json!(max);
+    }
+    parameters.insert("max_tokens".into(), max_tokens);
+    parameters.insert("json_mode".into(), json!({ "type": "boolean" }));
+    parameters.insert(
+        "structured_outputs".into(),
+        json!({ "type": "boolean" }),
+    );
+    if caps.is_some_and(|c| c.tools_branch) {
+        parameters.insert("tools".into(), json!({ "type": "boolean" }));
+        parameters.insert(
+            "tool_choice".into(),
+            json!({ "type": "enum", "values": ["auto", "none"] }),
+        );
+    }
+    if caps.is_some_and(|c| c.qwen_think || c.effort_levels || c.gemma_think) {
+        parameters.insert("reasoning".into(), json!({ "type": "boolean" }));
+    }
+    serde_json::Value::Object(parameters)
+}
+
+fn model_entry_openrouter(
+    name: &str,
+    caps: Option<&ModelCaps>,
+    metadata: Option<&OpenRouterModelMetadata>,
+) -> serde_json::Value {
+    let empty = OpenRouterModelMetadata::default();
+    let metadata = metadata.unwrap_or(&empty);
+    let context_length = caps
+        .map(|c| c.context_length as u64)
+        .filter(|&v| v > 0 && v <= JSON_SAFE_INTEGER_MAX);
+    let tokenizer = caps
+        .map(|c| c.tokenizer.as_str())
+        .filter(|tokenizer| !tokenizer.is_empty());
+
+    let mut input = serde_json::Map::new();
+    input.insert("type".into(), json!("text"));
+    let mut supported_inputs = serde_json::Map::new();
+    if let Some(value) = context_length {
+        supported_inputs.insert(
+            "max_context_length".into(),
+            json!({ "value": value, "unit": "token" }),
+        );
+    }
+    if let Some(value) = metadata.max_prompt_length {
+        supported_inputs.insert(
+            "max_prompt_length".into(),
+            json!({ "value": value, "unit": "token" }),
+        );
+    }
+    if !supported_inputs.is_empty() {
+        input.insert(
+            "supported_inputs".into(),
+            serde_json::Value::Object(supported_inputs),
+        );
+    }
+    let mut input_pricing = Vec::new();
+    for (kind, cost) in [
+        ("prompt", metadata.pricing.prompt.as_deref()),
+        (
+            "cached_prompt",
+            metadata.pricing.cached_prompt.as_deref(),
+        ),
+        ("cache_write", metadata.pricing.cache_write.as_deref()),
+    ] {
+        if let Some(cost) = cost {
+            input_pricing.push(json!({
+                "type": kind,
+                "unit": "token",
+                "cost_usd": cost,
+            }));
+        }
+    }
+    if !input_pricing.is_empty() {
+        input.insert("pricing".into(), serde_json::Value::Array(input_pricing));
+    }
+    let mut input_capacity = Vec::new();
+    for (kind, value) in [
+        ("prompt", metadata.capacity.prompt_tpm),
+        ("cached_prompt", metadata.capacity.cached_prompt_tpm),
+    ] {
+        if let Some(value) = value {
+            input_capacity.push(json!({
+                "type": kind,
+                "unit": "token",
+                "per": "minute",
+                "value": value,
+            }));
+        }
+    }
+    if !input_capacity.is_empty() {
+        input.insert(
+            "capacity".into(),
+            serde_json::Value::Array(input_capacity),
+        );
+    }
+
+    let mut output = serde_json::Map::new();
+    output.insert("type".into(), json!("text"));
+    output.insert(
+        "supported_parameters".into(),
+        openrouter_supported_parameters(caps, metadata.max_output_length),
+    );
+    output.insert("streaming".into(), json!(true));
+    if let Some(value) = metadata.max_output_length {
+        output.insert(
+            "max_length".into(),
+            json!({ "value": value, "unit": "token" }),
+        );
+    }
+    let mut output_pricing = Vec::new();
+    for (kind, cost) in [
+        ("completion", metadata.pricing.completion.as_deref()),
+        (
+            "internal_reasoning",
+            metadata.pricing.internal_reasoning.as_deref(),
+        ),
+    ] {
+        if let Some(cost) = cost {
+            output_pricing.push(json!({
+                "type": kind,
+                "unit": "token",
+                "cost_usd": cost,
+            }));
+        }
+    }
+    if !output_pricing.is_empty() {
+        output.insert(
+            "pricing".into(),
+            serde_json::Value::Array(output_pricing),
+        );
+    }
+    let mut output_capacity = Vec::new();
+    if let Some(value) = metadata.capacity.completion_tpm {
+        output_capacity.push(json!({
+            "type": "completion",
+            "unit": "token",
+            "per": "minute",
+            "value": value,
+        }));
+    }
+    if let Some(value) = metadata.capacity.concurrency {
+        output_capacity.push(json!({
+            "type": "concurrency",
+            "unit": "request",
+            "value": value,
+        }));
+    }
+    if !output_capacity.is_empty() {
+        output.insert(
+            "capacity".into(),
+            serde_json::Value::Array(output_capacity),
+        );
+    }
+
+    let mut entry = serde_json::Map::new();
+    entry.insert("schema_version".into(), json!(OPENROUTER_SCHEMA_VERSION));
+    entry.insert("id".into(), json!(name));
+    entry.insert("name".into(), json!(name));
+    if let Some(value) = metadata.hugging_face_id.as_deref() {
+        entry.insert("hugging_face_id".into(), json!(value));
+    }
+    if let Some(value) = metadata.created {
+        entry.insert("created".into(), json!(value));
+    }
+    if let Some(value) = metadata.quantization.as_deref() {
+        entry.insert("quantization".into(), json!(value));
+    }
+    if let Some(value) = tokenizer {
+        entry.insert("tokenizer".into(), json!(value));
+    }
+    if let Some(value) = metadata.description.as_deref() {
+        entry.insert("description".into(), json!(value));
+    }
+    entry.insert(
+        "input_modalities".into(),
+        serde_json::Value::Array(vec![serde_json::Value::Object(input)]),
+    );
+    entry.insert(
+        "output_modalities".into(),
+        serde_json::Value::Array(vec![serde_json::Value::Object(output)]),
+    );
+    if let Some(cost) = metadata.pricing.request.as_deref() {
+        entry.insert(
+            "pricing".into(),
+            json!([{ "type": "request", "unit": "request", "cost_usd": cost }]),
+        );
+    }
+    if let Some(value) = metadata.capacity.request_rpm {
+        entry.insert(
+            "capacity".into(),
+            json!([{
+                "type": "request",
+                "unit": "request",
+                "per": "minute",
+                "value": value,
+            }]),
+        );
+    }
+    if let Some(value) = metadata.is_ready {
+        entry.insert("is_ready".into(), json!(value));
+    }
+    if let Some(value) = metadata.is_free {
+        entry.insert("is_free".into(), json!(value));
+    }
+    if let Some(value) = metadata.discount_to_user {
+        entry.insert("discount_to_user".into(), json!(value));
+    }
+    if let Some(value) = metadata.openrouter_slug.as_deref() {
+        entry.insert("openrouter".into(), json!({ "slug": value }));
+    }
+    if !metadata.datacenters.is_empty() {
+        entry.insert("datacenters".into(), json!(metadata.datacenters));
+    }
+    let mut compliance = serde_json::Map::new();
+    if let Some(value) = metadata.zdr {
+        compliance.insert("zdr".into(), json!(value));
+    }
+    if let Some(value) = metadata.hipaa {
+        compliance.insert("hipaa".into(), json!(value));
+    }
+    if !compliance.is_empty() {
+        entry.insert(
+            "compliance".into(),
+            serde_json::Value::Object(compliance),
+        );
+    }
+    serde_json::Value::Object(entry)
+}
+
+fn models_openrouter_body(st: &AppState) -> serde_json::Value {
+    let data: Vec<_> = st
+        .models
+        .iter()
+        .map(|model| {
+            model_entry_openrouter(
+                model,
+                st.caps.get(model),
+                st.openrouter_metadata.get(model),
+            )
+        })
+        .collect();
+    json!({ "data": data })
+}
+
+async fn list_models(
+    State(st): State<AppState>,
+    Query(query): Query<ModelsQuery>,
+) -> Response {
+    match query.schema.as_deref() {
+        None | Some("openai") => Json(models_openai_body(st.models.as_ref())).into_response(),
+        Some("openrouter") => Json(models_openrouter_body(&st)).into_response(),
+        Some(schema) => bad_request(
+            &format!("unsupported models schema {schema:?}; expected openai or openrouter"),
+            Some("schema"),
+        ),
+    }
+}
+
+/// One /v1/models entry in the existing OpenRouter catalog-style schema (serve-tail lane).
 /// Values are worker truth from the loaded model plan (ModelCaps probed at spawn);
 /// anything the plan doesn't know is an honest null, never an invented value.
 /// Pricing is the self-hosted stub ("0" USD strings, the OR convention for an
@@ -1169,7 +2138,7 @@ fn model_entry_v1(name: &str, caps: Option<&ModelCaps>, created: u64) -> serde_j
     })
 }
 
-/// GET /v1/models — the OpenAI/OpenRouter model listing, enriched with per-model
+/// GET /v1/models — the existing OpenAI/OpenRouter catalog listing, enriched with per-model
 /// metadata from the loaded plan (context length, tokenizer, instruct family).
 async fn list_models_v1(State(st): State<AppState>) -> impl IntoResponse {
     let data: Vec<_> = st.models.iter()
@@ -1198,6 +2167,15 @@ async fn yield_metrics(State(st): State<AppState>) -> impl IntoResponse {
 /// Dark lanes (judge/harvest) can be SHED at admission — surface that as HTTP 429 +
 /// Retry-After before committing to a streaming response. Interactive never sheds, so it
 /// skips the peek (its first token may be legitimately far away; don't hold headers).
+///
+/// WHY THE PEEK MATTERS MORE THAN IT LOOKS (audit §OpenRouter uptime): once the first byte of
+/// a 200 is written, the response is COMMITTED — a router cannot fail over, and a mid-stream
+/// death counts against uptime. Catching an admission refusal here converts a would-be
+/// mid-stream failure into a clean pre-header 429/503 that the client's own retry handles.
+///
+/// The 429 body now goes through `engine_error_body` (G6). It used to be
+/// `{"error": "<string>"}` — a BARE STRING where every OpenAI SDK expects an object, which
+/// made shed errors render as a blank message in every client that parses the standard shape.
 async fn peek_shed(
     lane: lanes::Lane,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>,
@@ -1206,11 +2184,11 @@ async fn peek_shed(
         return Ok(rx);
     }
     match rx.recv().await {
-        Some(Event::Error(e)) if e.starts_with("shed:") => Err((
-            StatusCode::TOO_MANY_REQUESTS,
-            [(axum::http::header::RETRY_AFTER, "2")],
-            Json(json!({ "error": e })),
-        ).into_response()),
+        // Any pre-first-token failure — a shed, a rejected admission, a load fault — is
+        // answered as a normal HTTP error with its own class instead of being smuggled into a
+        // stream. Classification is the producer's (worker::EngineError), so this no longer
+        // string-matches a "shed:" prefix that only ever existed as an in-band sentinel.
+        Some(Event::Error(e)) => Err(engine_error_response(&e)),
         first => {
             let (tx2, rx2) = tokio::sync::mpsc::unbounded_channel();
             if let Some(ev) = first {
@@ -1245,6 +2223,7 @@ fn build_request(req: &CompletionReq, tx: tokio::sync::mpsc::UnboundedSender<Eve
         chat_turns: Vec::new(),
         tools_json: Vec::new(),
         think: ThinkMode::Default,
+        reasoning_effort: None, // /v1/completions is a raw-prompt surface (no template render)
         params,
         sampler_cfg,
         stop_strings: req.stop.clone().into_vec(),
@@ -1285,7 +2264,16 @@ fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
                 req.model));
         }
     }
-    let mut think = parse_think(&req.reasoning_effort, &req.reasoning)?;
+    let (mut think, effort_level) = parse_think(&req.reasoning_effort, &req.reasoning)?;
+    // Effort-level templates (step35 dialect): the client's reasoning_effort is a RENDER
+    // input ("Reasoning: {level}\n\n" in the system turn), not a think switch. Gate on the
+    // capability so every other model's prompt stays byte-identical; the ThinkMode half is
+    // already a documented no-op on switchless templates, so both controls stay consistent.
+    let reasoning_effort = if caps.map(|c| c.effort_levels).unwrap_or(false) {
+        effort_level
+    } else {
+        None
+    };
     // response_format -> grammar spec (constrained decoding). None/text = unconstrained,
     // the exact legacy path; unknown/malformed forms are loud 400s.
     let grammar = constrained::parse_response_format(req.response_format.as_ref())?;
@@ -1353,6 +2341,15 @@ fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
             .with_include_reasoning(include_reasoning))
     } else if think_open {
         Some(ToolStreamParser::reasoning_only(include_reasoning))
+    } else if caps.map(|c| c.gemma_think).unwrap_or(false) {
+        // gemma4 thought-channel dialect (lane/gemma4-serve-gaps): thought text used to
+        // land VERBATIM in content — `<|channel>thought\n…` with thinking on, and the tags
+        // leaked with it (think-smoke receipt, step-sku lane). Armed on EVERY gemma4 chat
+        // request, not just thinking-on: the closed-channel prompt still leaves the model
+        // free to open a channel mid-stream (observed live), and the template's own
+        // strip_thinking law applies wherever the tags appear. gemma4 templates carry no
+        // tools branch, so this arm never competes with the tool scanner.
+        Some(ToolStreamParser::gemma_thought(include_reasoning))
     } else {
         None
     };
@@ -1366,6 +2363,7 @@ fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
             chat_turns: turns,
             tools_json,
             think,
+            reasoning_effort,
             params: GenParams {
                 max_new: req.max_tokens.unwrap_or(worker::MAX_NEW_CTX_BOUNDED),
                 max_ctx: req.max_ctx,
@@ -1420,9 +2418,14 @@ fn lane_for_tenant(headers: &axum::http::HeaderMap, tenant: &auth::TenantCtx)
     -> Result<lanes::Lane, Response> {
     let requested = match headers.get("x-lane").map(|v| v.to_str().unwrap_or("?")) {
         None => None,
+        // A bad x-lane really is a client bug, so 400 is the right status — but the body has to
+        // be an OpenAI-compat error OBJECT like every other refusal on this surface. It used to
+        // be a bare `{"error":"unknown x-lane ..."}` string, which makes `e.body["error"]["type"]`
+        // an index error in every SDK that parses the standard shape.
         Some(v) => Some(lanes::Lane::parse(v).ok_or_else(|| {
-            (StatusCode::BAD_REQUEST,
-             Json(json!({ "error": format!("unknown x-lane {v:?}") }))).into_response()
+            error_response_coded(StatusCode::BAD_REQUEST,
+                &format!("unknown x-lane {v:?}; expected one of interactive, judge, harvest"),
+                "invalid_request_error", Some("x-lane"), Some("invalid_lane"))
         })?),
     };
     match tenant.lane_class {
@@ -1490,9 +2493,10 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
     }
     // RATE-LIMIT SNAPSHOT (gap-scan F12): take the in-flight slot at submission time;
     // the guard rides the response (stream included) and frees the slot at completion.
-    let (guard, n_inflight, n_tenant) = InflightGuard::acquire(
-        st.inflight.clone(), lane, st.tenant_inflight.clone(), &tenant.tenant);
-    let rl = RateLimit::at_admit(lane, n_inflight, &st.metrics, &tenant, n_tenant);
+    let (guard, rl) = match acquire_request_slot(&st, lane, &tenant, &env) {
+        Ok(slot) => slot,
+        Err(resp) => return resp,
+    };
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     let model = req.model.clone();
     let stream = req.stream;
@@ -1509,8 +2513,7 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
     worker::PENDING_ADMITS.fetch_add(1, std::sync::atomic::Ordering::Release);
     if st.cmd_tx.send(Cmd::Generate(Box::new(request))).is_err() {
         worker::PENDING_ADMITS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-        return rl.attach(with_request_id(&env.id, error_response(
-            StatusCode::SERVICE_UNAVAILABLE, "worker unavailable", "server_error", None)));
+        return rl.attach(with_request_id(&env.id, worker_unavailable_response()));
     }
     let rx = match peek_shed(lane, rx).await {
         Ok(rx) => rx,
@@ -1578,17 +2581,17 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
     }
     // RATE-LIMIT SNAPSHOT (gap-scan F12): slot taken at submission (post-validation —
     // a 400 never held a slot); freed when the response completes (guard).
-    let (guard, n_inflight, n_tenant) = InflightGuard::acquire(
-        st.inflight.clone(), lane, st.tenant_inflight.clone(), &tenant.tenant);
-    let rl = RateLimit::at_admit(lane, n_inflight, &st.metrics, &tenant, n_tenant);
+    let (guard, rl) = match acquire_request_slot(&st, lane, &tenant, &env) {
+        Ok(slot) => slot,
+        Err(resp) => return resp,
+    };
     meter_admit(&env, &tenant, &model, lane);
     let stop_strings = plan.request.stop_strings.clone();
     // Admission yield (lane/admission-latency): gauge up before send — see completions.
     worker::PENDING_ADMITS.fetch_add(1, std::sync::atomic::Ordering::Release);
     if st.cmd_tx.send(Cmd::Generate(Box::new(plan.request))).is_err() {
         worker::PENDING_ADMITS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-        return rl.attach(with_request_id(&env.id, error_response(
-            StatusCode::SERVICE_UNAVAILABLE, "worker unavailable", "server_error", None)));
+        return rl.attach(with_request_id(&env.id, worker_unavailable_response()));
     }
     let rx = match peek_shed(lane, rx).await {
         Ok(rx) => rx,
@@ -1765,15 +2768,26 @@ fn sse_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, model: Stri
                     }
                     break;
                 }
-                Event::Error(msg) => {
+                Event::Error(err) => {
+                    // MID-STREAM FAILURE (G6). The response status is already 200 and the
+                    // headers are gone, so there is no status code left to change: the ONLY
+                    // honest signal is an error object in the stream followed by closing the
+                    // connection. Both happen here — the `break` ends the generator, which
+                    // drops the SSE body and closes.
+                    //
+                    // The class-derived type/code now travels with it (previously hardcoded
+                    // "server_error" for every cause, so a client could not tell an
+                    // out-of-VRAM from a context-length mistake once streaming had begun).
                     if chat || openai_compat() {
                         // OpenAI clients only parse `data:` lines — a named `event: error`
                         // reads as a silent hang. Error object as the final data chunk.
-                        let payload = error_body(&msg, "server_error", None, None).to_string();
+                        let payload = engine_error_body(&err).to_string();
                         yield Ok(SseEvent::default().data(payload));
                         yield Ok(SseEvent::default().data("[DONE]".to_string()));
                     } else {
-                        let payload = json!({ "error": msg }).to_string();
+                        // Native (non-OpenAI) surface keeps its named `error` event: its
+                        // clients are memra's own tools, which do parse named events.
+                        let payload = engine_error_body(&err).to_string();
                         yield Ok(SseEvent::default().event("error").data(payload));
                     }
                     break;
@@ -1927,12 +2941,21 @@ async fn blocking_response(mut rx: tokio::sync::mpsc::UnboundedReceiver<Event>, 
                     prompt_tokens: n_prompt, cached_tokens: n_cached, elapsed_s,
                 }).into_response();
             }
-            Event::Error(msg) => {
-                return bad_request(&msg, None);
+            Event::Error(err) => {
+                // G6: the class decides the status. This single line used to be
+                // `bad_request(&msg, None)` — every CUDA fault, VRAM exhaustion and admission
+                // shed reported as 400 invalid_request_error, which no SDK retries.
+                return engine_error_response(&err);
             }
         }
     }
-    error_response(StatusCode::INTERNAL_SERVER_ERROR, "worker closed stream", "server_error", None)
+    // The worker's Event channel closed without a Done or an Error: the worker thread is gone
+    // (panicked and unrecoverable, or shutting down). 503 + Retry-After, not 500: this is a
+    // process-level condition the supervisor is already acting on, and a client's retry may
+    // well land on a restarted process.
+    let e = worker::EngineError::overloaded(
+        "worker closed the stream without completing (worker restart in progress)");
+    engine_error_response(&e)
 }
 
 #[cfg(test)]
@@ -2206,16 +3229,21 @@ mod tests {
 
     #[test]
     fn reasoning_effort_maps_to_think_switch() {
+        // The reasoning-capable-model convention (owner directive 2026-08-07):
+        // low|medium|high = thinking ON at that budget; none|minimal = thinking OFF;
+        // absent = the model's own default. `low` used to map to NoThink — that read the
+        // OpenAI field as a "how much" dial with off at the bottom, which contradicts how
+        // reasoning models ship (low IS a reasoning mode).
         for (extra, want) in [
             (json!({}), ThinkMode::Default),
-            (json!({"reasoning_effort": "low"}), ThinkMode::NoThink),
+            (json!({"reasoning_effort": "low"}), ThinkMode::Think),
             (json!({"reasoning_effort": "none"}), ThinkMode::NoThink),
             (json!({"reasoning_effort": "minimal"}), ThinkMode::NoThink),
-            (json!({"reasoning_effort": "high"}), ThinkMode::Default),
-            (json!({"reasoning_effort": "medium"}), ThinkMode::Default),
+            (json!({"reasoning_effort": "high"}), ThinkMode::Think),
+            (json!({"reasoning_effort": "medium"}), ThinkMode::Think),
             (json!({"reasoning": {"enabled": false}}), ThinkMode::NoThink),
-            (json!({"reasoning": {"effort": "low"}}), ThinkMode::NoThink),
-            (json!({"reasoning": {"enabled": true}}), ThinkMode::Default),
+            (json!({"reasoning": {"effort": "low"}}), ThinkMode::Think),
+            (json!({"reasoning": {"enabled": true}}), ThinkMode::Think),
         ] {
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
             let plan = build_chat_request(weather_request(extra.clone()),
@@ -2225,6 +3253,39 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         assert!(build_chat_request(weather_request(json!({"reasoning_effort": "extreme"})),
                                    Some(&tool_caps()), tx, lanes::Lane::Interactive, None).is_err());
+    }
+
+    #[test]
+    fn reasoning_effort_maps_to_effort_level_on_step35_class_templates() {
+        // ModelCaps::effort_levels=true (the step35 dialect): the SAME client field becomes
+        // a render input (Request::reasoning_effort) — low/medium/high pass through,
+        // none/minimal clamp to "low" (the template has no thinking-off level), absent stays
+        // None (the template's own default: no `Reasoning:` line).
+        let effort_caps = ModelCaps { effort_levels: true, ..tool_caps() };
+        for (extra, want) in [
+            (json!({}), None),
+            (json!({"reasoning_effort": "low"}), Some("low")),
+            (json!({"reasoning_effort": "medium"}), Some("medium")),
+            (json!({"reasoning_effort": "high"}), Some("high")),
+            (json!({"reasoning_effort": "none"}), Some("low")),
+            (json!({"reasoning_effort": "minimal"}), Some("low")),
+            (json!({"reasoning": {"effort": "high"}}), Some("high")),
+            (json!({"reasoning": {"enabled": false}}), Some("low")),
+        ] {
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            let plan = build_chat_request(weather_request(extra.clone()),
+                                          Some(&effort_caps), tx, lanes::Lane::Interactive, None).unwrap();
+            assert_eq!(plan.request.reasoning_effort.as_deref(), want, "extra={extra}");
+        }
+        // effort_levels=false (every other template): the field NEVER reaches the render —
+        // byte-identity for non-step35 prompts is a caps gate, not a template accident.
+        for extra in [json!({}), json!({"reasoning_effort": "high"}),
+                      json!({"reasoning": {"effort": "low"}})] {
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            let plan = build_chat_request(weather_request(extra.clone()),
+                                          Some(&tool_caps()), tx, lanes::Lane::Interactive, None).unwrap();
+            assert_eq!(plan.request.reasoning_effort, None, "extra={extra}");
+        }
     }
 
     #[test]
@@ -2469,7 +3530,7 @@ mod tests {
     #[tokio::test]
     async fn stream_worker_error_is_a_data_chunk_not_a_named_event() {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        tx.send(Event::Error("boom".into())).unwrap();
+        tx.send(Event::Error(worker::EngineError::engine("boom"))).unwrap();
         drop(tx);
         let resp = sse_response(rx, "m".into(), true, None, Envelope::new(true), Vec::new(), None)
             .into_response();
@@ -2482,13 +3543,14 @@ mod tests {
         let err: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(err["error"]["message"], "boom");
         assert_eq!(err["error"]["type"], "server_error");
+        assert_eq!(err["error"]["code"], "engine_error");
         assert_eq!(lines.last(), Some(&"[DONE]"));
     }
 
     #[tokio::test]
     async fn error_bodies_use_the_openai_object_shape() {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        tx.send(Event::Error("unknown model \"x\"".into())).unwrap();
+        tx.send(Event::Error(worker::EngineError::model_not_found("unknown model \"x\""))).unwrap();
         drop(tx);
         let response = blocking_response(rx, "m".into(), true, Vec::new(), None,
                                          Envelope::new(true)).await;
@@ -2498,8 +3560,179 @@ mod tests {
         // {"error": {message, type, param, code}} — the object every OpenAI SDK parses.
         assert_eq!(payload["error"]["message"], "unknown model \"x\"");
         assert_eq!(payload["error"]["type"], "invalid_request_error");
-        assert!(payload["error"].get("param").is_some());
-        assert!(payload["error"].get("code").is_some());
+        assert_eq!(payload["error"]["param"], "model");
+        assert_eq!(payload["error"]["code"], "model_not_found");
+    }
+
+    // ---- G6 taxonomy (lane/serve-hardening) --------------------------------------------
+    //
+    // The mapping is the deliverable, so it is asserted class by class rather than through
+    // one happy-path example. Before this lane EVERY row below answered 400
+    // invalid_request_error, which no OpenAI-compatible SDK retries.
+
+    fn retry_after(resp: &Response) -> Option<String> {
+        resp.headers().get(axum::http::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok()).map(str::to_string)
+    }
+
+    #[test]
+    fn taxonomy_maps_every_class_to_its_status_and_code() {
+        use worker::{EngineError as E, ErrClass as C};
+        let cases: Vec<(worker::EngineError, StatusCode, &str, &str)> = vec![
+            (E::invalid_param("bad json", "response_format"),
+             StatusCode::BAD_REQUEST, "invalid_request_error", ""),
+            (E::context_length("prompt (9000 tok) >= context cap (8192)"),
+             StatusCode::BAD_REQUEST, "invalid_request_error", "context_length_exceeded"),
+            (E::model_not_found("unknown model \"nope\""),
+             StatusCode::BAD_REQUEST, "invalid_request_error", "model_not_found"),
+            (E::rate_limit("lane judge is at capacity, retry"),
+             StatusCode::TOO_MANY_REQUESTS, "rate_limit_error", "rate_limit_exceeded"),
+            (E::overloaded("no VRAM for a new session"),
+             StatusCode::SERVICE_UNAVAILABLE, "server_error", "overloaded"),
+            (E::engine("graph step failed: launch error"),
+             StatusCode::INTERNAL_SERVER_ERROR, "server_error", "engine_error"),
+        ];
+        for (err, want_status, want_type, want_code) in cases {
+            let (status, etype, code) = class_http(err.class);
+            assert_eq!(status, want_status, "{:?}", err);
+            assert_eq!(etype, want_type, "{:?}", err);
+            if !want_code.is_empty() {
+                assert_eq!(code, Some(want_code), "{:?}", err);
+            }
+            // the rendered body agrees with the mapping
+            let body = engine_error_body(&err);
+            assert_eq!(body["error"]["message"], err.message);
+            assert_eq!(body["error"]["type"], want_type);
+        }
+        // and no class is silently missing from the match
+        for c in [C::InvalidRequest, C::ContextLength, C::ModelNotFound,
+                  C::RateLimit, C::Overloaded, C::Engine] {
+            let (s, t, _) = class_http(c);
+            assert!(s.is_client_error() || s.is_server_error(), "{c:?} -> {s}");
+            assert!(!t.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_cuda_oom_message_is_capacity_503_not_a_500() {
+        // The one deliberate text rule: the driver's own OOM text promotes an engine fault to
+        // Overloaded, because the box ran out of VRAM (a retryable capacity condition) rather
+        // than hitting a bug. Same predicate the step-OOM park path uses, so the two paths
+        // cannot disagree about what an OOM is.
+        let e = worker::EngineError::engine(
+            "step error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, \"out of memory\")");
+        let resp = engine_error_response(&e);
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(retry_after(&resp).as_deref(), Some("5"));
+    }
+
+    #[test]
+    fn retry_headers_follow_the_sdk_contract() {
+        // openai-python reads retry-after-ms FIRST, then retry-after, and ABANDONS the retry
+        // if the delay exceeds 120 s; litellm honors retry-after only for 0 < v <= 60. So:
+        // integer seconds, <= 60, with a matching millisecond twin.
+        for e in [worker::EngineError::rate_limit("shed"),
+                  worker::EngineError::overloaded("no VRAM")] {
+            let resp = engine_error_response(&e);
+            let ra = retry_after(&resp).expect("retryable class must carry Retry-After");
+            let secs: u64 = ra.parse().expect("Retry-After must be integer delay-seconds");
+            assert!(secs > 0 && secs <= 60, "Retry-After {secs}s outside the honored window");
+            let ms = resp.headers().get("retry-after-ms").unwrap().to_str().unwrap();
+            assert_eq!(ms.parse::<u64>().unwrap(), secs * 1000, "the two headers disagree");
+            assert!(resp.headers().get("x-should-retry").is_none(),
+                    "a retryable class must not say x-should-retry: false");
+        }
+    }
+
+    #[tokio::test]
+    async fn command_send_failure_obeys_the_retry_contract() {
+        let _l = DRAIN_LOCK.lock().unwrap();
+        DRAINING.store(false, std::sync::atomic::Ordering::SeqCst);
+        let mut st = fake_worker_state();
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
+        drop(cmd_rx);
+        st.cmd_tx = cmd_tx;
+
+        let completion = completions(
+            State(st.clone()),
+            axum::http::HeaderMap::new(),
+            Json(serde_json::from_value(serde_json::json!({
+                "model": "m", "prompt": "test"
+            })).unwrap()),
+        ).await;
+        let chat = chat_completions(
+            State(st),
+            axum::http::HeaderMap::new(),
+            Json(serde_json::from_value(serde_json::json!({
+                "model": "m", "messages": [{"role": "user", "content": "test"}]
+            })).unwrap()),
+        ).await;
+
+        for resp in [completion, chat] {
+            assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(retry_after(&resp).as_deref(), Some("2"));
+            assert_eq!(resp.headers().get("retry-after-ms").unwrap(), "2000");
+            assert_ne!(resp.headers().get("x-should-retry")
+                .and_then(|v| v.to_str().ok()), Some("false"));
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(payload["error"]["type"], "server_error");
+            assert_eq!(payload["error"]["code"], "overloaded");
+        }
+    }
+
+    #[test]
+    fn unfixable_client_errors_say_x_should_retry_false() {
+        // Retrying the identical bytes cannot succeed, and a client that retries on status
+        // alone would hammer for nothing. openai-python honors this override explicitly.
+        for e in [worker::EngineError::model_not_found("unknown model \"x\""),
+                  worker::EngineError::context_length("prompt too long"),
+                  worker::EngineError::invalid_param("bad", "messages")] {
+            let resp = engine_error_response(&e);
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(resp.headers().get("x-should-retry").unwrap(), "false");
+            assert!(retry_after(&resp).is_none(), "a 400 must not promise a retry window");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_closed_worker_channel_is_503_not_500() {
+        // The worker thread died (panicked, unrecoverable) mid-request: the Event channel
+        // closes with neither Done nor Error. The client's retry may land on a restarted
+        // process, so this is capacity-class with a window — not a bare 500.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+        drop(tx);
+        let resp = blocking_response(rx, "m".into(), true, Vec::new(), None,
+                                     Envelope::new(true)).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(retry_after(&resp).as_deref(), Some("5"));
+    }
+
+    #[tokio::test]
+    async fn a_dark_lane_shed_is_429_with_an_openai_object_body() {
+        // peek_shed used to answer `{"error": "<string>"}` — a bare string where every SDK
+        // expects an object, which renders as a blank message client-side.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(Event::Error(worker::EngineError::rate_limit(
+            "lane judge shed: interactive p99 over budget, retry"))).unwrap();
+        let resp = peek_shed(lanes::Lane::Judge, rx).await
+            .err().expect("a shed must not be forwarded into the stream");
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(retry_after(&resp).as_deref(), Some("2"));
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(payload["error"].is_object(), "bare-string error body: {payload}");
+        assert_eq!(payload["error"]["type"], "rate_limit_error");
+        assert!(payload["error"]["message"].as_str().unwrap().contains("shed"));
+    }
+
+    #[tokio::test]
+    async fn interactive_never_peeks_so_its_first_token_is_not_held() {
+        // Interactive does not shed, and its first token may legitimately be seconds away —
+        // the peek would hold headers for nothing.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(Event::Error(worker::EngineError::rate_limit("would-be shed"))).unwrap();
+        assert!(peek_shed(lanes::Lane::Interactive, rx).await.is_ok());
     }
 
     #[test]
@@ -2719,25 +3952,52 @@ mod tests {
 
     /// Fake GPU worker: consumes Generate commands and answers each with one Token +
     /// Done — handler-level tests (headers, drain) without a GPU or a loaded model.
+    ///
+    /// It also drives the SAME health handle the real worker does (mark_ready at "load"
+    /// completion, beat_busy per iteration), which is what lets the /health and /readyz tests
+    /// exercise the real handlers instead of a mock.
     fn fake_worker_state() -> AppState {
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
+        let health = health::WorkerHealth::new();
+        let h = health.clone();
         std::thread::spawn(move || {
+            h.mark_ready();
             while let Ok(Cmd::Generate(req)) = cmd_rx.recv() {
+                // mirror handle_cmd's saturating PENDING_ADMITS decrement: handlers
+                // increment before send, and a fake worker that never decrements leaks
+                // the process-global gauge into every other test (the valley signal
+                // reads it).
+                let _ = worker::PENDING_ADMITS.fetch_update(
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                    |v| v.checked_sub(1),
+                );
+                h.beat_busy();
                 let _ = req.tx.send(Event::Token { id: 1, text: "ok".into() });
                 let _ = req.tx.send(Event::Done {
                     stop_reason: "Eos".into(), n_tokens: 1, n_prompt: 1, n_cached: 0,
                     elapsed_s: 0.01, spec: None,
                 });
+                h.set_phase(health::PHASE_IDLE);
             }
         });
+        // The spawn above is the "load"; wait for its ready stamp so a health assertion is not
+        // racing the thread start (the real path blocks on ready_tx for the same reason).
+        for _ in 0..2000 {
+            if health.live().is_ok() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         AppState {
             cmd_tx,
             models: Arc::new(vec!["m".into()]),
             caps: Arc::new(HashMap::new()),
+            openrouter_metadata: Arc::new(HashMap::new()),
             metrics: SharedMetrics::default(),
             started: 1,
             inflight: Arc::new(Default::default()),
             tenant_inflight: Arc::new(Default::default()),
+            health,
+            bg: None,
         }
     }
 
@@ -2766,16 +4026,19 @@ mod tests {
     fn inflight_guard_counts_up_and_frees_on_drop() {
         let counts: InflightCounts = Arc::new(Default::default());
         let tenants: TenantGauge = Arc::new(Default::default());
-        let (g1, n1, t1) = InflightGuard::acquire(
-            counts.clone(), lanes::Lane::Interactive, tenants.clone(), "acme");
-        let (g2, n2, t2) = InflightGuard::acquire(
-            counts.clone(), lanes::Lane::Interactive, tenants.clone(), "acme");
+        let (g1, n1, t1) = InflightGuard::try_acquire(
+            counts.clone(), lanes::Lane::Interactive, tenants.clone(), "acme", None)
+            .unwrap();
+        let (g2, n2, t2) = InflightGuard::try_acquire(
+            counts.clone(), lanes::Lane::Interactive, tenants.clone(), "acme", None)
+            .unwrap();
         assert_eq!((n1, n2), (1, 2));
         // tenant gauge counts per tenant, across lanes.
         assert_eq!((t1, t2), (1, 2));
         // lanes are independent gauges; a different tenant starts at 1.
-        let (gj, nj, tj) = InflightGuard::acquire(
-            counts.clone(), lanes::Lane::Judge, tenants.clone(), "blue");
+        let (gj, nj, tj) = InflightGuard::try_acquire(
+            counts.clone(), lanes::Lane::Judge, tenants.clone(), "blue", None)
+            .unwrap();
         assert_eq!((nj, tj), (1, 1));
         drop(g1);
         drop(gj);
@@ -2787,6 +4050,88 @@ mod tests {
         drop(g2);
         assert_eq!(counts[0].load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(tenants.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn tenant_concurrency_cap_is_atomic_across_arrivals() {
+        let counts: InflightCounts = Arc::new(Default::default());
+        let tenants: TenantGauge = Arc::new(Default::default());
+        let start = Arc::new(std::sync::Barrier::new(3));
+        let attempted = Arc::new(std::sync::Barrier::new(3));
+        let mut joins = Vec::new();
+        for _ in 0..2 {
+            let counts = counts.clone();
+            let tenants = tenants.clone();
+            let start = start.clone();
+            let attempted = attempted.clone();
+            joins.push(std::thread::spawn(move || {
+                start.wait();
+                let result = InflightGuard::try_acquire(
+                    counts, lanes::Lane::Interactive, tenants, "preview_001", Some(1));
+                let won = result.is_ok();
+                attempted.wait(); // winner holds its guard until both arrivals attempted.
+                drop(result);
+                won
+            }));
+        }
+        start.wait();
+        attempted.wait();
+        let wins = joins.into_iter()
+            .map(|join| join.join().unwrap())
+            .filter(|won| *won)
+            .count();
+        assert_eq!(wins, 1, "exactly one simultaneous request may pass cap=1");
+        assert_eq!(counts[0].load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(tenants.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn tenant_concurrency_cap_rejects_before_worker_admission() {
+        let st = fake_worker_state();
+        let tenant = auth::TenantCtx {
+            tenant: "preview_001".into(),
+            lane_class: auth::LaneClass::Interactive,
+            rate_limit: Some(1),
+        };
+        let first_env = Envelope::new(true);
+        let (guard, first_rl) = match acquire_request_slot(
+            &st, lanes::Lane::Interactive, &tenant, &first_env)
+        {
+            Ok(slot) => slot,
+            Err(_) => panic!("the first request must acquire the tenant slot"),
+        };
+        assert_eq!((first_rl.limit, first_rl.remaining), (1, 0));
+
+        let second_env = Envelope::new(true);
+        let response = match acquire_request_slot(
+            &st, lanes::Lane::Interactive, &tenant, &second_env)
+        {
+            Err(response) => response,
+            Ok(_) => panic!("the second request must be rejected at the tenant cap"),
+        };
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()["retry-after"], "2");
+        assert_eq!(response.headers()["retry-after-ms"], "2000");
+        assert_eq!(response.headers()["x-ratelimit-limit"], "1");
+        assert_eq!(response.headers()["x-ratelimit-remaining"], "0");
+        assert_eq!(response.headers()["x-request-id"], second_env.id);
+        assert_eq!(st.inflight[0].load(std::sync::atomic::Ordering::SeqCst), 1,
+                   "rejected request must not consume a lane slot");
+        assert_eq!(
+            st.tenant_inflight.lock().unwrap().get("preview_001").copied(), Some(1),
+            "rejected request must not increment the tenant gauge");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["error"]["type"], "rate_limit_error");
+        assert_eq!(payload["error"]["code"], "rate_limit_exceeded");
+        assert!(payload["error"]["message"].as_str().unwrap()
+            .contains("concurrent request limit"));
+
+        drop(guard);
+        let _ = InflightGuard::try_acquire(
+            st.inflight.clone(), lanes::Lane::Interactive,
+            st.tenant_inflight.clone(), "preview_001", Some(1))
+            .expect("slot must reopen after the in-flight request completes");
     }
 
     #[test]
@@ -2849,6 +4194,42 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
+    #[tokio::test]
+    async fn handler_layer_refusals_are_openai_objects_with_x_should_retry() {
+        // The lane refusals were the last bare-string error bodies on the surface:
+        // `{"error": "unknown x-lane ..."}` indexes as a string in every SDK that reads
+        // error.type / error.code. Both lane refusals now go through error_response_coded,
+        // and both are unfixable-by-retry 4xx, so both must also say so in a header.
+        let hdr = |v: &str| {
+            let mut h = axum::http::HeaderMap::new();
+            h.insert("x-lane", axum::http::HeaderValue::from_str(v).unwrap());
+            h
+        };
+        let body = |resp: Response| async move {
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()
+        };
+
+        let resp = lane_for_tenant(&hdr("turbo"), &auth::TenantCtx::default_tenant()).unwrap_err();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(resp.headers().get("x-should-retry").unwrap(), "false");
+        let payload = body(resp).await;
+        assert!(payload["error"].is_object(), "bare-string error body: {payload}");
+        assert_eq!(payload["error"]["type"], "invalid_request_error");
+        assert_eq!(payload["error"]["param"], "x-lane");
+        assert_eq!(payload["error"]["code"], "invalid_lane");
+
+        let batch = auth::TenantCtx {
+            tenant: "bulk".into(), lane_class: auth::LaneClass::Batch, rate_limit: None,
+        };
+        let resp = lane_for_tenant(&hdr("interactive"), &batch).unwrap_err();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(resp.headers().get("x-should-retry").unwrap(), "false");
+        let payload = body(resp).await;
+        assert_eq!(payload["error"]["type"], "authentication_error");
+        assert_eq!(payload["error"]["param"], "x-lane");
+    }
+
     /// Serializes tests that read or flip the process-global DRAINING flag (the drain
     /// test must not 503 a concurrently-running handler test).
     static DRAIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -2899,10 +4280,20 @@ mod tests {
                 "model": "m", "messages": [{"role": "user", "content": "t"}]
             })).unwrap())).await;
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert!(resp.headers().contains_key("retry-after"));
+        // The drain 503 obeys the same retry contract as every taxonomy class: an integer
+        // Retry-After <= 60, the retry-after-ms twin openai-python reads FIRST (its absence
+        // was a real gap — a client trusting only the ms header saw NO window on memra's most
+        // predictable outage), both agreeing, and a `code` clients can branch on.
+        let ra = resp.headers()["retry-after"].to_str().unwrap().to_string();
+        let ra_s: u64 = ra.parse().expect("Retry-After must be integer delay-seconds");
+        assert!(ra_s > 0 && ra_s <= 60, "Retry-After {ra_s}s is outside the honored window");
+        let ra_ms: u64 = resp.headers()["retry-after-ms"].to_str().unwrap().parse().unwrap();
+        assert_eq!(ra_ms, ra_s * 1000, "the two retry headers must agree");
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(payload["error"]["message"].as_str().unwrap().contains("draining"));
+        assert_eq!(payload["error"]["type"], "server_error");
+        assert_eq!(payload["error"]["code"], "draining");
         let resp = completions(State(st.clone()), axum::http::HeaderMap::new(),
             Json(serde_json::from_value(serde_json::json!({
                 "model": "m", "prompt": "t"
@@ -2911,11 +4302,28 @@ mod tests {
         assert!(resp.headers().contains_key("retry-after"));
         assert_eq!(st.inflight[0].load(std::sync::atomic::Ordering::SeqCst), 0,
                    "rejected requests must not hold slots");
-        // /health flips to "draining" (the LB not-ready signal).
-        let resp = health(State(st.clone())).await.into_response();
+        // /health flips to "draining" but stays 200 — a drain is a HEALTHY shutdown, and 503
+        // here would invite a supervisor to SIGKILL a process that is finishing streams.
+        let resp = health_live(State(st.clone())).await.into_response();
+        assert_eq!(resp.status(), StatusCode::OK, "a drain must not look like a liveness fault");
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(payload["status"], "draining");
+        // Rotation is /readyz's job: unready while draining, so the LB stops sending.
+        let resp = health_ready(State(st.clone())).await.into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let retry_s = drain_deadline_s().clamp(1, 60);
+        let retry_s_text = retry_s.to_string();
+        let retry_ms_text = (retry_s * 1000).to_string();
+        assert_eq!(retry_after(&resp).as_deref(), Some(retry_s_text.as_str()));
+        assert_eq!(resp.headers().get("retry-after-ms").unwrap(),
+                   retry_ms_text.as_str());
+        assert_ne!(resp.headers().get("x-should-retry")
+            .and_then(|v| v.to_str().ok()), Some("false"));
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["status"], "not_ready");
+        assert!(payload["detail"].as_str().unwrap().contains("draining"));
         DRAINING.store(false, std::sync::atomic::Ordering::SeqCst);
         // flag cleared: requests admit again (the gate is the flag, nothing latent).
         let resp = chat_completions(State(st.clone()), axum::http::HeaderMap::new(),
@@ -2925,14 +4333,108 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
+    // ---- G5: /health reports INFERENCE liveness, not process liveness -------------------
+
+    #[tokio::test]
+    async fn health_is_green_only_while_the_worker_is_alive() {
+        // /readyz reads the process-global DRAINING flag, which the drain test toggles —
+        // serialize against it or this races (measured: an interleaved run saw 503 here).
+        let _l = DRAIN_LOCK.lock().unwrap();
+        let st = fake_worker_state();
+        // loaded + alive: 200 ok, and the payload explains WHY (phase + heartbeat age vs the
+        // threshold), so an operator reading a green never has to guess.
+        let resp = health_live(State(st.clone())).await.into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["status"], "ok");
+        assert_eq!(payload["worker"]["phase"], "idle");
+        assert!(payload["worker"]["stall_threshold_ms"].as_u64().unwrap() > 0);
+        let ready = health_ready(State(st.clone())).await.into_response();
+        assert_eq!(ready.status(), StatusCode::OK);
+
+        // THE REGRESSION THIS PINS. Kill inference the way a panic does — the health handle
+        // is marked dead, the HTTP task keeps running, the process is entirely fine. The old
+        // handler returned `{"status":"ok"}` here, forever, on a box answering nothing.
+        st.health.mark_dead("worker thread panicked: test-injected");
+        let resp = health_live(State(st.clone())).await.into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE,
+                   "a dead worker MUST NOT report a healthy liveness");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["status"], "unhealthy");
+        // the cause is QUOTED, not inferred — the panic text travels to the operator
+        assert!(payload["detail"].as_str().unwrap().contains("test-injected"),
+                "cause not surfaced: {payload}");
+        let ready = health_ready(State(st.clone())).await.into_response();
+        assert_eq!(ready.status(), StatusCode::SERVICE_UNAVAILABLE, "dead is also not ready");
+
+        // Latency of the flip: a fault latch, not a timeout — no staleness threshold to wait
+        // out, which is what makes this usable as a k8s livenessProbe.
+        st.health.mark_ready();
+        assert_eq!(health_live(State(st.clone())).await.into_response().status(),
+                   StatusCode::OK, "mark_ready must clear the latch (a successful respawn)");
+    }
+
+    #[tokio::test]
+    async fn liveness_failure_obeys_the_retry_contract() {
+        let st = fake_worker_state();
+        st.health.mark_dead("worker thread panicked: retry-contract-test");
+
+        let resp = health_live(State(st)).await.into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(retry_after(&resp).as_deref(), Some("2"));
+        assert_eq!(resp.headers().get("retry-after-ms").unwrap(), "2000");
+        assert_ne!(resp.headers().get("x-should-retry")
+            .and_then(|v| v.to_str().ok()), Some("false"));
+    }
+
+    #[tokio::test]
+    async fn readiness_failure_obeys_the_retry_contract() {
+        let _l = DRAIN_LOCK.lock().unwrap();
+        DRAINING.store(false, std::sync::atomic::Ordering::SeqCst);
+        let st = fake_worker_state();
+        st.health.mark_dead("worker thread panicked: retry-contract-test");
+
+        let resp = health_ready(State(st)).await.into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(retry_after(&resp).as_deref(), Some("2"));
+        assert_eq!(resp.headers().get("retry-after-ms").unwrap(), "2000");
+        assert_ne!(resp.headers().get("x-should-retry")
+            .and_then(|v| v.to_str().ok()), Some("false"));
+    }
+
+    #[tokio::test]
+    async fn a_wedged_gpu_flips_health_even_though_the_worker_thread_is_fine() {
+        // G24: Xid 119/120 hangs nvidia-smi and emits no Xid line; the watcher's probe
+        // timeout is the alarm. The worker thread may still be looping (blocked in a driver
+        // call), so the heartbeat alone would never catch this — the GPU latch does.
+        let st = fake_worker_state();
+        assert_eq!(health_live(State(st.clone())).await.into_response().status(), StatusCode::OK);
+        st.health.mark_gpu_fault("nvidia-smi probe exceeded 10s deadline (GSP hang class)");
+        let resp = health_live(State(st.clone())).await.into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(payload["detail"].as_str().unwrap().contains("probe exceeded"));
+        // A GPU fault survives mark_ready deliberately: a respawned worker on a wedged card
+        // is not recovery, and only a fresh process (new CUDA context) can be.
+        st.health.mark_ready();
+        assert_eq!(health_live(State(st.clone())).await.into_response().status(),
+                   StatusCode::SERVICE_UNAVAILABLE,
+                   "a GPU fault must not be cleared by an in-process respawn");
+    }
+
     #[test]
-    fn v1_models_entry_matches_or_schema_with_honest_nulls() {
+    fn v1_models_entry_keeps_catalog_shape_with_honest_nulls() {
         // KNOWN plan metadata populates every OR-schema field from worker truth.
         let caps = ModelCaps {
             tools_branch: true, qwen_think: true, think_switch: true, chat_ok: true,
             context_length: 262144,
             tokenizer: "qwen2".into(),
             instruct_type: Some("chatml".into()),
+            effort_levels: false,
+            gemma_think: false,
         };
         let e = model_entry_v1("main", Some(&caps), 1_754_000_000);
         assert_eq!(e["id"], "main");
@@ -2961,6 +4463,179 @@ mod tests {
         assert!(e["context_length"].is_null());
         assert!(e["architecture"]["tokenizer"].is_null());
         assert!(e["architecture"]["instruct_type"].is_null());
+    }
+
+    #[test]
+    fn models_openai_default_body_stays_byte_identical() {
+        let body = models_openai_body(&["main".into(), "judge".into()]);
+        let bytes = serde_json::to_vec(&body).unwrap();
+        assert_eq!(
+            bytes,
+            br#"{"object":"list","data":[{"id":"main","object":"model"},{"id":"judge","object":"model"}]}"#
+        );
+    }
+
+    #[test]
+    fn openrouter_models_entry_serializes_complete_metadata() {
+        let metadata = OpenRouterMetadataFile::from_toml(
+            r#"
+[models.main]
+hugging_face_id = "Qwen/Qwen3.6-27B"
+created = 1786032000
+quantization = "nvfp4"
+description = "Qwen3.6 27B served by memra."
+max_prompt_length = 245760
+max_output_length = 16384
+is_ready = true
+is_free = false
+discount_to_user = 0.1
+openrouter_slug = "qwen/qwen3.6-27b"
+datacenters = [{ country_code = "US", region = "us-east-1" }]
+zdr = true
+hipaa = false
+
+[models.main.pricing]
+prompt = "0.000000234"
+cached_prompt = "0.0000000585"
+cache_write = "0.000000234"
+completion = "0.000001872"
+internal_reasoning = "0.000001872"
+request = "0.01"
+
+[models.main.capacity]
+prompt_tpm = 1000000
+cached_prompt_tpm = 2000000
+completion_tpm = 500000
+request_rpm = 1000
+concurrency = 64
+"#,
+        )
+        .unwrap();
+        let caps = ModelCaps {
+            tools_branch: true,
+            qwen_think: true,
+            think_switch: true,
+            chat_ok: true,
+            context_length: 262144,
+            tokenizer: "qwen2".into(),
+            instruct_type: Some("chatml".into()),
+            ..Default::default()
+        };
+        let entry = model_entry_openrouter("main", Some(&caps), metadata.get("main"));
+
+        assert_eq!(entry["schema_version"], "2.4");
+        assert_eq!(entry["id"], "main");
+        assert_eq!(entry["name"], "main");
+        assert_eq!(entry["hugging_face_id"], "Qwen/Qwen3.6-27B");
+        assert_eq!(entry["created"], 1786032000u64);
+        assert_eq!(entry["quantization"], "nvfp4");
+        assert_eq!(entry["tokenizer"], "qwen2");
+        assert_eq!(entry["description"], "Qwen3.6 27B served by memra.");
+        assert!(
+            entry.get("object").is_none(),
+            "OpenRouter schema 2.4 rejects unknown OpenAI fields"
+        );
+
+        let input = &entry["input_modalities"][0];
+        assert_eq!(input["type"], "text");
+        assert_eq!(
+            input["supported_inputs"]["max_context_length"]["value"],
+            262144
+        );
+        assert_eq!(
+            input["supported_inputs"]["max_prompt_length"]["value"],
+            245760
+        );
+        let input_prices = input["pricing"].as_array().unwrap();
+        let input_price = |kind: &str| {
+            input_prices
+                .iter()
+                .find(|price| price["type"] == kind)
+                .unwrap()
+        };
+        assert_eq!(input_price("prompt")["cost_usd"], "0.000000234");
+        assert_eq!(
+            input_price("cached_prompt")["cost_usd"],
+            "0.0000000585"
+        );
+        assert_eq!(input_price("cache_write")["cost_usd"], "0.000000234");
+        assert_eq!(input["capacity"][0]["value"], 1000000);
+        assert_eq!(input["capacity"][1]["value"], 2000000);
+
+        let output = &entry["output_modalities"][0];
+        assert_eq!(output["type"], "text");
+        assert_eq!(output["max_length"]["value"], 16384);
+        assert_eq!(output["streaming"], true);
+        assert_eq!(output["supported_parameters"]["tools"]["type"], "boolean");
+        assert_eq!(
+            output["supported_parameters"]["structured_outputs"]["type"],
+            "boolean"
+        );
+        assert_eq!(
+            output["supported_parameters"]["reasoning"]["type"],
+            "boolean"
+        );
+        assert_eq!(output["pricing"][0]["type"], "completion");
+        assert_eq!(output["pricing"][0]["cost_usd"], "0.000001872");
+        assert_eq!(output["pricing"][1]["type"], "internal_reasoning");
+        assert_eq!(output["capacity"][0]["value"], 500000);
+        assert_eq!(output["capacity"][1]["type"], "concurrency");
+        assert_eq!(output["capacity"][1]["value"], 64);
+
+        assert_eq!(entry["pricing"][0]["type"], "request");
+        assert_eq!(entry["pricing"][0]["cost_usd"], "0.01");
+        assert_eq!(entry["capacity"][0]["value"], 1000);
+        assert_eq!(entry["is_ready"], true);
+        assert_eq!(entry["is_free"], false);
+        assert_eq!(entry["discount_to_user"], 0.1);
+        assert_eq!(entry["openrouter"]["slug"], "qwen/qwen3.6-27b");
+        assert_eq!(entry["datacenters"][0]["country_code"], "US");
+        assert_eq!(entry["compliance"]["zdr"], true);
+        assert_eq!(entry["compliance"]["hipaa"], false);
+    }
+
+    #[test]
+    fn openrouter_models_entry_omits_undeclared_optional_fields() {
+        let entry = model_entry_openrouter("minimal", None, None);
+        let object = entry.as_object().unwrap();
+        for field in [
+            "hugging_face_id",
+            "created",
+            "quantization",
+            "tokenizer",
+            "description",
+            "pricing",
+            "capacity",
+            "is_ready",
+            "is_free",
+            "discount_to_user",
+            "openrouter",
+            "datacenters",
+            "compliance",
+        ] {
+            assert!(
+                !object.contains_key(field),
+                "optional field {field} must be absent, not null"
+            );
+        }
+        assert_eq!(entry["schema_version"], "2.4");
+        assert_eq!(entry["input_modalities"][0]["type"], "text");
+        assert!(
+            entry["input_modalities"][0]
+                .get("supported_inputs")
+                .is_none()
+        );
+        assert!(entry["input_modalities"][0].get("pricing").is_none());
+        assert!(entry["input_modalities"][0].get("capacity").is_none());
+        assert_eq!(entry["output_modalities"][0]["type"], "text");
+        assert_eq!(entry["output_modalities"][0]["streaming"], true);
+        assert!(
+            entry["output_modalities"][0]["supported_parameters"]
+                .is_object()
+        );
+        assert!(entry["output_modalities"][0].get("max_length").is_none());
+        assert!(entry["output_modalities"][0].get("pricing").is_none());
+        assert!(entry["output_modalities"][0].get("capacity").is_none());
     }
 
     #[tokio::test]

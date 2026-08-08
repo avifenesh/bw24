@@ -1,0 +1,5 @@
+loaded qwen35 (32 trunk layers; optional MTP skipped)
+prompt tokens: [55]
+prefill argmax=268  decode argmax=268  logit maxdiff=5.987e-1  MATCH
+generated 8 tokens in 0.037s = 216.15 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.005s) [stop: MaxNew]
+tokens: [268, 43159, 220, 18, 13, 15, 220, 95726]

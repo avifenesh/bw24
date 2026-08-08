@@ -1,0 +1,9 @@
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: dev0 (MEMRA_PP_SHARD=0 bring-up placement))
+loaded qwen35 (32 layers); steps=64 reps=1 batches=[1, 4, 8]
+B=1: aggregate 178.6 tok/s, per-seq 178.6 tok/s (median of 1)
+B=4: aggregate 491.1 tok/s, per-seq 122.8 tok/s (median of 1)
+B=8: aggregate 657.3 tok/s, per-seq 82.2 tok/s (median of 1)
+scale B=1: 1.00x aggregate vs B=1
+scale B=4: 2.75x aggregate vs B=1
+scale B=8: 3.68x aggregate vs B=1
+[host-sample] n_vocab=248320 greedy argmax 256 us/row | temp0.7 sample 953 us/row | x B=8 rows/tick = 2.05 ms (greedy) / 7.62 ms (temp) [sink 6137081]

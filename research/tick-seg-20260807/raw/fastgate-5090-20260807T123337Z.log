@@ -1,0 +1,72 @@
+Running as unit: run-p858122-i181045461.scope; invocation ID: c8c010e6d5194536a5621b54a8311cc0
+== fast-gate plan (diff vs 006aca75) ==
+  changed: crates/memra-engine/src/bin/concat_prime_probe.rs
+  changed: crates/memra-engine/src/bin/decode_batch_bench.rs
+  changed: crates/memra-engine/src/bin/decode_batch_gate.rs
+  changed: crates/memra-engine/src/bin/depth_profile.rs
+  changed: crates/memra-engine/src/bin/graph_session_gate.rs
+  changed: crates/memra-engine/src/bin/k27div_probe.rs
+  changed: crates/memra-engine/src/bin/plainbatch_margin_probe.rs
+  changed: crates/memra-engine/src/bin/prime_batch_gate.rs
+  changed: crates/memra-engine/src/bin/prime_gate.rs
+  changed: crates/memra-engine/src/bin/prime_graph_gate.rs
+  changed: crates/memra-engine/src/bin/prime_graph_smoke.rs
+  changed: crates/memra-engine/src/bin/run_gen.rs
+  changed: crates/memra-engine/src/bin/spec_econ.rs
+  changed: crates/memra-engine/src/bin/verify_mscale.rs
+  changed: crates/memra-engine/src/bin/w4a4_gate.rs
+  changed: crates/memra-engine/src/decode.rs
+  changed: crates/memra-engine/src/dflash.rs
+  changed: crates/memra-engine/src/gemma_spec.rs
+  changed: crates/memra-engine/src/hybrid_forward.rs
+  changed: crates/memra-engine/src/spec.rs
+  changed: crates/memra-server/src/worker.rs
+  changed: docs/FLAGS.md
+  changed: docs/SERVING.md
+  changed: docs/TESTING.md
+  changed: research/tick-seg-20260807/analyze-perf.py
+  changed: research/tick-seg-20260807/exact-tickseg.sh
+  changed: research/tick-seg-20260807/gate-tickseg.sh
+  changed: research/tick-seg-20260807/perf-tickseg.sh
+  changed: research/tick-seg-20260807/PROGRESS.md
+  changed: research/tick-seg-20260807/raw/chunkinv35c-noregress-probe-raw.log
+  changed: research/tick-seg-20260807/raw/chunkinv35-noregress-probe-raw.log
+  changed: research/tick-seg-20260807/raw/exact-tickseg-20260807T115356Z.log
+  changed: research/tick-seg-20260807/raw/fastgate-5090-20260807T123337Z.log
+  changed: research/tick-seg-20260807/raw/gate-tickseg-20260807T113933Z.log
+  changed: research/tick-seg-20260807/raw/tickinv35c-probe-raw.log
+  changed: research/tick-seg-20260807/raw/tickinv35-probe-raw.log
+  changed: research/tick-seg-20260807/raw/unaffected-q9-q35-5090-20260807T114112Z.log
+  changed: tools/fast-gate/map.tsv
+  changed: tools/fast-gate/models.tsv
+  changed: tools/tick-invariance-gate.sh
+  kernel-check scope: synthetic
+  tier-1 argmax probes: g12,q9,q35,q35slru,chunkinv,chunkinvc,chunkinv35,chunkinv35c,tickinv35,tickinv35c,gwstress,samp,accept,sstress
+  tier-1 spec probes:   q35spec,g31spec
+  NOTE: memra-server touched — run tools/serve-smoke.sh (serving surface is not fast-gated)
+  logs: /tmp/fast-gate-20260807-153337
+== fast-gate tier 0 ==
+  build: OK (0s)
+  kernel-check (synthetic arms): GREEN (106s)
+tier 0: GREEN (107s total)
+== fast-gate tier 1 ==
+  g12: PASS (gates green + golden token-identical, 2s)
+  q9: PASS (gates green + golden token-identical, 3s)
+  q35: PASS (gates green + golden token-identical, 12s)
+  q35slru: PASS (gates green + golden token-identical, 12s)
+  chunkinv: PASS (self-gating check green, 7s)
+  chunkinvc: PASS (self-gating check green, 6s)
+  chunkinv35: SKIP (SKIP (no Step-3.7-Flash artifact; set MEMRA_STEP37_GGUF))
+  chunkinv35c: SKIP (SKIP (no Step-3.7-Flash artifact; set MEMRA_STEP37_GGUF))
+  tickinv35: SKIP (SKIP (no Step-3.7-Flash artifact; set MEMRA_STEP37_GGUF))
+  tickinv35c: SKIP (SKIP (no Step-3.7-Flash artifact; set MEMRA_STEP37_GGUF))
+  gwstress: PASS (self-gating check green, 35s)
+  samp: PASS (self-gating check green, 2s)
+  accept: PASS (self-gating check green, 17s)
+  sstress: PASS (self-gating check green, 29s)
+  q35spec: PASS (gates green + golden token-identical, 13s)
+  g31spec: PASS (stream agreement 32/32, 8s)
+tier 1: 0 fail (253s total)
+
+fast-gate is the DEV-LOOP gate only — the full battery (tools/local-ci.sh + perf stage)
+still gates every merge and tag.

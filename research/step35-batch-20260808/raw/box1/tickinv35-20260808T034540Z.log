@@ -1,0 +1,12 @@
+tick-invariance-gate: label=step35-tick assert=invariant seam=MEMRA_PRIME_CALLLOCAL legacy-seam=off got=variant canary=0 budgets=0,1024,513,512,256,64 splits=64,256,512 model=Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+       1024 |     5 | EXACT |            -1 | 0.000e0 | - | identical
+        513 |    10 | EXACT |            -1 | 0.000e0 | - | identical
+        512 |    10 | DIFFER |             0 | 1.813e0 | - | step 6
+        256 |    20 | DIFFER |             0 | 1.813e0 | - | step 6
+         64 |    77 | DIFFER |             0 | 1.813e0 | - | step 6
+    tickinv verdict: *** TICK-DEPENDENT: prefill logits move with the per-tick prefill budget (MEMRA_PREFILL_TICK / _JUDGE / _HARVEST) ***
+tick-invariance-gate: FAIL — per-tick prefill segmentation steers the arithmetic.
+  The prefill logits move with the tick budget (or the LCP split point), so identical
+  requests prime differently under load (dark lanes are SLO-capped). Re-root-cause per
+  research/tick-seg-20260807/PROGRESS.md before touching the gate.
+  raw log: /tmp/tickinv-gate-LrXuvp.log

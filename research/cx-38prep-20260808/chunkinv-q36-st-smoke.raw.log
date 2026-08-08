@@ -1,0 +1,12 @@
+loaded safetensors (64 layers)
+chunkinv: T=97 chat=false chunks=["64", "32"] steps=1
+ref chunk=64 argmax=198 margin=1.505690
+  chunk | logits | first_div_pos | maxdiff   | argmax | stream_div
+     32 | EXACT |            -1 | 0.000e0 | - | identical
+chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+loaded safetensors (64 layers)
+chunkinv: T=149 chat=false chunks=["64", "32"] steps=1
+ref chunk=64 argmax=198 margin=2.183926
+  chunk | logits | first_div_pos | maxdiff   | argmax | stream_div
+     32 | EXACT |            -1 | 0.000e0 | - | identical
+chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size

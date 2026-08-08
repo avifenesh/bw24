@@ -1,0 +1,26 @@
+[server] starting; models config = [("smoke", "/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "smoke" <- /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[worker]   loaded "smoke": 33 layers, eos=248046
+[worker] smoke: template caps tools=true think=true think_switch=true chat_ok=true effort_levels=false ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] smoke: decode chunk cap 16 (exact-16 tier)
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["smoke"]
+[server] listening on http://127.0.0.1:8177
+[meter] admit id=cmpl-cca2078c600fbaf8f60a1fd2b0c42c50 tenant=default lane=interactive model="smoke"
+[worker] observed session VRAM cost for "smoke": 235MB (admission gate = 2x)
+[prefix-cache] insert (seed): 272 tokens, 58.9MB (resident 58.9MB / 268MB, model smoke, ns "meter-A")
+[meter] admit id=cmpl-69a8d457f4b05fbe7342f4df0dbf833e tenant=default lane=interactive model="smoke"
+[prefix-cache] insert (lcp-split): 256 tokens, 58.7MB (resident 117.6MB / 268MB, model smoke, ns "meter-A")
+[meter] admit id=cmpl-f540a168cfa75a0d39446ddd576c735f tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-f6c69d929dd9b7cba91d753fa4c66495 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-ecf6ccaf4f627620773b1229c9e95963 tenant=default lane=interactive model="smoke"
+[prefix-cache] hit: 256 of 272 prompt tokens from cache (model smoke)
+[meter] admit id=cmpl-f3d61879b7f0409e3842b6045ac9831b tenant=default lane=interactive model="smoke"
+[prefix-cache] insert (seed): 272 tokens, 58.9MB (resident 176.5MB / 268MB, model smoke, ns "meter-B")
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

@@ -1,0 +1,12 @@
+# SLICE 4 -- block_scale identity-scale equivalence to the plain form
+# operand abs-value sum (magnitude sanity anchor): 33015.775391
+
+case 0: identity 0x7F7F7F7F both (ue8m0 bias 127 => 2^0)
+   elements=128  bitwise-different=0  maxrel(plain vs blksc)=0  max|plain|=162602.7812  mean(blksc/plain)=1.000000
+
+case 1: scale_a = 0x80.. (2^1) -- expect 2x, proves the operand is LIVE
+   elements=128  bitwise-different=128  maxrel(plain vs blksc)=1  max|plain|=162602.7812  mean(blksc/plain)=2.000000
+
+case 2: scale_b = 0x7E.. (2^-1) -- expect 0.5x
+   elements=128  bitwise-different=128  maxrel(plain vs blksc)=0.5  max|plain|=162602.7812  mean(blksc/plain)=0.500000
+

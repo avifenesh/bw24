@@ -1,0 +1,5 @@
+commit(measure)=7490a18d  driver=595.84
+name, driver_version, memory.total [MiB]
+NVIDIA GeForce RTX 5090 Laptop GPU, 595.84, 24463 MiB
+engine commit at measurement: 7490a18d08c39dd0ade2de84bb3a08e019fb1b30
+

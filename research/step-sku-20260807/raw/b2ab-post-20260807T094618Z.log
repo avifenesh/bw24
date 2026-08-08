@@ -1,0 +1,24 @@
+0, 0 MiB
+1, 0 MiB
+1
+=== b2-geometry-ab tag=post 20260807T094618Z ===
+lock acquired 2026-08-07T09:46:18Z
+0, 0 MiB
+1, 0 MiB
+--- c=1 reference (greedy, B=1 tick) ---
+REF: {"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+--- c=4 concurrent identical requests (forms B>1 decode chunks after prefix-cache hits) ---
+
+=== c4 outputs (collected out-of-band 09:58Z; the on-box script hung in its shutdown wait
+=== after the co-run cleanup pkill'ed its server — outputs were already complete on disk)
+REF: {"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+C4: {"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+C4: {"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+C4: {"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+C4: {"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+c4[1] == ref
+c4[2] == ref
+c4[3] == ref
+c4[4] == ref
+VERDICT: IDENTICAL - all four c=4 rows byte-equal the c=1 greedy reference
+cards at cleanup: 0, 0 MiB / 1, 0 MiB

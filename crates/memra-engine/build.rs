@@ -2,6 +2,130 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+/// `nvcc --version`'s reported release, as `(major, minor)`. `None` when the binary cannot
+/// be run or the line cannot be parsed — such a candidate is unusable and gets skipped.
+/// Parses the canonical last line: `Cuda compilation tools, release 13.2, V13.2.68`.
+fn nvcc_version(p: &std::path::Path) -> Option<(u32, u32)> {
+    let out = Command::new(p).arg("--version").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    let rel = s.split("release ").nth(1)?;
+    let rel = rel.split(',').next()?.trim();
+    let mut it = rel.split('.');
+    let maj = it.next()?.parse::<u32>().ok()?;
+    let min = it.next().and_then(|m| m.parse::<u32>().ok()).unwrap_or(0);
+    Some((maj, min))
+}
+
+/// Resolve the `nvcc` to build with.
+///
+/// EXPLICIT INTENT WINS, unvalidated: `MEMRA_NVCC` first, then
+/// `CUDA_HOME`/`CUDA_PATH`/`CUDA_ROOT` + `/bin/nvcc`. Whoever sets those has chosen a
+/// toolkit (CI pins 13.1 through `MEMRA_NVCC`; the portable `89`/`90a` arches build fine on
+/// older releases), so this function must not second-guess them.
+///
+/// Otherwise: enumerate every candidate — `PATH` entries, `/usr/local/cuda/bin/nvcc`, and
+/// each `/usr/local/cuda-<x.y>/bin/nvcc` — ask each one its release, and take the
+/// **NEWEST**, not the first found.
+///
+/// WHY NEWEST-WINS RATHER THAN FIRST-ON-PATH (measured on the 5090 dev rig, 2026-08-06):
+/// this rig has BOTH a distro `/usr/bin/nvcc` (**CUDA 12.4**) and `/usr/local/cuda-13.1`.
+/// `/usr/bin` precedes the toolkit on the default `PATH`, and 12.4 predates sm_120 entirely
+/// — a first-hit resolver picks it and the build dies at
+/// `nvcc fatal : Unsupported gpu architecture 'compute_120a'`, which is a WORSE failure
+/// than the hardcoded pin it replaced (it breaks a machine that used to work). Ranking by
+/// reported release makes the pick order-independent and monotone: the rig picks 13.1, the
+/// PRO 6000 box picks 13.2, and a stale distro nvcc can never shadow a real toolkit.
+///
+/// WHY AT ALL: the old code defaulted to a bare `/usr/local/cuda-13.1/bin/nvcc`. The
+/// 2x RTX PRO 6000 box ships 12.8/12.9/13.0/**13.2** and no 13.1, so a naked `cargo build`
+/// died at `panicked at build.rs: spawn nvcc: Os { code: 2, kind: NotFound }` — a message
+/// naming neither CUDA nor the missing path. It cost the pp2-hardening lane its first build
+/// (`research/pp2-hardening-20260806/PROGRESS.md` Phase 0) and the vast 2x5090 bring-up
+/// before that (`research/vast2x5090-bringup-20260803/SUMMARY.md`). The resolved path and
+/// release are always echoed via `cargo:warning`, so every build log records which nvcc
+/// produced its fatbins.
+fn resolve_nvcc() -> String {
+    println!("cargo:rerun-if-env-changed=MEMRA_NVCC");
+    println!("cargo:rerun-if-env-changed=CUDA_HOME");
+    println!("cargo:rerun-if-env-changed=CUDA_PATH");
+    println!("cargo:rerun-if-env-changed=CUDA_ROOT");
+    if let Ok(p) = std::env::var("MEMRA_NVCC") {
+        println!("cargo:warning=nvcc from MEMRA_NVCC: {p}");
+        return p;
+    }
+    for var in ["CUDA_HOME", "CUDA_PATH", "CUDA_ROOT"] {
+        if let Ok(root) = std::env::var(var) {
+            let cand = PathBuf::from(&root).join("bin/nvcc");
+            if cand.is_file() {
+                println!("cargo:warning=nvcc from ${var}: {}", cand.display());
+                return cand.to_string_lossy().into_owned();
+            }
+        }
+    }
+    // Candidate set. Canonicalized + deduped so `/usr/local/cuda -> cuda-13.2` and a PATH
+    // entry pointing at the same tree are not probed (or reported) twice, and so the
+    // `<nvcc>/../../lib64` derivations below land in the real toolkit tree.
+    let mut cands: Vec<PathBuf> = Vec::new();
+    if let Ok(path) = std::env::var("PATH") {
+        cands.extend(
+            path.split(':').filter(|d| !d.is_empty()).map(|d| PathBuf::from(d).join("nvcc")),
+        );
+    }
+    cands.push(PathBuf::from("/usr/local/cuda/bin/nvcc"));
+    if let Ok(rd) = std::fs::read_dir("/usr/local") {
+        for ent in rd.flatten() {
+            if ent.file_name().to_string_lossy().starts_with("cuda-") {
+                cands.push(ent.path().join("bin/nvcc"));
+            }
+        }
+    }
+    let mut seen: Vec<PathBuf> = Vec::new();
+    let mut ranked: Vec<((u32, u32), PathBuf)> = Vec::new();
+    for c in cands {
+        if !c.is_file() {
+            continue;
+        }
+        let abs = c.canonicalize().unwrap_or(c);
+        if seen.contains(&abs) {
+            continue;
+        }
+        seen.push(abs.clone());
+        if let Some(v) = nvcc_version(&abs) {
+            ranked.push((v, abs));
+        }
+    }
+    // Newest release wins; ties (same release reachable by two paths) keep discovery order,
+    // which puts PATH ahead of /usr/local — sort_by is stable.
+    ranked.sort_by(|a, b| b.0.cmp(&a.0));
+    if let Some(((maj, min), p)) = ranked.first() {
+        let others: Vec<String> = ranked[1..]
+            .iter()
+            .map(|((a, b), q)| format!("{a}.{b} @ {}", q.display()))
+            .collect();
+        println!(
+            "cargo:warning=nvcc auto-detected CUDA {maj}.{min} at {}{}",
+            p.display(),
+            if others.is_empty() {
+                String::new()
+            } else {
+                format!(" (newest of {}; also saw {})", ranked.len(), others.join(", "))
+            }
+        );
+        return p.to_string_lossy().into_owned();
+    }
+    // Nothing runnable found: keep the historic pin so the failure text names a familiar
+    // path, and say out loud what to set. The spawn below turns this into a build error.
+    let pin = "/usr/local/cuda-13.1/bin/nvcc";
+    println!(
+        "cargo:warning=no runnable nvcc found via MEMRA_NVCC / CUDA_HOME / PATH / \
+         /usr/local/cuda*; falling back to {pin} — set MEMRA_NVCC=<path/to/nvcc>"
+    );
+    pin.to_string()
+}
+
 /// Arch auto-detection (MEMRA_CUDA_ARCH unset): probe the first GPU's compute capability
 /// via nvidia-smi and pick the matching build arch. GPU-less machines (CI compile gate)
 /// and unrecognized caps fall back to 120a — the naked build stays the sm_120a build.
@@ -58,7 +182,7 @@ fn main() {
         return;
     }
 
-    let nvcc = std::env::var("MEMRA_NVCC").unwrap_or_else(|_| "/usr/local/cuda-13.1/bin/nvcc".into());
+    let nvcc = resolve_nvcc();
     println!("cargo:rerun-if-env-changed=MEMRA_CUDA_ARCH");
     println!("cargo:rerun-if-env-changed=MEMRA_CUTLASS");
     println!("cargo:rustc-check-cfg=cfg(memra_portable_cuda)");
@@ -183,6 +307,14 @@ fn main() {
         // occupancy 12.5%; smaller tiles trade MMA j-reuse for CTAs/SM).
         println!("cargo:rerun-if-env-changed=MEMRA_MMQ_X_IQEXP");
         let iqexp_x = std::env::var("MEMRA_MMQ_X_IQEXP").ok();
+        // ROLLBACK SEAM: MEMRA_IQEXP_K16=1 rebuilds the IQ-experts + IQ4_XS-dense MMQ tiles with
+        // the ORIGINAL m16n8k16.s8 MMA form instead of the m16n8k32.s8 default (lane/iq-experts-
+        // k32, 2026-08-07). The int8 pipe is K-FREE on sm_120a (both forms 16.06 cyc/warp-MMA),
+        // so k32 does 2x the K-work per instruction and halves the f32 fold arity; the merge is
+        // legal because both per-16 scale slots of a 32-block are equal by loader construction.
+        // Receipts: research/iq-k32-20260807/.
+        println!("cargo:rerun-if-env-changed=MEMRA_IQEXP_K16");
+        let iqexp_k16 = std::env::var("MEMRA_IQEXP_K16").ok();
         // TUNE SEAM: MEMRA_MMQ_Y_W4A8=64 halves the row tile AND warp count together (mmq_y =
         // nwarps*16) — 42KB->21KB tile_x, 2 CTA/SM. Unlike MMQ_X, this axis doesn't duplicate
         // weight reads, so it attacks the 16.7%-warps occupancy ceiling for free.
@@ -195,12 +327,21 @@ fn main() {
         // research/prefill-gemm-20260806/.
         println!("cargo:rerun-if-env-changed=MEMRA_MMQ_FOLD_CEILING");
         let w4a8_fold_ceiling = std::env::var("MEMRA_MMQ_FOLD_CEILING").ok();
+        // ROLLBACK SEAM: MEMRA_MMQ_F8F4_PLAIN=1 rebuilds the f8f4 tile with the ORIGINAL plain
+        // kind::f8f6f4 MMA instead of the block_scale form at the ue8m0 identity scale. The two
+        // are bit-identical (0/128 elements differ, live-operand controls at 2^1/2^-1 exact) but
+        // the plain form issues at 32.02 cyc/warp-MMA against the block_scale form's 16.06 — a
+        // 1.994x MMA-rate difference. Receipts: research/w4a8-prefill-20260806/ slices 3-4.
+        println!("cargo:rerun-if-env-changed=MEMRA_MMQ_F8F4_PLAIN");
+        let f8f4_plain = std::env::var("MEMRA_MMQ_F8F4_PLAIN").ok();
         // TUNE SEAM: MEMRA_MMQ_X_FP8=<n> rebuilds the per-block FP8 prefill tile with an n-token
         // tile (it sets the WIDE candidate; the launcher picks between it and FP8_MMQ_X_SMALL per
         // call by wave fill). v1 needed this seam because its 128-token default sat below the Q8_0
         // floor at every 27B shape; v2's restructure made X=256 affordable and it is now the
-        // default. Neither arm is MMA-bound at any width measured (110-130 TF against f8f6f4's
-        // 381-TF class), so geometry, not the MMA, is what this seam moves.
+        // default. Neither arm is MMA-bound at any width measured (110-130 TF) — though note the
+        // denominator that judgement used was WRONG: the tile issued the PLAIN kind::f8f6f4 form,
+        // a 155-TF ceiling, not the 381-TF block_scale class (corrected 2026-08-06; see the FORM
+        // CHOICE block in cu/mmq_fp8_blk.cu).
         //
         // MEMRA_MMQ_Y_FP8 / MEMRA_MMQ_OCC_FP8 / MEMRA_MMQ_PIPE_FP8 (v2 slice-2/slice-3 seams)
         // CONCLUDED NEGATIVE and were DELETED per the flags doctrine (v0.69.0): halving Y splits
@@ -209,6 +350,19 @@ fn main() {
         // record is research/fp8st-20260804/mmq-v2/RESULTS.jsonl slices 2-3 and experiment B.
         println!("cargo:rerun-if-env-changed=MEMRA_MMQ_X_FP8");
         let fp8_x = std::env::var("MEMRA_MMQ_X_FP8").ok();
+        // ROLLBACK SEAM: MEMRA_MMQ_FP8BLK_PLAIN=1 rebuilds the per-block FP8 prefill tile with the
+        // ORIGINAL plain kind::f8f6f4 MMA instead of the block_scale form at the ue8m0 identity
+        // scale. The two are bit-identical (0/128 accumulator elements differ, live-operand controls
+        // at 2^1/2^-1 exact) but the plain form issues at 32.02 cyc/warp-MMA against the block_scale
+        // form's 16.06 — a 1.994x MMA-rate difference. Same seam the W4A8 tile carries as
+        // MEMRA_MMQ_F8F4_PLAIN. Receipts: research/w4a8-prefill-20260806/ slices 3-4,
+        // research/rp-on-st-20260806/.
+        println!("cargo:rerun-if-env-changed=MEMRA_MMQ_FP8BLK_PLAIN");
+        let fp8blk_plain = std::env::var("MEMRA_MMQ_FP8BLK_PLAIN").ok();
+        // RESEARCH-INSTRUMENT ARM (not a runtime flag): ACCPROBE_F32_PLAIN=1 — see the
+        // mmq_q8_0_f32acc.cu branch below.
+        println!("cargo:rerun-if-env-changed=ACCPROBE_F32_PLAIN");
+        let accprobe_plain = std::env::var("ACCPROBE_F32_PLAIN").ok();
         // fp8_prefill.cu rides the same static-lib kind: a cuBLASLt host launcher + quantize
         // kernels for the MEMRA_PP_FP8 prefill path (runtime-gated; always built — no external
         // header deps beyond the CUDA toolkit, which ships cublasLt).
@@ -257,14 +411,27 @@ fn main() {
                 if let Some(x) = &w4a8_x { args.push(format!("-DMMQ_X={x}")); }
                 if let Some(y) = &w4a8_y { args.push(format!("-DMMQ_Y={y}")); }
                 if let Some(v) = &w4a8_fold_ceiling { args.push(format!("-DMEMRA_MMQ_FOLD_CEILING={v}")); }
+                if f8f4_plain.as_deref() == Some("1") { args.push("-DMEMRA_F8F4_PLAIN_MMA".into()); }
             }
             if mmq_src.ends_with("mmq_iq_experts.cu") {
                 if let Some(x) = &iqexp_x { args.push(format!("-DMMQ_X={x}")); }
+                if iqexp_k16.as_deref() == Some("1") { args.push("-DMEMRA_IQEXP_K16_MMA".into()); }
             }
             // Per-block FP8 MMQ token-tile geometry (X only — the Y/OCC/PIPE seams concluded
             // negative and were deleted; see the TUNE SEAM note above).
             if mmq_src.ends_with("mmq_fp8_blk.cu") {
                 if let Some(x) = &fp8_x { args.push(format!("-DFP8_MMQ_X={x}")); }
+                if fp8blk_plain.as_deref() == Some("1") { args.push("-DMEMRA_FP8BLK_PLAIN_MMA".into()); }
+            }
+            // RESEARCH INSTRUMENT ARM: ACCPROBE_F32_PLAIN=1 rebuilds the fp8-v3-gate Q1 instrument's
+            // F32 arm with the ORIGINAL plain kind::f8f6f4 MMA. Needed to REPRODUCE the published
+            // +19.8/+20.2 delta_pp (research/fp8v3-gate-20260805/), which was measured with that
+            // form — and which is confounded, because the plain form issues at 32.02 cyc/warp-MMA
+            // against the S32 arm's 16.06, so "f32 vs s32 accumulate" moved the MMA interval too.
+            // The default arm now uses the block_scale form at the ue8m0 identity scale (bit-identical
+            // product, 16.06 cyc), which is what makes the instrument single-variable.
+            if mmq_src.ends_with("mmq_q8_0_f32acc.cu") {
+                if accprobe_plain.as_deref() == Some("1") { args.push("-DMEMRA_ACCPROBE_PLAIN_MMA".into()); }
             }
             if mmq_src.ends_with("fa3_prefill.cu") && cuda_arch != "90a" {
                 args.push("-DMEMRA_FA3_STUB".into());

@@ -1,0 +1,98 @@
+Step-3.7-Flash KV + PP-2 fit arithmetic — step37-p2, 2026-08-06
+Inputs, each with its source (nothing here is an estimate):
+  KV geometry: 8 KV heads x 128 head_dim, UNIFORM across all 45 layers
+    (research/step37-bringup-20260802/PLAN.md:101 — only the QUERY head count is per-layer)
+  KV block bytes: crates/memra-kv/src/lib.rs:37-42 kv_blk_bytes()
+    default (no env)  K q8_0 = 34 B / 32 elem ; V q5_1 = 24 B / 32 elem
+    MEMRA_KV_*=fp8    K = V = 32 B / 32 elem
+  Allocation shape: crates/memra-kv/src/lib.rs:316-317 — k/v alloc = max_ctx * tok_bytes
+    for EVERY FullAttention layer. step35's 33 SWA layers are FullAttention (the window is
+    a mask, not a smaller buffer), so they are allocated at max_ctx today. That is gap (F).
+  Card capacity: nvidia-smi on the box, 2026-08-06 -> 97887 MiB total per card, x2
+  Weights: sha-verified byte counts, raw/artifact-sizes-20260806.txt
+
+KV format                            B/tok/layer                 32K               128K               256K
+                                                       at-max / ring      at-max / ring      at-max / ring
+q8_0/q5_1 (memra DEFAULT, no env)           1856     2.55 /  0.71    10.20 /  2.75    20.39 /  5.47  
+fp8 both planes (MEMRA_KV_* seam)           2048     2.81 /  0.78    11.25 /  3.03    22.50 /  6.03  
+fp16 (the row PLAN.md priced)               4096     5.62 /  1.56    22.50 /  6.06    45.00 / 12.06  
+
+  'at-max' = memra TODAY (all 45 layers at max_ctx). 'ring' = after work item (F)
+  (12 full layers at max_ctx + 33 SWA layers at their 512-token window).
+
+PP-2 pair capacity: 95.59 GiB x 2 = 191.19 GiB
+Step-3.7-Flash IQ4_XS weights       97.78 GiB   (1.02 cards -> SINGLE-CARD RESIDENT IS IMPOSSIBLE)
+Step MTP head Q8_0 (drafter)         3.45 GiB
+Qwen3.6-27B NVFP4-Q4_K_M-mtp        14.63 GiB   (/scratch-models on the box, ls 2026-08-06)
+
+headroom, pair, after Step weights                  93.40 GiB
+headroom, pair, after Step weights + Step MTP       89.95 GiB
+headroom, pair, after Step + MTP + q27 co-resident  75.32 GiB
+
+Per-card, at the even PP-2 split (pp.rs default: cut at s*n_layers/N -> 23/22 layers):
+  weights are per-STAGE, and the stage that owns a layer also allocates its KV
+  (memra-kv/src/lib.rs:253 `let e = pick(il)`), so KV splits with the layers.
+  default q8_0/q5_1  ctx=128K  KV stage0=  5.21 stage1=  4.98 GiB  -> stage0 total ~ 54.10 / 95.59 GiB  FITS
+  default q8_0/q5_1  ctx=256K  KV stage0= 10.42 stage1=  9.97 GiB  -> stage0 total ~ 59.31 / 95.59 GiB  FITS
+  fp8 both           ctx=128K  KV stage0=  5.75 stage1=  5.50 GiB  -> stage0 total ~ 54.64 / 95.59 GiB  FITS
+  fp8 both           ctx=256K  KV stage0= 11.50 stage1= 11.00 GiB  -> stage0 total ~ 60.39 / 95.59 GiB  FITS
+
+Note on the weight split: w/2 is a placeholder for the even-layer-count split; the exact
+per-stage weight bytes need the tensor->layer byte map from the loader and are measured at
+first boot, not asserted here.
+
+=====================================================================================
+CORRECTION TO PLAN.md §3.4 — the "256K does not fit" constraint was priced for a
+DIFFERENT BOX, and does not transfer to the PP-2 pair.
+=====================================================================================
+
+PLAN.md §3.4 asks "Fits official-IQ4_XS headroom (26.8 GiB)?" — that 26.8 GiB is from
+PLAN.md:161, "Both fit 4x 5090 (128 GiB): official + MTP Q8_0 = 101.2 GiB -> 26.8 GiB
+headroom". Phase 1 was written against the sku-repick premise of a 4x RTX 5090 (4 x 32
+GiB = 128 GiB) box (PLAN.md:5). The owner's 2026-08-06 doctrine call moved the SKU to
+2x RTX PRO 6000 Server 96GB = 191.19 GiB measured. Headroom after weights + MTP is
+89.95 GiB, not 26.8 GiB — 3.4x more.
+
+Two of §3.4's three inputs also do not match the code:
+
+  (a) It prices FP16 and FP8 KV. memra's DEFAULT with no env set is q8_0 K / q5_1 V
+      (kv_blk_bytes(), memra-kv/src/lib.rs:37-42) = 1856 B/tok/layer, which is 45%
+      of the FP16 row it calls "22.5 GiB at 128K". The real default-format number is
+      10.20 GiB at 128K and 20.39 GiB at 256K.
+  (b) The 26.8 GiB comparison is against a whole-box aggregate, but KV is allocated
+      per-STAGE by the device that owns the layer (memra-kv/src/lib.rs:253), so the
+      binding constraint is per-card, not pair-aggregate.
+
+Redone against this box, at the pp.rs default even cut (23/22 layers):
+
+  256K, memra default q8_0/q5_1: KV = 10.42 GiB on stage 0, 9.97 GiB on stage 1.
+  Even with weights split evenly (~48.9 GiB/stage), stage 0 lands ~59.3 of 95.59 GiB.
+
+So on THIS box, 256K fits the allocator as it stands, and work item (F) (the SWA ring
+buffer) is a memory OPTIMIZATION here rather than the precondition it was on 4x32 GiB.
+
+WHAT THIS DOES NOT ESTABLISH — three things, none of them measured yet:
+
+  1. Activation and graph-pool footprint at 256K is unknown. PLAN.md:187 already flags
+     this ("measured there, no number claimed here") and that still holds. At 45 layers
+     x 96 SWA heads the prefill activation peak is not a rounding error, and the 93.5:1
+     prefill-heavy traffic profile means long prefills are the common case, not the tail.
+  2. The even layer-count split is not the even BYTE split. 3 dense + 42 MoE means the
+     first stage's layers are cheaper than the second's, so the real per-stage weight
+     bytes need the loader's tensor->layer map. That is a first-boot measurement.
+  3. Whether 256K is CORRECT at 256K (rope/mask/SWA behavior that far out) is an
+     exactness question this arithmetic says nothing about.
+
+Therefore the honest listing context stays 128K for now: it is the number this lane can
+defend, and 256K becomes a claim only after a measured boot at 256K plus the exactness
+battery at depth. What changed is the REASON for the cap — it is no longer "the
+allocator cannot express it".
+
+q27 CO-RESIDENCE (the owner's open question):
+  Step weights 97.78 + Step MTP 3.45 + q27 14.63 = 115.86 GiB of the 191.19 GiB pair,
+  leaving 75.32 GiB for KV + activations for BOTH models. Step's own 256K KV at the
+  default format is 20.39 GiB of that; q27's KV is small by comparison. Answer: yes,
+  q27 fits alongside with wide margin on the byte budget. The unanswered part is not
+  capacity, it is scheduling — q27 co-resident on the pair means it shares the SMs Step
+  is using, so the cost is throughput interference, which is the pp2-hardening lane's
+  measurement, not a fit calculation.

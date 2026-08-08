@@ -1,0 +1,69 @@
+# Deeper queries against /tmp/anatomy-pp4096-20260807T114137Z.sqlite (box-side, python3 sqlite3).
+# The .nsys-rep/.sqlite stay in /tmp on the box per lane rules; these are the query outputs the
+# PROGRESS.md verdict quotes. Trace = 1 warmup + 1 timed prime (two primes total); "per-prime"
+# figures in PROGRESS.md are the full-trace sums halved (verified: warmup/rep windows are
+# near-identical per the window split below).
+
+## Per-device kernel time + wall span
+SELECT deviceId, COUNT(*), SUM(end-start)/1e9 FROM CUPTI_ACTIVITY_KIND_KERNEL GROUP BY deviceId;
+  -> kernels per device: [(0, 2337323, 87.634549034)]        # ZERO kernels on device 1
+SELECT MIN(start), MAX(end) ... -> kernel wall span: 93.77 s
+union-busy(dev0) = 87.63 s of 93.77 s span -> idle 6.15 s (6.6%)
+
+## Memcpy by kind (full trace)
+(kind, count, sec, GB): [(1=H2D, 26117, 1.664 s, 74.17 GB), (2=D2H, 86, 0.026 s, 0.397 GB),
+                         (8=D2D, 110, 0.0054 s, 8.52 GB)]
+memcpy by device: [(0, 25989 ops, 81.11 GB), (1, 324 ops, 1.98 GB)]
+D2H size histogram: [(4718592 B, 84), (515584 B, 2)]   # 84 = 42 MoE-layer router readbacks x 2 primes
+                                                        # 4718592 = 4096 tok x 288 experts x 4 B
+
+## Bimodal kernel families (fast=local stage-0 weights, slow=peer-read stage-1 weights from dev0)
+mmq_iq4xs_dense_kernel, n=540: p10=0.8 p25=1.0 p50=16.9 p75=32.6 p90=96.7 p99=127.9 max=131.1 ms
+  <=30ms: n=315 sum=1.9 s | >30ms: n=225 sum=13.8 s   (fast med 1.0 ms, slow med 33.5 ms = 34x)
+  time-order pattern (f=fast, S=slow): fx132 Sx5 fSx5 fSx5 ... fx133 Sx5 fSx5 ...
+    = per prime: 132 fast (22 stage-0 layers x 6 GEMMs) then alternating fast/slow over the
+      23 stage-1 layers. The split is EXACTLY the fence [0,22,45].
+router_gemv_f32_w8_batch, n=84: pattern fx19 Sx23 fx19 Sx23
+  = 19 stage-0 MoE layers fast (med 0.7 ms), 23 stage-1 MoE layers slow (med 72.0 ms) = 100x
+qmatvec_iq4_XS_dp4a, n=90: pattern fx22 Sx23 fx22 Sx23 (min 0.37, med 62.8, max 86.7 ms)
+  = 22 stage-0 layers fast, 23 stage-1 slow (this is attn_gate.weight's m=4096 projection)
+
+## sdpa_naive_w_f32 (the #1 cost)
+n=66 (33 SWA layers x 2 primes): min=563 med=565 max=573 ms, total 37.3 s (18.6 s/prime)
+vs fa_prefill_qw_db_hd128 n=24 (12 full-attn layers x 2): med 3.34 ms — causal-4096 (HARDER
+than window-512) at 1/170th the cost. The floor kernel iterates all t_kv keys per query and
+does a serial t_kv softmax on thread 0 (kernels.cu:1795).
+
+## Warmup-vs-rep window split (largest inter-kernel gap = 0.25 s at t+1.9 s)
+warmup window 1.9 s: sdpa_naive_w_f32 n=3 1.71 s, mmq n=21 0.13 s ...
+  (warmup is the same prime shape; the timed-rep window 91.6 s carries both primes' tails —
+   per-prime numbers in PROGRESS.md therefore use full-trace/2, cross-checked against the
+   kernsum CSV.)
+rep window totals (full trace): sdpa 35.56+1.71 s, mmq 15.51+0.13 s, gate_up 11.84 s,
+  down8 9.68 s, dp4a 3.67 s, router 3.35 s, qmatvec_expert_q8 2.66 s, q45k 1.43 s
+
+## Per-prime totals used in the PROGRESS.md table (full-trace/2)
+sdpa_naive_w_f32             n=33      18.63 s
+mmq_iq4xs (all)              n=270      7.82 s   (local-class 0.93 s + peer-class 6.89 s)
+moe_gate_up_silu8_q8         n=161383   5.92 s
+moe_down8_fma_q8             n=161383   4.84 s
+qmatvec_iq4_XS_dp4a          n=45       1.83 s
+router_gemv_f32_w8_batch     n=42       1.68 s
+qmatvec_expert_q8            n=255564   1.33 s
+mul_mat_q_q45k               n=45       0.72 s
+quantize_q8_1                n=418649   0.55 s
+fa_prefill_qw_db_hd128       n=12       0.04 s
+H2D (SLRU expert staging)    n=13058    0.83 s (37.1 GB)
+accounting: 44.4 s of the 45.8 s traced-rep wall (dev0 union busy 43.8 s/prime)
+
+## API summary highlights (full trace, from -apisum.csv)
+cuMemcpyDtoHAsync 63.49 s over 86 calls  = host WAITING behind enqueued GPU work at the
+  per-MoE-layer router readback (the transfer itself is 26 ms GPU-side) — not a transport cost
+cuLaunchKernel 13.0 s / 1.84M calls + cuLaunchKernelEx 9.4 s / 494K calls — fully hidden
+  under the 93.4% GPU-busy timeline (launch rate is NOT the wall today; it becomes one only
+  after levers A/B/C shrink the kernels)
+
+## nsys distortion control (same lock window)
+traced rep:    4096 tok in 45.7978 s = 89.4 tok/s
+untraced ctl:  47.5098 s (rep 0, cold-ish) / 45.0738 s (rep 1) — traced run inside control spread
+capacity baseline (N=5, 2026-08-07): 45.04-45.10 s = 90.8-90.9 tok/s

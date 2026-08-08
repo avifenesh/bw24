@@ -1,0 +1,35 @@
+=== step37-p2 chunkinv KNIFE-EDGE (closed-form P = c*floor(512/c)) 20260806T224947Z
+=== model predicts: 4096~513 EXACT | 4096!=512 DIFFER | 512!=384 DIFFER | 512~256 EXACT
+lock acquired 2026-08-06T22:49:47Z
+0, 0 MiB
+1, 0 MiB
+
+########## PRED-1+2: ref=4096 vs 513 (P=0, expect EXACT) and 512 (P=512, expect DIFFER) ##########
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision: experts 101.07GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> SLRU cache
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+chunkinv: T=4883 chat=false chunks=["4096", "513", "512"] steps=24
+ref chunk=4096 argmax=128799 margin=4.505838
+  chunk | logits | first_div_pos | maxdiff   | argmax | stream_div
+    513 | EXACT |            -1 | 0.000e0 | - | identical
+    512 | DIFFER |             0 | 1.813e0 | - | step 6
+chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+=== rc=0
+
+########## PRED-3+4: ref=512 vs 384 (P=384, expect DIFFER) and 256 (P=512, expect EXACT) ##########
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision: experts 101.07GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> SLRU cache
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+chunkinv: T=4883 chat=false chunks=["512", "384", "256"] steps=24
+ref chunk=512 argmax=128799 margin=4.283469
+  chunk | logits | first_div_pos | maxdiff   | argmax | stream_div
+    384 | DIFFER |           384 | 1.417e0 | - | step 13
+    256 | EXACT |            -1 | 0.000e0 | - | identical
+chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+=== rc=0
+0, 0 MiB
+1, 0 MiB
+lock released 2026-08-06T22:55:54Z
+=== done 2026-08-06T22:55:54Z

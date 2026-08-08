@@ -1,0 +1,36 @@
+argmax-margin-probe: T=2048 window=24 sm_count=188 model=/root/models/Qwen3.6-27B-Q8_0.gguf
+env: MEMRA_FA_SPLIT=8 MEMRA_Q80_G2=<unset> MEMRA_FAST=<unset> MEMRA_PRIME_CHUNK=<unset>
+
+pos      prefill_top1  margin_p     decode_top1  margin_d     delta@ids      agree
+2024     332           1.3264       332          1.2298       0.0779         yes
+2025     318           0.6439       318          0.5401       0.1868         yes
+2026     539           0.0894       539          0.1308       0.1389         yes
+2027     1730          6.3702       1730         6.2991       0.1082         yes
+2028     310           0.0149       310          0.0533       0.1115         yes
+2029     1510          2.0633       1510         2.0747       0.0746         yes
+2030     35716         0.1063       35716        0.0206       0.0736         yes
+2031     620           10.4606      620          10.4273      0.1548         yes
+2032     332           2.3833       332          2.4441       0.1012         yes
+2033     27718         1.3380       27718        1.2698       0.0716         yes
+2034     1510          5.5041       1510         5.4813       0.1077         yes
+2035     5653          9.0712       5653         9.3372       0.2067         yes
+2036     24822         13.2988      24822        13.4661      0.2245         yes
+2037     63            0.4720       63           0.4049       0.0632         yes
+2038     11069         0.2064       11069        0.3031       0.0743         yes
+2039     2083          0.1909       2083         0.1713       0.0142         yes
+2040     40049         3.8128       40049        3.8912       0.0707         yes
+2041     18583         1.2731       18583        1.1911       0.0762         yes
+2042     681           0.5297       681          0.5024       0.0216         yes
+2043     11069         0.3690       11069        0.3988       0.1255         yes
+2044     264           1.5752       264          1.3660       0.1284         yes
+2045     2972          0.7476       2972         0.7312       0.0700         yes
+2046     42714         0.7254       42714        0.8201       0.0532         yes
+2047     332           0.0307       266          0.0434       0.2322         NO <-- FLIP
+
+margin distribution (decode config, 24 positions): min 0.0206  p10 0.0533  p50 1.1911  p90 9.3372  max 13.4661
+margin distribution (prefill config): min 0.0149  p50 1.2731  max 13.2988
+DECISION POSITION (the gate's): prefill_top1=332 decode_top1=266 margin_p=0.0307 margin_d=0.0434 config_delta_at_ids=0.2322
+  -> the decision margin is BELOW 1/24 sampled positions' margins (rank 2 of 24)
+  -> flip is ARITHMETICALLY POSSIBLE iff config_delta > margin: 0.2322 > 0.0307 = true
+agreement across sampled positions: 23/24 (1 flip(s))
+VERDICT-INPUT: NEAR-TIE class — isolated flip at a margin the config spread covers

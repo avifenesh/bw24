@@ -1,0 +1,12 @@
+local_commit=73c65c91
+train_base=a131e8c75849bcf1efe1b234039a14d71bb089a3
+source_base=6afc4f65
+utc=2026-08-08T02:53:33Z
+47ea7c235f0eda446ca45a7693113469428f7c22ce157bbfcafb31c74a1861f5  crates/memra-engine/src/hybrid_forward.rs
+3e14869a56904ddc4f2715a638c548080128fa330e0e875877cf06ff49c475b4  docs/FLAGS.md
+0c9f13386a03eb17b4942c69d833509e69aa75d5c0c9aa1579261c31f406fcf0  tools/tick-invariance-gate.sh
+c1651c9ce6ff95bb4c9d2a6ba72bd0b6b0a338827aecce9498c43a97dff695fe  research/v072-fix1-20260808/verify-box2.sh
+warning: memra-engine@0.71.0: nvcc auto-detected CUDA 13.2 at /usr/local/cuda-13.2/bin/nvcc (newest of 4; also saw 13.0 @ /usr/local/cuda-13.0/bin/nvcc, 12.9 @ /usr/local/cuda-12.9/bin/nvcc, 12.8 @ /usr/local/cuda-12.8/bin/nvcc)
+warning: memra-engine@0.71.0: MEMRA_CUDA_ARCH auto-detected 120a (compute_cap 12.0); set MEMRA_CUDA_ARCH to override
+   Compiling memra-engine v0.71.0 (/home/ubuntu/step37/v072fix-memra/crates/memra-engine)
+    Finished `release` profile [optimized] target(s) in 19.11s

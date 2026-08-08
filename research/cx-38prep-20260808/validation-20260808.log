@@ -1,0 +1,215 @@
+
+$ cargo check -p memra-engine --bin concat-prime-probe
+warning: memra-engine@0.71.0: nvcc from $CUDA_HOME: /usr/local/cuda-13.1/bin/nvcc
+warning: memra-engine@0.71.0: MEMRA_CUDA_ARCH auto-detected 120a (compute_cap 12.0); set MEMRA_CUDA_ARCH to override
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
+
+$ cargo test -p memra-tokenizer hf_dir_encode_decode_roundtrip_and_specials -- --nocapture
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+     Running unittests src/lib.rs (target/debug/deps/memra_tokenizer-72b22a0edefdae16)
+
+running 1 test
+test hf_tests::hf_dir_encode_decode_roundtrip_and_specials ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.01s
+
+     Running unittests src/bin/tok_check.rs (target/debug/deps/tok_check-048a95d07cf3d9d7)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/tok_freq.rs (target/debug/deps/tok_freq-e4c6f52ec091ad99)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/tok_parity.rs (target/debug/deps/tok_parity-da5ec0c5877e1c9f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/tok_trim.rs (target/debug/deps/tok_trim-5cf48625be0877e2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/llama_parity.rs (target/debug/deps/llama_parity-066856752f7a7870)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+
+$ cargo test -p memra-tokenizer qwen_think_mode_covers_all_three_directions -- --nocapture
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running unittests src/lib.rs (target/debug/deps/memra_tokenizer-72b22a0edefdae16)
+
+running 1 test
+test chat::tests::qwen_think_mode_covers_all_three_directions ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.00s
+
+     Running unittests src/bin/tok_check.rs (target/debug/deps/tok_check-048a95d07cf3d9d7)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/tok_freq.rs (target/debug/deps/tok_freq-e4c6f52ec091ad99)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/tok_parity.rs (target/debug/deps/tok_parity-da5ec0c5877e1c9f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/tok_trim.rs (target/debug/deps/tok_trim-5cf48625be0877e2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/llama_parity.rs (target/debug/deps/llama_parity-066856752f7a7870)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+
+$ cargo test -p memra-server reasoning_effort_maps_to_think_switch -- --nocapture
+warning: memra-engine@0.71.0: nvcc from $CUDA_HOME: /usr/local/cuda-13.1/bin/nvcc
+warning: memra-engine@0.71.0: MEMRA_CUDA_ARCH auto-detected 120a (compute_cap 12.0); set MEMRA_CUDA_ARCH to override
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/main.rs (target/debug/deps/memra_server-d212eac78c68e15e)
+
+running 1 test
+test tests::reasoning_effort_maps_to_think_switch ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 114 filtered out; finished in 0.01s
+
+
+$ cargo test -p memra-gguf qwen_official_fp8_find_q8_0_roundtrip -- --nocapture
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running unittests src/lib.rs (target/debug/deps/memra_gguf-bd79f94308155836)
+
+running 1 test
+test source::f8_block128::qwen_official_fp8_find_q8_0_roundtrip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 76 filtered out; finished in 0.01s
+
+     Running unittests src/bin/inspect.rs (target/debug/deps/gguf_inspect-713b09ddf9dee2c5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/nvfp4_validate.rs (target/debug/deps/nvfp4_validate-8afc134c9009bf86)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+$ cargo test -p memra-gguf fp8_native_carries_block_grid -- --nocapture
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running unittests src/lib.rs (target/debug/deps/memra_gguf-bd79f94308155836)
+
+running 1 test
+test source::f8_block128::fp8_native_carries_block_grid ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 76 filtered out; finished in 0.00s
+
+     Running unittests src/bin/inspect.rs (target/debug/deps/gguf_inspect-713b09ddf9dee2c5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/nvfp4_validate.rs (target/debug/deps/nvfp4_validate-8afc134c9009bf86)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+$ cargo test -p memra-gguf nested_text_config_hybrid -- --nocapture
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running unittests src/lib.rs (target/debug/deps/memra_gguf-bd79f94308155836)
+
+running 1 test
+test config::hf_tests::nested_text_config_hybrid ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 76 filtered out; finished in 0.00s
+
+     Running unittests src/bin/inspect.rs (target/debug/deps/gguf_inspect-713b09ddf9dee2c5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/nvfp4_validate.rs (target/debug/deps/nvfp4_validate-8afc134c9009bf86)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+$ bash -n tools/preflight-38.sh tools/chunk-invariance-gate.sh
+
+$ shellcheck tools/preflight-38.sh tools/chunk-invariance-gate.sh
+
+$ python3 -m py_compile tools/inspect-fp8-st.py tools/hf-greedy-reference.py tools/compare-greedy-tokens.py research/qwen38-prep-20260803/arch-diff-fields.py
+
+$ bash -n /tmp/qwen38-runbook-bash.sh
+
+$ python3 tools/inspect-fp8-st.py /data/ai-ml/hf-models/qwen36-27b-blk128fp8 --require-direct
+checkpoint: /data/ai-ml/hf-models/qwen36-27b-blk128fp8
+safetensors files: 3
+tensor headers: 2194
+2D F8_E4M3 weights: 208
+  per-tensor :    0 tensors       0.000 MiB
+  block-128  :  208 tensors    6880.000 MiB
+  per-row    :    0 tensors       0.000 MiB
+  unsupported:    0 tensors       0.000 MiB
+packed-U8 E4M3 scale planes: 193
+header-only direct-path verdict: PASS
+runtime checks still required: finite positive scales, no E4M3 NaN codes, transform support, native residency census, and FP8-MMQ dispatch
+
+$ python3 research/qwen38-prep-20260803/arch-diff-fields.py /data/ai-ml/hf-models/qwen36-27b-hf-min/config.json /data/ai-ml/hf-models/qwen36-27b-hf-min/config.json
+
+0 architecture diffs, 0 hard stops
+
+$ python3 tools/compare-greedy-tokens.py /tmp/cx-38-hf-reference.json /tmp/cx-38-memra.log
+HF-ARGMAX PASS: 2 prompt tokens and 2 generated tokens are identical
+
+$ python3 tools/hf-greedy-reference.py --help
+usage: hf-greedy-reference.py [-h] --prompt-file PROMPT_FILE --tokens-out
+                              TOKENS_OUT [--max-new-tokens MAX_NEW_TOKENS]
+                              [--device-map DEVICE_MAP] [--dtype DTYPE]
+                              [--no-thinking] [--trust-remote-code]
+                              model
+
+positional arguments:
+  model
+
+options:
+  -h, --help            show this help message and exit
+  --prompt-file PROMPT_FILE
+  --tokens-out TOKENS_OUT
+  --max-new-tokens MAX_NEW_TOKENS
+  --device-map DEVICE_MAP
+  --dtype DTYPE
+  --no-thinking
+  --trust-remote-code
+
+$ git diff --check
+
+VALIDATION: PASS

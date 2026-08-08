@@ -1,0 +1,35 @@
+### qwen default (thinking ON, open <think>)
+'<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n<think>\n'
+
+### qwen enable_thinking=false (closed think block)
+'<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n'
+
+### gemma4 default (enable_thinking undefined -> CLOSED thought channel)
+'<|turn>user\nHi<turn|>\n<|turn>model\n<|channel>thought\n<channel|>'
+
+### gemma4 enable_thinking=true, no system
+'<|turn>system\n<|think|>\n<turn|>\n<|turn>user\nHi<turn|>\n<|turn>model\n'
+
+### gemma4 enable_thinking=true, with system
+'<|turn>system\n<|think|>\nBe terse.<turn|>\n<|turn>user\nHi<turn|>\n<|turn>model\n'
+
+### gemma4 enable_thinking=false explicit (must equal default)
+'<|turn>system\nBe terse.<turn|>\n<|turn>user\nHi<turn|>\n<|turn>model\n<|channel>thought\n<channel|>'
+
+### hy3 default (reasoning_effort undefined -> no_think)
+'<｜hy_begin_of_sentence:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:no_think<｜hy_User:opensource｜>Hi<｜hy_Assistant:opensource｜><think:opensource></think:opensource>'
+
+### hy3 reasoning_effort=low (OPEN think)
+'<｜hy_begin_of_sentence:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:low<｜hy_User:opensource｜>Hi<｜hy_Assistant:opensource｜><think:opensource>'
+
+### hy3 reasoning_effort=high (OPEN think)
+'<｜hy_begin_of_sentence:opensource｜>Be terse.<｜reasoning_mode:opensource｜>reasoning_effort:high<｜hy_User:opensource｜>Hi<｜hy_Assistant:opensource｜><think:opensource>'
+
+### hy3 reasoning_effort=no_think explicit (must equal default)
+'<｜hy_begin_of_sentence:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:no_think<｜hy_User:opensource｜>Hi<｜hy_Assistant:opensource｜><think:opensource></think:opensource>'
+
+### hy3 assistant history stays closed-think at low
+'<｜hy_begin_of_sentence:opensource｜><｜reasoning_mode:opensource｜>reasoning_effort:low<｜hy_User:opensource｜>q<｜hy_Assistant:opensource｜><think:opensource></think:opensource>a<｜hy_eos:opensource｜><｜hy_User:opensource｜>more<｜hy_Assistant:opensource｜><think:opensource>'
+
+### step35 reasoning_effort=medium (string in system turn; tail unconditional)
+'<|im_start|>system\nReasoning: medium\n\n<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n<think>\n'

@@ -5565,8 +5565,15 @@ impl Engine {
             // b16 tier (2026-07-11, spec K>7): Q4_0/Q6_K have base+_rp b16 kernels; Q8_0's
             // b16 exists only as the split-plane _rp twin, so it joins iff the q8rp mirror
             // is present (rp4) — the mirror pick below then routes to the _rp family.
-            let m_ok = m <= 8 || matches!(w, GpuTensor::Quant { qtype, rp4, .. }
-                if *qtype == QT_Q4_0 || *qtype == QT_Q6_K || (*qtype == QT_Q8_0 && rp4.is_some()));
+            // QT_F8_E4M3 joins unconditionally (lane/rp-on-st): its b16 IS the base kernel,
+            // because the native e4m3 row layout is already aligned and needs no mirror.
+            // NVFP4/Q4_K/Q8_0 all join unconditionally now (lane/rp-on-st): each has base + _rp
+            // b16 twins, so either residency layout has its aligned form at this width. Q8_0's
+            // old `rp4.is_some()` precondition is GONE — the mirror is a bandwidth lever, not the
+            // exact tier's admission ticket (it was refusing FP8-ST over 23.9 MiB of ssm_beta).
+            let m_ok = m <= 8 || matches!(w, GpuTensor::Quant { qtype, .. }
+                if *qtype == QT_Q4_0 || *qtype == QT_Q6_K || *qtype == QT_F8_E4M3
+                    || *qtype == QT_NVFP4 || *qtype == QT_Q4_K || *qtype == QT_Q5_K || *qtype == QT_Q8_0);
             if m_ok {
             if let GpuTensor::Quant { bytes, qtype, row_bytes, rp, rp4, .. } = w {
                 if self.batched_supports(*qtype) && self.mmvq_supports(*qtype) {
@@ -5747,10 +5754,11 @@ impl Engine {
         if (2..=16).contains(&m) && self.batched_supports(qtype) && self.mmvq_supports(qtype)
             && std::env::var("MEMRA_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled())
-            // b16 tier: Q4_0/Q6_K have base+_rp b16 kernels; Q8_0's b16 exists ONLY as the
-            // split-plane _rp twin (qmatvec_q8_0_mmvq_b16_rp — the q8rp mirror lane was built
-            // for the m<=16 family, hybrid.rs), so Q8_0 joins iff the mirror is present (mrp).
-            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || (qtype == QT_Q8_0 && mrp)) {
+            // b16 tier: every class routed here now has base + _rp b16 kernels (Q4_0/Q6_K
+            // pre-existing; NVFP4/Q4_K/Q8_0-base/F8_E4M3 added lane/rp-on-st 2026-08-06), so
+            // there is no mirror precondition left — `mrp` still selects the LAYOUT below.
+            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || qtype == QT_NVFP4
+                || qtype == QT_Q4_K || qtype == QT_Q5_K || qtype == QT_F8_E4M3 || qtype == QT_Q8_0) {
             let mcols = Self::batched_mcols(m);
             return self.qmatvec_mmvq_batched(mbytes, aq, ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, mrp);
         }
@@ -5838,8 +5846,10 @@ impl Engine {
         if (2..=16).contains(&m) && self.batched_supports(qtype) && self.mmvq_supports(qtype)
             && std::env::var("MEMRA_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled())
-            // Q8_0 b16 exists only as the split-plane _rp twin (see matmul_pre's note).
-            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || (qtype == QT_Q8_0 && rp)) {
+            // Every b16 class has base + _rp twins after lane/rp-on-st (see matmul_pre's note):
+            // no mirror precondition, `rp` selects the layout only.
+            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || qtype == QT_F8_E4M3
+                || qtype == QT_NVFP4 || qtype == QT_Q4_K || qtype == QT_Q5_K || qtype == QT_Q8_0) {
             let mcols = Self::batched_mcols(m);
             return self.qmatvec_mmvq_batched(bytes, &aq, &ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, rp);
         }
@@ -5886,7 +5896,8 @@ impl Engine {
         if (2..=16).contains(&m) && self.batched_supports(qtype) && self.mmvq_supports(qtype)
             && std::env::var("MEMRA_NO_BATCHED").is_err()
             && (m <= 4 || Self::b8_enabled())
-            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || (qtype == QT_Q8_0 && rp)) {
+            && (m <= 8 || qtype == QT_Q4_0 || qtype == QT_Q6_K || qtype == QT_F8_E4M3
+                || qtype == QT_NVFP4 || qtype == QT_Q4_K || qtype == QT_Q5_K || qtype == QT_Q8_0) {
             let mcols = Self::batched_mcols(m);
             return self.qmatvec_mmvq_batched(bytes, aq, ad, m, in_f, out_f, qtype, row_bytes, mcols, scale, rp);
         }
@@ -7023,6 +7034,56 @@ impl Engine {
         Ok(())
     }
 
+    /// BLOCK-128 e4m3 BATCHED matvec (lane/rp-on-st, 2026-08-06): the weight-read-once twin of
+    /// `qmatvec_e4m3_blk_mmvq` for m=2..16. Per (token,row) BIT-IDENTICAL to the grid.y=m launch
+    /// (same fmaf chain, same per-k32 `s * ad` fold, same warp reduce), so it inherits the
+    /// decode-exactness contract while reading the weight ONCE for up to `mcols` columns instead
+    /// of `m` times. `mcols` must be one of {2,4,8,16} and satisfy `mcols >= m`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn qmatvec_e4m3_blk_mmvq_batched(&self, bytes: &CudaSlice<u8>, aq: &CudaSlice<i8>,
+                                         ad: &CudaSlice<f32>, scales: &CudaSlice<f32>,
+                                         m: usize, in_f: usize, out_f: usize, row_bytes: usize,
+                                         scale_cols: usize, mcols: usize)
+        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        const ROWS_PER_BLOCK: u32 = 4;   // matches MEMRA_MMVQ_ROWS in qmatvec.cu
+        debug_assert!(mcols >= m, "blk batched: mcols {mcols} < m {m}");
+        let name = match mcols {
+            2 => "qmatvec_e4m3_blk_mmvq_b2",
+            4 => "qmatvec_e4m3_blk_mmvq_b4",
+            8 => "qmatvec_e4m3_blk_mmvq_b8",
+            16 => "qmatvec_e4m3_blk_mmvq_b16",
+            _ => return Err(format!("qmatvec_e4m3_blk_mmvq_batched: no kernel for mcols {mcols}").into()),
+        };
+        let mut y = self.alloc_uninit::<f32>(m * out_f)?;
+        let f = self.func(name);
+        let cfg = LaunchConfig {
+            grid_dim: ((out_f as u32).div_ceil(ROWS_PER_BLOCK), 1, 1),
+            block_dim: (32, ROWS_PER_BLOCK, 1),
+            shared_mem_bytes: 0,
+        };
+        let (inf, outf, mi, rb, sc) =
+            (in_f as i32, out_f as i32, m as i32, row_bytes as i64, scale_cols as i32);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
+        b.arg(bytes).arg(aq).arg(ad).arg(scales).arg(&mut y)
+         .arg(&inf).arg(&outf).arg(&mi).arg(&rb).arg(&sc);
+        unsafe { b.launch(cfg)?; }
+        Ok(y)
+    }
+
+    /// Test entry for the kernel_check exactness gate: the block-128 e4m3 batched MMVQ from raw
+    /// bytes with an internal q8_1 quantize (mirrors `qmatvec_batched_raw`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn qmatvec_e4m3_blk_batched_raw(&self, bytes: &CudaSlice<u8>, x: &CudaSlice<f32>,
+                                        scales: &CudaSlice<f32>, m: usize, in_f: usize,
+                                        out_f: usize, row_bytes: usize, scale_cols: usize,
+                                        mcols: usize)
+        -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let (aq, ad) = self.quantize_q8_1(x, m, in_f)?;
+        self.qmatvec_e4m3_blk_mmvq_batched(bytes, &aq, &ad, scales, m, in_f, out_f, row_bytes,
+                                           scale_cols, mcols)
+    }
+
     /// Test entry for the kernel_check exactness gate: the block-128 e4m3 MMVQ from raw bytes with
     /// an internal q8_1 quantize (mirrors `qmatvec_mmvq_raw`).
     #[allow(clippy::too_many_arguments)]
@@ -7091,6 +7152,18 @@ impl Engine {
         use crate::model::GpuTensor;
         if let GpuTensor::Quant { bytes, qtype, row_bytes, blk: Some(g), .. } = w {
             if *qtype == QT_F8_E4M3_BLK {
+                // BATCHED tier m=2..16 (lane/rp-on-st): weight read ONCE for up to mcols columns
+                // instead of m grid.y re-reads. Bit-identical per (token,row) to the grid.y=m form
+                // below, so the decode-exactness contract is preserved at every width. Gated by
+                // the same seams the other batched families honor (MEMRA_NO_BATCHED, MEMRA_B8) so
+                // one rollback door covers every dtype's batched tier.
+                if (2..=16).contains(&m) && std::env::var("MEMRA_NO_BATCHED").is_err()
+                    && (m <= 4 || Self::b8_enabled()) {
+                    let mcols = Self::batched_mcols(m);
+                    return Ok(Some(self.qmatvec_e4m3_blk_mmvq_batched(
+                        bytes, aq, ad, &g.scales, m, w.in_features(), w.out_features(),
+                        *row_bytes, g.cols, mcols)?));
+                }
                 return Ok(Some(self.qmatvec_e4m3_blk_mmvq(
                     bytes, aq, ad, &g.scales, m, w.in_features(), w.out_features(),
                     *row_bytes, g.cols)?));
@@ -7452,19 +7525,36 @@ impl Engine {
         Some(match (qtype, mcols) {
             (QT_Q8_0, 2) => "qmatvec_q8_0_mmvq_b2", (QT_Q8_0, 4) => "qmatvec_q8_0_mmvq_b4",
             (QT_Q8_0, 8) => "qmatvec_q8_0_mmvq_b8",
-            // rp-ONLY tier: qmatvec_q8_0_mmvq_b16 has no base twin — the mcols==16 dispatch
-            // appends _rp, and every caller gates Q8_0 m>8 on the q8rp mirror being present.
+            // b16 now has BOTH forms (lane/rp-on-st, 2026-08-06). It used to be rp-ONLY, which
+            // made the q8rp mirror the exact-16 tier's admission ticket for any model carrying a
+            // single Q8_0 matmul — measured as the FP8-ST refusal (`L0.ssm_beta qtype=0
+            // rp4=false`, 96 t / 23.9 MiB = 0.143% of resident weight). The mirror stays a
+            // BANDWIDTH lever on Q8_0-dominant GGUFs; it is no longer a correctness prerequisite.
             (QT_Q8_0, 16) => "qmatvec_q8_0_mmvq_b16",
             (QT_Q4_K, 2) => "qmatvec_q4_K_mmvq_b2", (QT_Q4_K, 4) => "qmatvec_q4_K_mmvq_b4",
             (QT_Q4_K, 8) => "qmatvec_q4_K_mmvq_b8",
+            // b16 base + _rp (lane/rp-on-st): the 9B NVFP4 GGUF's blocker — real NVFP4 GGUFs keep
+            // Q4_K attention next to NVFP4 MLP, and the tier's predicate is an ALL.
+            (QT_Q4_K, 16) => "qmatvec_q4_K_mmvq_b16",
             (QT_Q5_K, 2) => "qmatvec_q5_K_mmvq_b2", (QT_Q5_K, 4) => "qmatvec_q5_K_mmvq_b4",
             (QT_Q5_K, 8) => "qmatvec_q5_K_mmvq_b8",
+            // b16 base only (lane/rp-on-st): Q5_K has no rp twins at any width, so there is
+            // nothing to mirror. Named by the diagnostic as `L0.wqkv_gate qtype=3` on the 9B.
+            (QT_Q5_K, 16) => "qmatvec_q5_K_mmvq_b16",
             (QT_Q6_K, 2) => "qmatvec_q6_K_mmvq_b2", (QT_Q6_K, 4) => "qmatvec_q6_K_mmvq_b4",
             (QT_Q6_K, 8) => "qmatvec_q6_K_mmvq_b8", (QT_Q6_K, 16) => "qmatvec_q6_K_mmvq_b16",
             (QT_NVFP4, 2) => "qmatvec_nvfp4_mmvq_b2", (QT_NVFP4, 4) => "qmatvec_nvfp4_mmvq_b4",
             (QT_NVFP4, 8) => "qmatvec_nvfp4_mmvq_b8",
+            // b16 (lane/rp-on-st): no mirror needed — NVFP4's 36 B/k32 block is already the
+            // aligned form its own kernel walks. Unlocks the exact-16 tier for every NVFP4 model
+            // AND for the mixed FP8-ST artifact, whose 193 NVFP4 tensors were refusing it.
+            (QT_NVFP4, 16) => "qmatvec_nvfp4_mmvq_b16",
             (QT_F8_E4M3, 2) => "qmatvec_e4m3_mmvq_b2", (QT_F8_E4M3, 4) => "qmatvec_e4m3_mmvq_b4",
             (QT_F8_E4M3, 8) => "qmatvec_e4m3_mmvq_b8",
+            // b16 tier (lane/rp-on-st): e4m3 needs NO split-plane mirror to reach it — its native
+            // row-major layout is already 32B-aligned per k32 block, so the base kernel IS the
+            // aligned form. Contrast Q8_0, whose b16 exists only as the `_rp` twin (hence q8rp).
+            (QT_F8_E4M3, 16) => "qmatvec_e4m3_mmvq_b16",
             (QT_Q4_0, 2) => "qmatvec_q4_0_mmvq_b2", (QT_Q4_0, 4) => "qmatvec_q4_0_mmvq_b4",
             (QT_Q4_0, 8) => "qmatvec_q4_0_mmvq_b8", (QT_Q4_0, 16) => "qmatvec_q4_0_mmvq_b16",
             _ => return None,
@@ -8403,6 +8493,65 @@ impl Engine {
         )
     }
 
+    /// WINDOWED twin of `sdpa_naive_quantized_view` (step35 SWA prefill): dequant the KV byte
+    /// view into f32 workspaces with the SAME `fa_dequant_kv_ws_f32` launch, then run
+    /// `sdpa_naive_w` instead of `sdpa_naive`. `window == 0` is the unwindowed form (the kernel
+    /// treats a non-positive window as "no window mask"), so this is a strict superset of the
+    /// unwindowed function above and produces bit-identical output at window == 0.
+    ///
+    /// Why this exists: EVERY windowed FlashAttention stamp in flash_attn.cu is head_dim-256
+    /// only (`fa_prefill_w_f32` == `fa_prefill_f32_body<256>`, and the quantized-view windowed
+    /// twins likewise), while step35 is head_dim 128. Its SWA layers therefore have no windowed
+    /// FA path and take this f32 floor in v0 — same cache bytes, same numeric class as the
+    /// unwindowed quantized-view fallback, so the chunk-invariance contract holds on both.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sdpa_naive_w_quantized_view(
+        &self,
+        q: &CudaSlice<f32>,
+        k: &cudarc::driver::CudaView<u8>,
+        v: &cudarc::driver::CudaView<u8>,
+        o: &mut CudaSlice<f32>,
+        head_dim: usize,
+        n_head: usize,
+        n_head_kv: usize,
+        t: usize,
+        t_kv: usize,
+        scale: f32,
+        causal: bool,
+        window: usize,
+        k_tok_bytes: usize,
+        v_tok_bytes: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let kv_dim = n_head_kv * head_dim;
+        let mut kf = self.uninit(t_kv * kv_dim)?;
+        let mut vf = self.uninit(t_kv * kv_dim)?;
+        let f = self.func("fa_dequant_kv_ws_f32");
+        let total = (2 * t_kv * kv_dim) as u64;
+        let nblk = ((total + 255) / 256).min(65535 * 16) as u32;
+        let cfg = LaunchConfig {
+            grid_dim: (nblk.max(1), 1, 1),
+            block_dim: (256, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        let (kv_dim_i, t_kv_i) = (kv_dim as i32, t_kv as i32);
+        let (k_tok_bytes_i, v_tok_bytes_i) = (k_tok_bytes as i64, v_tok_bytes as i64);
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
+        b.arg(k)
+            .arg(v)
+            .arg(&mut kf)
+            .arg(&mut vf)
+            .arg(&kv_dim_i)
+            .arg(&kv_dim_i)
+            .arg(&t_kv_i)
+            .arg(&k_tok_bytes_i)
+            .arg(&v_tok_bytes_i);
+        unsafe { b.launch(cfg)? };
+        self.sdpa_naive_w(
+            q, &kf, &vf, o, head_dim, n_head, n_head_kv, t, t_kv, scale, causal, window,
+        )
+    }
+
     /// Hand-written FlashAttention prefill (sm_120, FA-2 online softmax on validated mma.sync,
     /// head_dim 256 or 128 (template-stamped twins), GQA, causal). Replaces sdpa_naive for T>1.
     /// Q/K/V/O [head_dim, n_head(_kv), T].
@@ -9281,6 +9430,91 @@ impl Engine {
             let mut b = __s_b.launch_builder(&f);
             b.arg(q).arg(&*kw).arg(&*vw).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz)
              .arg(&kdk).arg(&kdv);
+            unsafe { b.launch(cfg)?; }
+        }
+        Ok(())
+    }
+
+    /// WINDOWED `fa_prefill_view_ws` twin at head_dim 128 (lane/pp-prefill 2026-08-07):
+    /// step35's SWA prefill (win=512, 33 of 45 layers) previously had NO windowed FA prefill
+    /// stamp — every windowed twin was hd256-only — and took `sdpa_naive_w_quantized_view`,
+    /// the f32 floor, at 565 ms/layer on a pp4096 where the hd128 FA family does the harder
+    /// causal-4096 in 3.3 ms (41% of the whole prime; research/pp-prefill-20260807 anatomy).
+    /// Same two-pass shape as the unwindowed function: dequant K/V ONCE into the resident
+    /// bf16 workspace, then the windowed qw kernel (`fa_prefill_qw_db_w_hd128`, cp.async
+    /// double-buffered; MEMRA_PRIME_DEQW_DB=0 selects the single-buffer twin). The window
+    /// mask is `fa_prefill_f32_body`'s exact predicate; `window == 0` is bit-identical to
+    /// `fa_prefill_view_ws` by construction (default-arg body). NEW NUMERIC CLASS vs the
+    /// f32 floor on SWA rows (bf16 MMA online-softmax vs f32 serial softmax) — adoption is
+    /// gated by the full battery, and the class must change UNIFORMLY for a whole request
+    /// (kernel selection keys on seq_end, never per chunk — the chunkfix law).
+    /// hd128-only deliberately: the only windowed-prefill consumer at another head_dim is
+    /// gemma4 (hd256), which already has `fa_prefill_w_f32`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fa_prefill_view_ws_w_hd128(&self, q: &CudaSlice<f32>, k: &cudarc::driver::CudaView<u8>,
+                                      v: &cudarc::driver::CudaView<u8>, o: &mut CudaSlice<f32>,
+                                      head_dim: usize, n_head: usize, n_head_kv: usize,
+                                      t: usize, t_kv: usize, scale: f32, causal: bool,
+                                      window: usize, k_tok_bytes: usize, v_tok_bytes: usize)
+                                      -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(head_dim, 128, "fa_prefill_view_ws_w_hd128: only the hd128 twin is stamped");
+        if portable_mma_gated() {
+            return self.sdpa_naive_w_quantized_view(q, k, v, o, head_dim, n_head, n_head_kv,
+                                                    t, t_kv, scale, causal, window,
+                                                    k_tok_bytes, v_tok_bytes);
+        }
+        const BLOCK_Q: usize = 64; const BK: usize = 32;
+        let kv_dim_k = n_head_kv * head_dim;
+        let kv_dim_v = n_head_kv * head_dim;
+        let k_ws_bytes = t_kv * kv_dim_k * 2;   // bf16
+        let v_ws_bytes = t_kv * kv_dim_v * 2;
+        let mut guard = self.prime_deqw_ws.lock().unwrap();
+        let need_grow = match guard.as_ref() {
+            Some((kw, vw)) => kw.len() < k_ws_bytes || vw.len() < v_ws_bytes,
+            None => true,
+        };
+        if need_grow {
+            let grow = |cur: usize, need: usize| if cur >= need { cur } else { need };
+            let (ck, cv) = guard.as_ref().map(|(a, b)| (a.len(), b.len())).unwrap_or((0, 0));
+            *guard = Some((self.alloc_u8(grow(ck, k_ws_bytes))?, self.alloc_u8(grow(cv, v_ws_bytes))?));
+        }
+        let (kw, vw) = guard.as_mut().unwrap();
+        // pass 1: dequant K+V once into the bf16 workspace (identical to fa_prefill_view_ws —
+        // the workspace bytes are the SAME __float2bfloat16(dq(...)) values either way).
+        {
+            let f = self.func("fa_dequant_kv_ws_bf16");
+            let total = (t_kv * (kv_dim_k + kv_dim_v)) as u64;
+            let nblk = ((total + 255) / 256).min(65535 * 16) as u32;
+            let cfg = LaunchConfig { grid_dim: (nblk.max(1), 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
+            let (kdk, kdv, tkvi) = (kv_dim_k as i32, kv_dim_v as i32, t_kv as i32);
+            let (ktb, vtb) = (k_tok_bytes as i64, v_tok_bytes as i64);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
+            b.arg(k).arg(v).arg(&mut *kw).arg(&mut *vw).arg(&kdk).arg(&kdv).arg(&tkvi).arg(&ktb).arg(&vtb);
+            unsafe { b.launch(cfg)?; }
+        }
+        // pass 2: the WINDOWED qw twin (db default, same as the unwindowed wrapper).
+        let db = std::env::var("MEMRA_PRIME_DEQW_DB").map(|v| v != "0").unwrap_or(true);
+        {
+            let f = self.func(if db { "fa_prefill_qw_db_w_hd128" } else { "fa_prefill_qw_w_hd128" });
+            let shmem = if db {
+                (2 * (4 * BK * head_dim + BLOCK_Q * BK) + 4 * BLOCK_Q) as u32
+            } else {
+                (2 * (2 * BK * head_dim + BLOCK_Q * BK)
+                       + 4 * (BLOCK_Q * BK + 2 * BLOCK_Q)) as u32
+            };
+            use cudarc::driver::sys::CUfunction_attribute_enum as A;
+            f.set_attribute(A::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, shmem as i32)?;
+            let cfg = LaunchConfig {
+                grid_dim: ((t as u32 + BLOCK_Q as u32 - 1) / BLOCK_Q as u32, n_head as u32, 1),
+                block_dim: (32, 4, 1), shared_mem_bytes: shmem,
+            };
+            let (hd, nh, nhkv, ti, tkvi, cz) = (head_dim as i32, n_head as i32, n_head_kv as i32, t as i32, t_kv as i32, causal as i32);
+            let (kdk, kdv, wnd) = (kv_dim_k as i32, kv_dim_v as i32, window as i32);
+            let __s_b = self.gpu.stream();
+            let mut b = __s_b.launch_builder(&f);
+            b.arg(q).arg(&*kw).arg(&*vw).arg(o).arg(&hd).arg(&nh).arg(&nhkv).arg(&ti).arg(&tkvi).arg(&scale).arg(&cz)
+             .arg(&kdk).arg(&kdv).arg(&wnd);
             unsafe { b.launch(cfg)?; }
         }
         Ok(())
@@ -11816,6 +12050,55 @@ impl Engine {
         let __s_b = self.gpu.stream();
         let mut b = __s_b.launch_builder(&f);
         b.arg(a).arg(g).arg(dst).arg(dst16).arg(&ni);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// step35 (Step-3.7-Flash) SEPARATE head-wise attention gate: one scalar per query head,
+    /// broadcast over head_dim. `dst = a * sigmoid(g)` where `a`/`dst` are `[head_dim, n_head, T]`
+    /// (the `q_gate_split` layout) and `g` is the PRE-sigmoid `attn_gate` projection output in
+    /// token-major `[T, n_head]`. `dst16` is the optional fp16 operand for wo (None -> skipped).
+    ///
+    /// NOT interchangeable with `sig_mul_f16out`, which gates FULL WIDTH (qwen35 packs one gate
+    /// value per (head, dim) element inside wq). Using this for that, or that for this, silently
+    /// applies the wrong number of distinct gate values.
+    #[allow(clippy::too_many_arguments)]
+    pub fn attn_head_gate(&self, a: &CudaSlice<f32>, g: &CudaSlice<f32>,
+                          dst: &mut CudaSlice<f32>, dst16: Option<&mut CudaSlice<u8>>,
+                          head_dim: usize, n_head: usize, t: usize)
+                          -> Result<(), Box<dyn std::error::Error>> {
+        let f = self.func("attn_head_gate_f32");
+        let cfg = LaunchConfig::for_num_elems((head_dim * n_head * t) as u32);
+        let (hd, nh, ti) = (head_dim as i32, n_head as i32, t as i32);
+        // nullable device pointer by value (0 = skip), same convention as `l2_norm_pp`.
+        let d16: u64 = match dst16 { Some(d) => self.addr_u8(d), None => 0 };
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
+        b.arg(a).arg(g).arg(dst).arg(&d16).arg(&hd).arg(&nh).arg(&ti);
+        unsafe { b.launch(cfg)?; }
+        Ok(())
+    }
+
+    /// step35 CLAMPED SwiGLU: `dst = min(silu(gate*gs), limit) * clamp(up*us, +-limit)`.
+    /// Verbatim from llama.cpp `llama-graph.cpp:2146-2165` (routed, `swiglu_clamp_exp`) and
+    /// `:1751-1770` (shared, `swiglu_clamp_shexp`), non-DEEPSEEK4 branch.
+    ///
+    /// This is NOT `swigluoai_mul_scaled`: that one clamps the gate BEFORE swish and multiplies by
+    /// `(1 + clamp(up))`. Caller MUST check `limit > 1e-6` (upstream's eps gate) and use the plain
+    /// `silu_mul_scaled` path otherwise — at limit=0 this kernel would clamp every positive
+    /// activation to zero. On Step-3.7-Flash only layers 43 (7.0) and 44 (16.0) have a live limit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn swiglu_clamped_mul_scaled(&self, gate: &CudaSlice<f32>, up: &CudaSlice<f32>,
+                                     gs: f32, us: f32, limit: f32,
+                                     dst: &mut CudaSlice<f32>, n: usize)
+                                     -> Result<(), Box<dyn std::error::Error>> {
+        debug_assert!(limit > 1e-6, "swiglu_clamped needs a live limit; use silu_mul_scaled");
+        let f = self.func("swiglu_clamped_mul_scaled_f32");
+        let cfg = LaunchConfig::for_num_elems(n as u32);
+        let ni = n as i32;
+        let __s_b = self.gpu.stream();
+        let mut b = __s_b.launch_builder(&f);
+        b.arg(gate).arg(up).arg(&gs).arg(&us).arg(&limit).arg(dst).arg(&ni);
         unsafe { b.launch(cfg)?; }
         Ok(())
     }

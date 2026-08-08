@@ -142,10 +142,35 @@ namespace ggml_cuda_mma {
         asm volatile("ldmatrix.sync.aligned.m8n8.x4.b16 {%0,%1,%2,%3}, [%4];"
             :"=r"(xi[0]),"=r"(xi[1]),"=r"(xi[2]),"=r"(xi[3]):"l"(xs));
     }
+    // rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md; k16 -> k32 taken
+    // 2026-08-07 (lane/iq-experts-k32, e2e-share gate GO: this kernel family holds 16-44% of GPU
+    // kernel time on gemma26b/KAT, research/iq-k32-20260807/).
+    //   The int8 pipe is K-FREE on sm_120: m16n8k32.s8 costs the SAME 16.06 cyc/warp-MMA as
+    //   m16n8k16.s8 for 2x the MACs (309.7 vs 155.2 TOP/s), and ptxas rejects s8 k64 -- k32 is the
+    //   deepest form. LEGALITY here (unlike the NVFP4 tile): all three loaders index the 16 x_df
+    //   slots through the 32-block id `s>>1` (IQ4_XS via `g`, Q4_0 via `g*18`, IQ3_S via `ib32`),
+    //   so the two per-16 scale slots of a 32-block hold the SAME value and one k32 MMA may sum
+    //   both 16-halves inside the exact s32 accumulator before the (shared) scale applies.
+    //   EXACTNESS CLASS: the s32 merge is exact, but the f32 FOLD changes shape -- k16 computed
+    //   dB*(C0*d + C1*d) (two rounded products + add), k32 computes dB*(C32*d) (one rounded
+    //   product on the exact int sum C32 = C0+C1; |C| <= 16*127^2 << 2^24 so every int->f32
+    //   conversion is exact). The two expressions can differ in the last ulp, so bit-identity vs
+    //   the k16 form is NOT guaranteed by construction -- it is MEASURED (A/B byte-compare,
+    //   research/iq-k32-20260807/). The kernel's own gate class vs dp4a is unchanged either way
+    //   (closeness + argmax + spec, see file header).
+    //   MEMRA_IQEXP_K16=1 (build.rs -> MEMRA_IQEXP_K16_MMA) rebuilds the ORIGINAL k16 form.
+#ifdef MEMRA_IQEXP_K16_MMA
     static __device__ __forceinline__ void mma(tile<16,8,int>&D,const tile<16,4,int>&A,const tile<8,4,int>&B){
         asm("mma.sync.aligned.m16n8k16.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};"
             :"+r"(D.x[0]),"+r"(D.x[1]),"+r"(D.x[2]),"+r"(D.x[3]):"r"(A.x[0]),"r"(A.x[1]),"r"(B.x[0]));
     }
+#else
+    static __device__ __forceinline__ void mma(tile<16,8,int>&D,const tile<16,8,int>&A,const tile<8,8,int>&B){
+        asm("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
+            :"+r"(D.x[0]),"+r"(D.x[1]),"+r"(D.x[2]),"+r"(D.x[3])
+            :"r"(A.x[0]),"r"(A.x[1]),"r"(A.x[2]),"r"(A.x[3]),"r"(B.x[0]),"r"(B.x[1]));
+    }
+#endif
 }
 using namespace ggml_cuda_mma;
 static constexpr __device__ int mmq_get_granularity_device(int mmq_x){ return mmq_x>=48?16:8; }
@@ -286,6 +311,9 @@ static __device__ __forceinline__ void load_tiles_iq3s(const uint8_t* __restrict
 // at the call site keeps full tiles (cnt == mmq_x) on the jexit=false instantiation — the
 // guard folds away and full-tile codegen is unchanged (the naked runtime check cost +2.1% at
 // m=128 in the swapab microbench; research/swapab-20260801/).
+#ifdef MEMRA_IQEXP_K16_MMA
+// ORIGINAL k16 form (rollback build: MEMRA_IQEXP_K16=1). Two m16n8k16 MMAs per 32-value k step,
+// fold applies the two (equal) per-16 dA slots separately: dB*(C0*dA0 + C1*dA1).
 template<int mmq_x, int mmq_y, bool jexit>
 static __device__ __forceinline__ void vec_dot_mma(const int* x, const int* y, float* sum, int k00, int j_max){
     typedef tile<16,4,int> tA; typedef tile<16,8,int> tA8; typedef tile<8,4,int> tB; typedef tile<16,8,int> tC;
@@ -330,6 +358,60 @@ static __device__ __forceinline__ void vec_dot_mma(const int* x, const int* y, f
         }
     }
 }
+#else
+// k32 form (default since lane/iq-experts-k32, 2026-08-07): ONE m16n8k32 MMA per 32-value k step
+// where the k16 form issued two m16n8k16 — the int8 pipe is K-FREE on sm_120a (both forms 16.06
+// cyc/warp-MMA), so this halves the MMA issue slots AND halves the fold arity (1 C tile, 1 dA
+// load, 1 FMA per element vs 2/2/2). LEGAL because both per-16 x_df slots of a 32-block hold the
+// same value (all three loaders index scales by the 32-block id s>>1) and s32 accumulation is
+// exact; the fold's f32 rounding shape changes (see the mma() comment), so exactness vs k16 is
+// measured, not assumed. Same ldmatrix loads (tA8 was already loaded per-8-ints); the B pair
+// becomes one tile<8,8> load_generic over the same 8 ints.
+template<int mmq_x, int mmq_y, bool jexit>
+static __device__ __forceinline__ void vec_dot_mma(const int* x, const int* y, float* sum, int k00, int j_max){
+    typedef tile<16,8,int> tA; typedef tile<8,8,int> tB; typedef tile<16,8,int> tC;
+    constexpr int g=mmq_get_granularity_device(mmq_x); constexpr int rpw=2*g; constexpr int ntx=rpw/tC::I;
+    const int joff = (threadIdx.y%ntx)*tC::J;
+    y += joff*MMQ_TILE_Y_K;
+    const int* x_qs=x; const float* x_df=(const float*)x_qs + MMQ_TILE_NE_K*2;
+    const int* y_qs=(const int*)y+4; const float* y_df=(const float*)y;
+    const int i0=(threadIdx.y/ntx)*(ntx*tA::I);
+    tA A[ntx][MMQ_TILE_NE_K/8]; float dA[ntx][tC::ne/2][MMQ_TILE_NE_K/8];
+    #pragma unroll
+    for(int n=0;n<ntx;n++){
+        #pragma unroll
+        for(int k01=0;k01<MMQ_TILE_NE_K;k01+=8)
+            load_ldmatrix(A[n][k01/8], x_qs+(i0+n*tA::I)*MMQ_MMA_TILE_X_K+(k00+k01), MMQ_MMA_TILE_X_K);
+        #pragma unroll
+        for(int l=0;l<tC::ne/2;l++){
+            int i=i0+n*tC::I+tC::get_i(2*l);
+            // per-32 weight scale: x_df slots 2m and 2m+1 are equal (loader invariant) — read
+            // the even slot once per 8-int (32-value) k step.
+            #pragma unroll
+            for(int k01=0;k01<MMQ_TILE_NE_K;k01+=8) dA[n][l][k01/8]=x_df[i*MMQ_MMA_TILE_X_K+(k00+k01)/4];
+        }
+    }
+    #pragma unroll
+    for(int j0=0;j0<mmq_x;j0+=ntx*tC::J){
+        if(jexit && j0+joff > j_max) continue;   // strip fully past the tile's live tokens
+        #pragma unroll
+        for(int k01=0;k01<MMQ_TILE_NE_K;k01+=8){
+            tB B; float dB[tC::ne/2];
+            load_generic(B, y_qs+j0*MMQ_TILE_Y_K+k01, MMQ_TILE_Y_K);
+            #pragma unroll
+            for(int l=0;l<tC::ne/2;l++){ int j=j0+tC::get_j(l); dB[l]=y_df[j*MMQ_TILE_Y_K+k01/QI8_1]; }
+            #pragma unroll
+            for(int n=0;n<ntx;n++){
+                tC C;
+                mma(C,A[n][k01/8],B);
+                #pragma unroll
+                for(int l=0;l<tC::ne;l++)
+                    sum[(j0/tC::J+n)*tC::ne+l] += dB[l%2]*C.x[l]*dA[n][l/2][k01/8];
+            }
+        }
+    }
+}
+#endif
 
 // ======================= expert-segmented MMQ kernel =======================
 // grid.x = out-row tile (N/128); grid.y = active-expert segment. One block walks the expert's token

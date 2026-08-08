@@ -1,0 +1,80 @@
+===== RERUN 1 =====
+# device NVIDIA GeForce RTX 5090 Laptop GPU SMs=82 cc=12.0 (clocks LOCKED 1860 via nvidia-smi -lgc)
+# UNIT = one 32-K-value tile step. k16 arm = 2 MMA + 2-term fold; k32 arm = 1 MMA + 1-term fold.
+# SASS contract (verify with cuobjdump -sass): IMMA count per instantiation = NACC*2*unroll (k16), NACC*1*unroll (k32).
+
+## NACC CONTROL -- 1 CTA of 4 warps, clock64 cyc per 32-K tile step
+# arm                           NACC=1    NACC=2    NACC=4    NACC=8   NACC=16
+  K16 (2 MMA + 2-fold)         61.5039   68.5027   67.2513   60.5013   60.3757
+  K32 (1 MMA + 1-fold)         26.5039   30.3772   50.1265   51.0012   23.9388
+  -> tile-step ratio NACC=1  : 2.3206x
+  -> tile-step ratio NACC=2  : 2.2551x
+  -> tile-step ratio NACC=4  : 1.3416x
+  -> tile-step ratio NACC=8  : 1.1863x
+  -> tile-step ratio NACC=16 : 2.5221x
+  (instruction-only bound, from rate_audit.cu 12-form table, is 1.997x)
+
+## FULL-GPU wall clock (grid=82 CTAs x 256 thr; NACC=8, best of 5)
+  K16 (2 MMA + 2-fold)           0.712 ms
+  K32 (1 MMA + 1-fold)           0.502 ms
+  -> full-GPU tile-step speedup of the k32 form: 1.4199x
+===== RERUN 2 =====
+# device NVIDIA GeForce RTX 5090 Laptop GPU SMs=82 cc=12.0 (clocks LOCKED 1860 via nvidia-smi -lgc)
+# UNIT = one 32-K-value tile step. k16 arm = 2 MMA + 2-term fold; k32 arm = 1 MMA + 1-term fold.
+# SASS contract (verify with cuobjdump -sass): IMMA count per instantiation = NACC*2*unroll (k16), NACC*1*unroll (k32).
+
+## NACC CONTROL -- 1 CTA of 4 warps, clock64 cyc per 32-K tile step
+# arm                           NACC=1    NACC=2    NACC=4    NACC=8   NACC=16
+  K16 (2 MMA + 2-fold)         61.5039   68.5027   67.2513   60.5013   60.3757
+  K32 (1 MMA + 1-fold)         26.5039   30.3772   50.1265   51.0012   23.9387
+  -> tile-step ratio NACC=1  : 2.3206x
+  -> tile-step ratio NACC=2  : 2.2551x
+  -> tile-step ratio NACC=4  : 1.3416x
+  -> tile-step ratio NACC=8  : 1.1863x
+  -> tile-step ratio NACC=16 : 2.5221x
+  (instruction-only bound, from rate_audit.cu 12-form table, is 1.997x)
+
+## FULL-GPU wall clock (grid=82 CTAs x 256 thr; NACC=8, best of 5)
+  K16 (2 MMA + 2-fold)           0.713 ms
+  K32 (1 MMA + 1-fold)           0.503 ms
+  -> full-GPU tile-step speedup of the k32 form: 1.4175x
+===== RERUN 3 =====
+# device NVIDIA GeForce RTX 5090 Laptop GPU SMs=82 cc=12.0 (clocks LOCKED 1860 via nvidia-smi -lgc)
+# UNIT = one 32-K-value tile step. k16 arm = 2 MMA + 2-term fold; k32 arm = 1 MMA + 1-term fold.
+# SASS contract (verify with cuobjdump -sass): IMMA count per instantiation = NACC*2*unroll (k16), NACC*1*unroll (k32).
+
+## NACC CONTROL -- 1 CTA of 4 warps, clock64 cyc per 32-K tile step
+# arm                           NACC=1    NACC=2    NACC=4    NACC=8   NACC=16
+  K16 (2 MMA + 2-fold)         61.5039   68.5027   67.2513   60.5013   60.3757
+  K32 (1 MMA + 1-fold)         26.5039   30.3772   50.1265   51.0012   23.9388
+  -> tile-step ratio NACC=1  : 2.3206x
+  -> tile-step ratio NACC=2  : 2.2551x
+  -> tile-step ratio NACC=4  : 1.3416x
+  -> tile-step ratio NACC=8  : 1.1863x
+  -> tile-step ratio NACC=16 : 2.5221x
+  (instruction-only bound, from rate_audit.cu 12-form table, is 1.997x)
+
+## FULL-GPU wall clock (grid=82 CTAs x 256 thr; NACC=8, best of 5)
+  K16 (2 MMA + 2-fold)           0.713 ms
+  K32 (1 MMA + 1-fold)           0.501 ms
+  -> full-GPU tile-step speedup of the k32 form: 1.4220x
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 169 registers, used 1 barriers
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 80 registers, used 1 barriers
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 48 registers, used 1 barriers
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 40 registers, used 1 barriers
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 38 registers, used 1 barriers
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 174 registers, used 1 barriers
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 99 registers, used 1 barriers
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 56 registers, used 1 barriers
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 40 registers, used 1 barriers
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 43 registers, used 1 barriers

@@ -1,0 +1,41 @@
+######## 1-doorshut
+exit=0 -> /home/ubuntu/receipts/pp2/refusal/1-doorshut.log
+gate1 early draws (step < 3): 0/6 (FAIL threshold >= 4; plumbing class = every draw)
+gate1 (B=1 argmax agreement vs decode_step_h, 32 steps, 6 seed(s)): PASS
+gate2 (B=4 vs isolated batched-B=1, bit-checked, 32 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+######## 2-door-singledev
+exit=0 -> /home/ubuntu/receipts/pp2/refusal/2-door-singledev.log
+gate1 early draws (step < 3): 0/6 (FAIL threshold >= 4; plumbing class = every draw)
+gate1 (B=1 argmax agreement vs decode_step_h, 32 steps, 6 seed(s)): PASS
+gate2 (B=4 vs isolated batched-B=1, bit-checked, 32 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+######## 3-door-dev01-sharded
+exit=1 -> /home/ubuntu/receipts/pp2/refusal/3-door-dev01-sharded.log
+Error: "decode_step_batch: refused with the ppN door open across 2+ devices — the batched trunk has no stage split, so it would walk ALL layers on the primary stream and peer-read every remote stage's weights each step (measured 28x slower at B=1, 13.9x at B=8 on a PRO 6000 pair; research/pp2-hardening-20260806). Exactness is unaffected, which is why the gates pass and this must refuse. Use MEMRA_PP_SHARD=0 (all weights home on the primary — full speed, no capacity win), or close the pp door for batched serving, or use the eager pp arm (decode_step_h). MEMRA_PP_ALLOW_UNSPLIT_BATCH=1 overrides for measurement."
+######## 4-door-dev01-noshard
+exit=0 -> /home/ubuntu/receipts/pp2/refusal/4-door-dev01-noshard.log
+gate1 early draws (step < 3): 0/6 (FAIL threshold >= 4; plumbing class = every draw)
+gate1 (B=1 argmax agreement vs decode_step_h, 32 steps, 6 seed(s)): PASS
+gate2 (B=4 vs isolated batched-B=1, bit-checked, 32 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+######## 5-door-dev01-override
+exit=0 -> /home/ubuntu/receipts/pp2/refusal/5-door-dev01-override.log
+gate1 early draws (step < 3): 0/6 (FAIL threshold >= 4; plumbing class = every draw)
+gate1 (B=1 argmax agreement vs decode_step_h, 32 steps, 6 seed(s)): PASS
+gate2 (B=4 vs isolated batched-B=1, bit-checked, 32 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+######## 6-door-dev00
+exit=0 -> /home/ubuntu/receipts/pp2/refusal/6-door-dev00.log
+gate1 early draws (step < 3): 0/6 (FAIL threshold >= 4; plumbing class = every draw)
+gate1 (B=1 argmax agreement vs decode_step_h, 32 steps, 6 seed(s)): PASS
+gate2 (B=4 vs isolated batched-B=1, bit-checked, 32 steps): PASS
+gate3 (device sampling: greedy==host-argmax + sampled B=4 vs isolated + lean-logits identity): PASS
+######## 7-ppn-gate-dev01
+exit=0 -> /home/ubuntu/receipts/pp2/refusal/7-ppn-gate-dev01.log
+ppn gate PASS [serial]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 16, 32]; stages=2 streams=per-stage overlap=0 devices=0,1 splits=default(even) shard=per-stage)
+ppn gate PASS [pipelined]: 48 steps (16 prime + 32 gen) BIT-IDENTICAL logits (n_vocab=248320, fence=[0, 16, 32]; stages=2 streams=per-stage overlap=0 devices=0,1 splits=default(even) shard=per-stage)
+######## 8-kernel-check
+exit=0 -> /home/ubuntu/receipts/pp2/refusal/8-kernel-check.log
+E4M3-BLK-MMVQ code coverage: 254/254 legal e4m3 codes exercised (0x7F/0xFF excluded — refused by the residency NaN precondition) OK
+REFUSAL_GATE_DONE

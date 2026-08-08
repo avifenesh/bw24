@@ -1,0 +1,18 @@
+rc=0
+[generate_spec K=1] 64 tok in 0.357s = 176.40 tok/s (0.94x vs generate; this run's prime 0.496s)
+  acceptance: 25/39 = 64.1%   self-consistency: PASS (identical to generate)
+[generate_spec K=2] 64 tok in 0.346s = 182.23 tok/s (0.97x vs generate; this run's prime 0.499s)
+  acceptance: 33/60 = 55.0%   self-consistency: PASS (identical to generate)
+[generate_spec K=3] 64 tok in 0.376s = 167.51 tok/s (0.89x vs generate; this run's prime 0.501s)
+  acceptance: 37/81 = 45.7%   self-consistency: PASS (identical to generate)
+[generate_spec K=4] 64 tok in 0.381s = 165.21 tok/s (0.88x vs generate; this run's prime 0.501s)
+  acceptance: 41/92 = 44.6%   self-consistency: PASS (identical to generate)
+[generate_spec K=5] 64 tok in 0.439s = 143.52 tok/s (0.76x vs generate; this run's prime 0.502s)
+  acceptance: 41/115 = 35.7%   self-consistency: PASS (identical to generate)
+[generate_spec K=6] 64 tok in 0.496s = 127.00 tok/s (0.68x vs generate; this run's prime 0.502s)
+  acceptance: 41/138 = 29.7%   self-consistency: PASS (identical to generate)
+[generate_spec K=7] 64 tok in 0.552s = 114.12 tok/s (0.61x vs generate; this run's prime 0.502s)
+  acceptance: 41/161 = 25.5%   self-consistency: PASS (identical to generate)
+[generate_spec K=8] 64 tok in 0.613s = 102.73 tok/s (0.55x vs generate; this run's prime 0.501s)
+  acceptance: 41/184 = 22.3%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===

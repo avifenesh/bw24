@@ -1,0 +1,10 @@
+iq4xs-mmq [Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf token_embd.weight] T=64: rel=2.71e-4 OK
+iq4xs-mmq [Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf token_embd.weight] T=128: rel=2.69e-4 OK
+Error: DriverError(CUDA_ERROR_OUT_OF_MEMORY, "out of memory")
+== kernel-check attempt 1 (2026-08-07T16:07) OOM — concurrent GPU state at failure:
+pid, process_name, used_gpu_memory [MiB]
+144655, /home/avifenesh/projects/llama.cpp/build/bin/llama-server, 332 MiB
+7600, /home/avifenesh/projects/hermes-agent/.venv/bin/python, 394 MiB
+2776614, target/release/run-gen, 9890 MiB
+
+ALL GREEN: kernels match CPU reference.

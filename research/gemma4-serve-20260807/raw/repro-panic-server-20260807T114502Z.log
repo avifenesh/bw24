@@ -1,0 +1,32 @@
+Running as unit: run-p2203943-i178238297.scope; invocation ID: 9cbe80d70b2b423ca0ff732ab5bdde64
+[server] starting; models config = [("gemma", "/home/avifenesh/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf", None)]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "gemma" <- /home/avifenesh/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf
+[gemma4] suppress_tokens: 2 ids masked at sampling
+[q4rp] split-plane IN-PLACE swap: 336 dense trunk tensors
+[worker]   loaded "gemma": 48 layers, eos=1
+[worker] gemma: template caps tools=false think=false think_switch=true chat_ok=true effort_levels=false ctx=262144 tok="gemma4" instruct=None
+[worker] gemma: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["gemma"]
+[server] listening on http://127.0.0.1:8191
+[meter] admit id=chatcmpl-3a5b70fecbe9bff5d8f5c7d2407dd436 tenant=default lane=interactive model="gemma"
+[worker] observed session VRAM cost for "gemma": 671MB (admission gate = 2x)
+
+thread 'memra-gpu-worker' (2204062) panicked at crates/memra-engine/src/decode_batch.rs:553:9:
+decode_step_batch v1 covers the hybrid non-gemma4 trunk only
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[worker] PANIC in the GPU worker thread: decode_step_batch v1 covers the hybrid non-gemma4 trunk only
+[worker] respawn attempt 1/1 in 2s (reloading weights)
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "gemma" <- /home/avifenesh/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf
+[gemma4] suppress_tokens: 2 ids masked at sampling
+[q4rp] split-plane IN-PLACE swap: 336 dense trunk tensors
+[worker]   loaded "gemma": 48 layers, eos=1
+[worker] gemma: template caps tools=false think=false think_switch=true chat_ok=true effort_levels=false ctx=262144 tok="gemma4" instruct=None
+[worker] gemma: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

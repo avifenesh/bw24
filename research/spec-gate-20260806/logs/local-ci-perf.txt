@@ -1,0 +1,117 @@
+local-ci: WARNING — other GPU compute apps present (numbers not window-valid):
+7600 /home/avifenesh/projects/hermes-agent/.venv/bin/python -m hermes_cli.main gatewa
+== local-ci: correctness stage ==
+kernel-check: GREEN
+prime-gate SUMMARY: 8 prompts (0 skipped short) | MATCH=8 FLIP-NEARTIE=0 STRUCTURED=0 det_fails=0 | worst maxdiff=2.3640e0 min flip margin=-
+prime-gate: ALL GREEN
+run-gen argmax: MATCH (31B)
+VERIFY-GATE K=7 depth: PASS (31B)
+spec self-consistency 64/64: PASS (31B)
+run-gen argmax depth: MATCH (12B)
+VERIFY-GATE K=7 depth: PASS (12B)
+decode-batch-gate config B=8: ALL GREEN (9B NVFP4)
+decode-batch-gate strict B=4 equalized: ALL GREEN (9B NVFP4)
+decode-batch-gate config B=8: ALL GREEN (9B Q8_0)
+decode-batch-gate strict B=4 equalized: ALL GREEN (9B Q8_0)
+== graph-warmup-stress gate: /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf cycles=10 warmups=1 ==
+model /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf arch qwen35 (32 layers) cycles=10 large=160tok/@4096 small=90tok/@96 MEMRA_GRAPH_WARMUPS=1 canary=false
+[pool] post-load: reserved 4640 MB used 4624 MB
+[pool] post-eager-ref: reserved 4736 MB used 4625 MB
+cycle 1: OK  [pool after L-drop: 5408/4627 MB, after S: 5408/4627 MB rsv/used]
+cycle 2: OK  [pool after L-drop: 5408/4627 MB, after S: 5408/4627 MB rsv/used]
+cycle 3: OK  [pool after L-drop: 5408/4627 MB, after S: 5408/4627 MB rsv/used]
+cycle 4: OK  [pool after L-drop: 5408/4627 MB, after S: 5408/4627 MB rsv/used]
+cycle 5: OK  [pool after L-drop: 5408/4627 MB, after S: 5408/4627 MB rsv/used]
+cycle 6: OK  [pool after L-drop: 5408/4627 MB, after S: 5408/4627 MB rsv/used]
+cycle 7: OK  [pool after L-drop: 5408/4627 MB, after S: 5408/4627 MB rsv/used]
+cycle 8: OK  [pool after L-drop: 5440/4627 MB, after S: 5440/4627 MB rsv/used]
+cycle 9: OK  [pool after L-drop: 5440/4627 MB, after S: 5440/4627 MB rsv/used]
+cycle 10: OK  [pool after L-drop: 5440/4627 MB, after S: 5440/4627 MB rsv/used]
+overlap arm: OK (A survived B's pool growth; B survived A's free + recapture)
+[pool] end: reserved 6080 MB used 4627 MB
+ALL GREEN: graph-warmup-stress (10 cycles x 4 arms + overlap, bit-identical, no fault)
+== canary arm: injected graph-memory corruption must be CAUGHT ==
+model /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf arch qwen35 (32 layers) cycles=1 large=160tok/@4096 small=90tok/@96 MEMRA_GRAPH_WARMUPS=1 canary=true
+[pool] post-load: reserved 4640 MB used 4624 MB
+[pool] post-eager-ref: reserved 4736 MB used 4625 MB
+cycle 1 ->S: canary caught at token 30 (expected — comparator has teeth)
+cycle 1: OK  [pool after L-drop: 5408/4627 MB, after S: 5408/4627 MB rsv/used]
+overlap arm: OK (A survived B's pool growth; B survived A's free + recapture)
+[pool] end: reserved 6048 MB used 4627 MB
+CANARY GATE PASS: injected graph-memory corruption was detected; all clean arms held
+ALL GREEN: graph-warmup-stress gate (10 cycles + canary)
+correctness stage: GREEN
+== serve-smoke: plain serving ==
+  ok: /models lists the model
+  ok: chat non-stream (text + usage + finish_reason)
+  ok: chat stream (SSE chunks + [DONE])
+  ok: /v1/completions
+  ok: greedy determinism (2 runs identical)
+  ok: 3 concurrent chats
+  ok: long generation (>=100 tok)
+== serve-smoke: spec serving (draft attached) ==
+  ok: spec == plain greedy text (serving exactness)
+== serve-smoke: sampled truncation matrix (spec server) ==
+  (immune baseline: untruncated t0.8 seed=7, bangs=0)
+  ok: trunc top_k=40 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc top_p=0.95 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc min_p=0.05 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc llama-default k40+p0.95+m0.05 (reproducible, bangs=0 <= baseline 0)
+== serve-smoke: session-affinity resume exactness ==
+  ok: affinity resume is deterministic across servers (4 rewritten turns)
+  ok: replay arm resumed too (3 rewind(s))
+  ok: affinity fired (3 rewind(s) on a rewritten history)
+  ok: no failed rewinds
+serve-smoke: 0 failed
+== serve-stress-gate: c=64 staggered short streams (128-256 tok) ==
+completed 64/64; wall p50=24.5s p95=27.6s max=27.9s; ttfb p50=0.19s p95=0.52s  (informational)
+serve-stress-gate: ALL GREEN (c=64 complete, streams well-formed, worker alive, log clean)
+== accept-gate: served-spec acceptance + long-text assertion ==
+   cells: q27-p1 (smoke tier; --full for the matrix)
+   arm env: MEMRA_MMQ_F8F4=unset
+   logs: /tmp/accept-gate-20260807-021541
+-- server: Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf + draft-daily-owntrim-nvfp4head-q4blk.gguf K=3 ctx=8192
+   up in 10s
+  q27-p1: PASS (rounds=42 drafted=126 accepted=85 accept=0.6746, 128 tok text sha-identical)
+
+accept-gate: 1 pass, 0 fail, 0 unpinned, 0 skip
+== local-ci: perf stage (--perf) ==
+  31b-plain-short: window went DIRTY mid-cell — waiting up to 120s + retrying once
+  31b-plain-short: co-resident did not leave in 120s — treating it as persistent; rows from here are window_clean=false
+  31b-plain-short: DIRTY twice — recording with window_clean=false
+  31b-plain-short: 41.60 tok/s [OK]
+  31b-plain-d1736: window DIRTY, co-resident already known persistent — retrying, row will be window_clean=false
+  31b-plain-d1736: DIRTY twice — recording with window_clean=false
+  31b-plain-d1736: 38.02 tok/s [FAIL] — tok/s -3.03% vs median 39.21
+  31b-spec-short: window DIRTY, co-resident already known persistent — retrying, row will be window_clean=false
+  31b-spec-short: DIRTY twice — recording with window_clean=false
+  31b-spec-short: 106.33 tok/s accept=0.798 [OK]
+  31b-spec-d1736: window DIRTY, co-resident already known persistent — retrying, row will be window_clean=false
+  31b-spec-d1736: DIRTY twice — recording with window_clean=false
+  31b-spec-d1736: 100.38 tok/s accept=0.817 [OK]
+  26b-plain-short: window DIRTY, co-resident already known persistent — retrying, row will be window_clean=false
+  26b-plain-short: DIRTY twice — recording with window_clean=false
+  26b-plain-short: 205.82 tok/s [OK]
+  26b-spec-d1736: window DIRTY, co-resident already known persistent — retrying, row will be window_clean=false
+  26b-spec-d1736: DIRTY twice — recording with window_clean=false
+  26b-spec-d1736: 332.33 tok/s accept=0.880 [OK]
+  e4b-plain-short: window DIRTY, co-resident already known persistent — retrying, row will be window_clean=false
+  e4b-plain-short: DIRTY twice — recording with window_clean=false
+  e4b-plain-short: 204.66 tok/s [OK]
+  e4b-spec-short: window DIRTY, co-resident already known persistent — retrying, row will be window_clean=false
+  e4b-spec-short: DIRTY twice — recording with window_clean=false
+  e4b-spec-short: 267.50 tok/s accept=0.429 [OK]
+  qwen9b-plain-short: window DIRTY, co-resident already known persistent — retrying, row will be window_clean=false
+  qwen9b-plain-short: DIRTY twice — recording with window_clean=false
+  qwen9b-plain-short: 136.57 tok/s [OK]
+perf stage: 1 fail, 0 warn
+
+  ^ A tok/s FAIL above is a DRIFT TRIPWIRE against a cross-day median, NOT a proven
+    regression, and it is not by itself a merge/tag blocker. Settle it before concluding:
+      1. build the last-green commit's binary for this cell,
+      2. run that cell interleaved A/B/A/B, N>=5 each, ONE thermal window, one exclusive
+         lock hold (harness: research/v071-prep-20260806/battery-logs/perf-ab.sh),
+      3. compare medians WITHIN that window only.
+    A uniform drop across many cells with correctness green points at machine state
+    (power/thermal/profile) or a contended window, not at the diff. An ACCEPTANCE FAIL is
+    different — acceptance is clock-independent, so treat it as real.

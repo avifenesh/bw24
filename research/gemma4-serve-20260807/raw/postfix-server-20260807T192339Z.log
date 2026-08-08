@@ -1,0 +1,23 @@
+Running as unit: run-p2791227-i203926097.scope; invocation ID: cda29c6089b04f4b91ac6a61f7a1bf08
+[server] starting; models config = [("gemma", "/home/avifenesh/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf", None)]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "gemma" <- /home/avifenesh/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf
+[gemma4] suppress_tokens: 2 ids masked at sampling
+[q4rp] split-plane IN-PLACE swap: 336 dense trunk tensors
+[worker]   loaded "gemma": 48 layers, eos=1
+[worker] gemma: template caps tools=false think=false think_switch=true chat_ok=true effort_levels=false ctx=262144 tok="gemma4" instruct=None
+[worker] gemma: decode chunk cap 8
+[worker] gemma: EAGER-ONLY serving (gemma4 class — no batched decode arm): per-session eager decode, monolithic prefill, no graph promotion, no prime batching
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["gemma"]
+[server] listening on http://127.0.0.1:8191
+[meter] admit id=chatcmpl-5f7ec93dd7d3590c35de0028f8f4cde6 tenant=default lane=interactive model="gemma"
+[worker] observed session VRAM cost for "gemma": 671MB (admission gate = 2x)
+[meter] admit id=chatcmpl-abb56fc2be9e9d8ff260bb634919d626 tenant=default lane=interactive model="gemma"
+[meter] admit id=chatcmpl-f38972f5ad82f53d27b9d65b23d540c5 tenant=default lane=interactive model="gemma"
+[meter] admit id=chatcmpl-34eec8fe52ab6369f794253a9b835072 tenant=default lane=interactive model="gemma"
+[meter] admit id=chatcmpl-23d2551d77a902f390cba64c7f961e4d tenant=default lane=interactive model="gemma"
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

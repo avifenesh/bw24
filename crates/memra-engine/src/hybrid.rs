@@ -8,6 +8,7 @@ use memra_gguf::config::{LayerKind, MlaConfig, ModelConfig};
 use memra_gguf::source::{GgufSource, TensorSource};
 use memra_gguf::{GgmlType, GgufFile};
 use cudarc::driver::CudaSlice;
+use std::collections::HashMap;
 
 // Source-agnostic load helpers (GGUF or safetensors). The GGUF wrappers below keep `load()`
 // byte-identical; only the source object differs.
@@ -26,17 +27,167 @@ fn load_opt(
     GpuTensor::load_opt_from_source(e, src, name)
 }
 
+struct ResidencyBytes {
+    experts: HashMap<usize, usize>,
+    rest: usize,
+    saw_experts: bool,
+}
+
+fn block_index(name: &str) -> Option<usize> {
+    name.strip_prefix("blk.")?.split('.').next()?.parse().ok()
+}
+
+fn residency_bytes_by_device<'a>(
+    tensors: impl IntoIterator<Item = (&'a str, usize)>,
+    layer_devices: &[usize],
+    primary_device: usize,
+) -> ResidencyBytes {
+    let mut out = ResidencyBytes {
+        experts: HashMap::new(),
+        rest: 0,
+        saw_experts: false,
+    };
+    for (name, bytes) in tensors {
+        if name.starts_with("blk.") && name.contains("_exps.") {
+            let device = block_index(name)
+                .and_then(|il| layer_devices.get(il).copied())
+                .unwrap_or(primary_device);
+            *out.experts.entry(device).or_default() += bytes;
+            out.saw_experts = true;
+        } else {
+            out.rest += bytes;
+        }
+    }
+    out
+}
+
+/// Load-local resident-expert capacity decisions. PP stages on distinct devices are charged only
+/// for their own layer slices; co-located stages share a device key and are charged together.
+pub(crate) struct ResidentPlan {
+    primary_device: usize,
+    layer_devices: Vec<usize>,
+    layer_counts: HashMap<usize, usize>,
+    exact_expert_bytes: Option<HashMap<usize, usize>>,
+    trunk_bytes: usize,
+    decisions: HashMap<usize, bool>,
+    pp: bool,
+}
+
+impl ResidentPlan {
+    fn from_layout(
+        src: &dyn TensorSource,
+        primary_device: usize,
+        layer_devices: Vec<usize>,
+        pp: bool,
+    ) -> Self {
+        let mut layer_counts = HashMap::new();
+        for &device in &layer_devices {
+            *layer_counts.entry(device).or_default() += 1;
+        }
+        let (exact_expert_bytes, trunk_bytes) = match src.gguf() {
+            Some(g) => {
+                let bytes = residency_bytes_by_device(
+                    g.tensors.iter().map(|t| (t.name.as_str(), t.n_bytes as usize)),
+                    &layer_devices,
+                    primary_device,
+                );
+                if bytes.saw_experts {
+                    (Some(bytes.experts), bytes.rest)
+                } else {
+                    (None, 0)
+                }
+            }
+            None => (None, 0),
+        };
+        Self {
+            primary_device,
+            layer_devices,
+            layer_counts,
+            exact_expert_bytes,
+            trunk_bytes,
+            decisions: HashMap::new(),
+            pp,
+        }
+    }
+
+    pub(crate) fn unsharded(e: &Engine, src: &dyn TensorSource, cfg: &ModelConfig) -> Self {
+        let device = e.ctx().ordinal();
+        Self::from_layout(src, device, vec![device; cfg.n_layer as usize], false)
+    }
+
+    pub(crate) fn pp(
+        e: &Engine,
+        src: &dyn TensorSource,
+        cfg: &ModelConfig,
+        n_trunk: usize,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let primary = e.ctx().ordinal();
+        let Some(_fence) = crate::pp::pp_cuts(n_trunk) else {
+            return Ok(Self::unsharded(e, src, cfg));
+        };
+        let mut layer_devices = vec![primary; cfg.n_layer as usize];
+        for (il, device) in layer_devices.iter_mut().take(n_trunk).enumerate() {
+            *device = crate::pp::layer_engine(e, n_trunk, il)?.ctx().ordinal();
+        }
+        Ok(Self::from_layout(src, primary, layer_devices, true))
+    }
+
+    fn should_reside(&mut self, e: &Engine, il: usize, per_layer: usize) -> bool {
+        let device = self.layer_devices.get(il).copied().unwrap_or(self.primary_device);
+        debug_assert_eq!(e.ctx().ordinal(), device);
+        if let Some(&decision) = self.decisions.get(&device) {
+            return decision;
+        }
+        if std::env::var("MEMRA_MOE_RESIDENT").as_deref() == Ok("0") {
+            self.decisions.insert(device, false);
+            return false;
+        }
+        let (free, _total) = match e.ctx().mem_get_info() {
+            Ok(v) => v,
+            Err(_) => {
+                self.decisions.insert(device, false);
+                return false;
+            }
+        };
+        let projected = self.exact_expert_bytes.as_ref()
+            .map(|bytes| bytes.get(&device).copied().unwrap_or(0))
+            .unwrap_or(per_layer * self.layer_counts.get(&device).copied().unwrap_or(1));
+        let budget = std::env::var("MEMRA_MOE_RESIDENT_GB").ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|gb| (gb * 1e9) as usize)
+            .unwrap_or_else(|| {
+                let reserve = std::env::var("MEMRA_MOE_RESIDENT_HEADROOM_GB").ok()
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .map(|gb| (gb * 1e9) as usize)
+                    .unwrap_or(2_000_000_000);
+                (free as usize).saturating_sub(self.trunk_bytes + reserve)
+            });
+        let ok = projected <= budget;
+        eprintln!("[moe] resident-experts decision ({}dev{}): experts {:.2}GB + trunk {:.2}GB vs free {:.2}GB (expert budget {:.2}GB) -> {}",
+                  if self.pp { "PP " } else { "" }, device, projected as f64 / 1e9,
+                  self.trunk_bytes as f64 / 1e9, free as f64 / 1e9, budget as f64 / 1e9,
+                  if ok { "RESIDENT" } else { "SLRU cache" });
+        self.decisions.insert(device, ok);
+        ok
+    }
+}
+
 /// Load the mixer (full-attn, linear-attn, or MLA) for block `il`. Shared by the trunk loop and
 /// the MTP head. `kind` overrides cfg.layer_kind (the MTP/NextN block is ALWAYS full-attn
 /// regardless of the periodic interval — its GGUF carries attn_q/k/v, not ssm_*/attn_qkv).
 /// `mla` is the Arch gate: `Some` only for glm-dsa (cfg.mla) — every layer of an MLA model,
 /// INCLUDING its NextN/MTP block (dense MLA, no indexer), takes the Mla arm.
+///
+/// `sep_gate` = `ModelConfig::attn_gate_separate()`: load step35's separate head-wise
+/// `attn_gate.weight` onto the full-attn arm. It is passed in rather than read off a cfg so the
+/// MTP/draft call sites (which build a synthetic cfg) opt in explicitly.
 fn load_mixer_kind(
     e: &Engine,
     src: &dyn TensorSource,
     il: u32,
     kind: LayerKind,
     mla: Option<&MlaConfig>,
+    sep_gate: bool,
 ) -> Result<Mixer, Box<dyn std::error::Error>> {
     let p = |s: &str| format!("blk.{il}.{s}");
     if let Some(m) = mla {
@@ -58,6 +209,14 @@ fn load_mixer_kind(
             wo: load_t(e, src, &p("attn_output.weight"))?,
             q_norm: load_t(e, src, &p("attn_q_norm.weight"))?,
             k_norm: load_t(e, src, &p("attn_k_norm.weight"))?,
+            // step35: REQUIRED when the arch says so — a missing gate would silently drop the
+            // per-head sigmoid and produce plausible-but-wrong logits, so this is load_t not
+            // load_opt. Step-3.7-Flash ships it on all 45 blocks (width = that layer's n_head).
+            attn_gate: if sep_gate {
+                Some(load_t(e, src, &p("attn_gate.weight"))?)
+            } else {
+                None
+            },
         }),
         LayerKind::LinearAttention => Mixer::Linear(LinearAttnLayer {
             wqkv: load_t(e, src, &p("attn_qkv.weight"))?,
@@ -85,6 +244,7 @@ pub(crate) fn load_ffn(
     cfg: &ModelConfig,
     il: u32,
     spill: Option<(&GgufFile, &mut crate::spill::SpillCtx)>,
+    resident: &mut ResidentPlan,
 ) -> Result<Ffn, Box<dyn std::error::Error>> {
     let p = |s: &str| format!("blk.{il}.{s}");
     // MiniMax-M3: moe_layer_freq[il]==0 -> this layer is a DENSE-FFN layer (layers 0..2) even
@@ -95,9 +255,24 @@ pub(crate) fn load_ffn(
         || cfg.hy3.as_ref().is_some_and(|h| il < h.first_k_dense_replace)
         // glm-dsa: leading_dense_block_count layers (GLM-5.2: 3) are dense-FFN
         || cfg.mla.as_ref().is_some_and(|m| il < m.first_k_dense_replace)
+        // step35: leading_dense_block_count (Step-3.7-Flash: 3) — blocks 0-2 ship
+        // ffn_gate/up/down and NO ffn_gate_inp, so the MoE arm's load_t would fail.
+        || cfg.step35.as_ref().is_some_and(|s| il < s.first_k_dense_replace)
         // gemma4 DENSE variants (31B/E4B): the arch is MoE-capable but the file ships no
         // expert tensors at all — tensor presence decides.
         || (cfg.gemma4.is_some() && !src.has(&p("ffn_gate_exps.weight"))
+            && !src.has(&p("ffn_gate_up_exps.weight")))
+        // A NextN/MTP BLOCK can be DENSE inside a MoE trunk. Step-3.7-Flash's standalone drafter
+        // (Step3.7-flash-mtp-Q8_0.gguf) ships blk.45/46/47 with `ffn_gate/up/down.weight` and NO
+        // `ffn_gate_inp`/`ffn_*_exps`, while the same file's config declares expert_count=288 (it
+        // carries the TRUNK's hparams) — so the MoE arm's `load_t("ffn_gate_exps.weight")` would
+        // fail on a perfectly well-formed file. Scoped to `il >= n_trunk` and gated on tensor
+        // presence: only an MTP block can take this door, so no trunk MoE layer's dispatch can
+        // shift. (qwen35's MTP block IS MoE and keeps the MoE arm — it ships the expert slabs.)
+        || (cfg.nextn_predict_layers > 0
+            && il >= cfg.n_layer.saturating_sub(cfg.nextn_predict_layers)
+            && src.has(&p("ffn_gate.weight"))
+            && !src.has(&p("ffn_gate_exps.weight"))
             && !src.has(&p("ffn_gate_up_exps.weight")));
     Ok(
         if let Some(moe) = cfg.moe.as_ref().filter(|_| !dense_override) {
@@ -140,12 +315,13 @@ pub(crate) fn load_ffn(
                     }
                 }
             };
-            // FITS-VRAM RESIDENT EXPERTS: upload this layer's 3 expert slabs to device when a global
-            // budget (MEMRA_MOE_RESIDENT_GB override; default = free VRAM minus the file's non-expert
-            // bytes minus a measured headroom reserve) covers the whole model's expert bytes, summed
-            // exactly from the GGUF header. Decision is made ONCE (first MoE layer). Failure to fit
-            // => None => the SLRU spill machinery.
-            let dev_exps = build_dev_exps(e, src, cfg, &gate_exps, &up_exps, &down_exps)?;
+            // FITS-VRAM RESIDENT EXPERTS: upload this layer's 3 expert slabs when the owning
+            // device's budget (MEMRA_MOE_RESIDENT_GB override; default = free VRAM minus the file's
+            // non-expert bytes minus a measured headroom reserve) covers the expert bytes assigned
+            // to that device, summed exactly from the GGUF header. Decision is made once per device
+            // (first MoE layer there). Failure to fit => None => the SLRU spill machinery.
+            let dev_exps =
+                build_dev_exps(e, resident, il as usize, &gate_exps, &up_exps, &down_exps)?;
             // Device macro row [3*n_expert]: gate, up, down (ones when the artifact carries none).
             let mut macro_row = vec![1.0f32; 3 * n_expert];
             for (slot, exps) in [(0usize, &gate_exps), (1, &up_exps), (2, &down_exps)] {
@@ -185,7 +361,7 @@ pub(crate) fn load_ffn(
     )
 }
 
-/// Decide + build the resident expert slabs for one layer. Budget check runs once (static),
+/// Decide + build the resident expert slabs for one layer. Budget check runs once per device,
 /// RESIDENT-IF-FITS (2026-08-02, research/residency-cap-20260802/): the bank is resident when
 /// its EXACT byte total (summed from the GGUF header — UD-quants make per-layer bytes
 /// non-uniform, Ornith-35B blk.0 is +7% over the mean, so first-layer x n_layer misprojects)
@@ -195,11 +371,12 @@ pub(crate) fn load_ffn(
 /// need beside the weights at board shape is ~1.7GB (CUDA ctx + KV + workspace); reserve
 /// default 2.0GB, machine-specific override `MEMRA_MOE_RESIDENT_HEADROOM_GB` (VRAM-budget
 /// class). `MEMRA_MOE_RESIDENT_GB` stays the absolute expert-budget override;
-/// MEMRA_MOE_RESIDENT=0 forces the SLRU path. Fits => every subsequent layer uploads too.
+/// MEMRA_MOE_RESIDENT=0 forces the SLRU path. Fits => every subsequent layer on that device
+/// uploads too.
 fn build_dev_exps(
     e: &Engine,
-    src: &dyn TensorSource,
-    cfg: &ModelConfig,
+    resident: &mut ResidentPlan,
+    il: usize,
     gate: &HostExps,
     up: &HostExps,
     down: &HostExps,
@@ -209,47 +386,12 @@ fn build_dev_exps(
     if !gate.is_uniform_layout() || !up.is_uniform_layout() || !down.is_uniform_layout() {
         return Ok(None);
     }
-    use std::sync::OnceLock;
-    static DECISION: OnceLock<bool> = OnceLock::new();
     let per_layer =
         gate.bytes.as_bytes().len() + up.bytes.as_bytes().len() + down.bytes.as_bytes().len();
-    let fits = *DECISION.get_or_init(|| {
-        if std::env::var("MEMRA_MOE_RESIDENT").as_deref() == Ok("0") { return false; }
-        if gate.tiers.is_some() { return false; }   // tiered/spill loads keep the cache path
-        let (free, _total) = match e.ctx().mem_get_info() { Ok(v) => v, Err(_) => return false };
-        // EXACT bank + trunk accounting from the GGUF header (metadata only, no data reads).
-        // Non-GGUF sources keep the first-layer upper bound with trunk unknown (the ST spill
-        // profiles load tiered and never reach this decision).
-        let (projected, trunk) = match src.gguf() {
-            Some(g) => {
-                let (mut exps, mut rest) = (0usize, 0usize);
-                for t in &g.tensors {
-                    if t.name.starts_with("blk.") && t.name.contains("_exps.") {
-                        exps += t.n_bytes as usize;
-                    } else {
-                        rest += t.n_bytes as usize;
-                    }
-                }
-                if exps > 0 { (exps, rest) } else { (per_layer * cfg.n_layer as usize, 0) }
-            }
-            None => (per_layer * cfg.n_layer as usize, 0),
-        };
-        let budget = std::env::var("MEMRA_MOE_RESIDENT_GB").ok()
-            .and_then(|v| v.parse::<f64>().ok())
-            .map(|gb| (gb * 1e9) as usize)
-            .unwrap_or_else(|| {
-                let reserve = std::env::var("MEMRA_MOE_RESIDENT_HEADROOM_GB").ok()
-                    .and_then(|v| v.parse::<f64>().ok())
-                    .map(|gb| (gb * 1e9) as usize)
-                    .unwrap_or(2_000_000_000);
-                (free as usize).saturating_sub(trunk + reserve)
-            });
-        let ok = projected <= budget;
-        eprintln!("[moe] resident-experts decision: experts {:.2}GB + trunk {:.2}GB vs free {:.2}GB (expert budget {:.2}GB) -> {}",
-                  projected as f64 / 1e9, trunk as f64 / 1e9, free as f64 / 1e9, budget as f64 / 1e9,
-                  if ok { "RESIDENT" } else { "SLRU cache" });
-        ok
-    });
+    if gate.tiers.is_some() {
+        return Ok(None); // tiered/spill loads keep the cache path
+    }
+    let fits = resident.should_reside(e, il, per_layer);
     if !fits {
         return Ok(None);
     }
@@ -320,6 +462,7 @@ fn build_dev_exps(
         down: d,
         ptr_row,
         gu_il,
+        dev: e.ctx().ordinal(),
     }))
 }
 
@@ -330,6 +473,17 @@ pub struct FullAttnLayer {
     pub wo: GpuTensor,
     pub q_norm: GpuTensor,
     pub k_norm: GpuTensor,
+    /// step35-class SEPARATE head-wise attention gate: `blk.N.attn_gate.weight [n_embd, n_head_l]`
+    /// where `n_head_l` is this layer's query-head count (64 full / 96 SWA on Step-3.7-Flash, so
+    /// the width VARIES per layer). Produces one pre-sigmoid scalar per head from the
+    /// post-attn_norm hidden state; the forward broadcasts sigmoid(gate) over head_dim and
+    /// multiplies attn_out before wo (upstream `step35.cpp:267-285`).
+    ///
+    /// `None` for every other arch. Do NOT confuse with `LinearAttnLayer::wqkv_gate`, which reads
+    /// the SAME tensor name on qwen35's SSM layers but is a different mechanism (a full-width
+    /// z-gate, not a per-head scalar), nor with the qwen35 FUSED gate packed inside wq that
+    /// `ModelConfig::attn_out_gate()` / `q_gate_split` handle.
+    pub attn_gate: Option<GpuTensor>,
 }
 
 /// Latent-KV geometry for one MLA layer, resolved at load from `MlaConfig` (glm-dsa). The KV
@@ -503,6 +657,14 @@ pub struct DevExps {
     pub down: CudaSlice<u8>,
     /// [3*n_expert] u64 device row: gate ptrs, up ptrs, down ptrs (proj-major like layer_dev_row).
     pub ptr_row: CudaSlice<u64>,
+    /// The CUDA device ordinal these slabs live on (the OWNING stage's device under the PP
+    /// sharded loader — cx-503b sizes and `layer_engine` places per device). Consumers that
+    /// dispatch from a DIFFERENT device must NOT dereference the slabs: an m=1 qmatvec over
+    /// peer-read expert bytes is the measured 34-150x slow class (research/pp-prefill-20260807
+    /// anatomy), strictly worse than SLRU staging. The sequential arm's slab-locality gate
+    /// (lane/pp-leverb) keys on this field; the per-stage prime walker makes every layer's
+    /// slab local by construction.
+    pub dev: usize,
     /// WALL-GAP ARC (MEMRA_MOE_GU_IL=1): gate/up rows INTERLEAVED in one slab — row o of gate at
     /// base + o*(rb_g+rb_u), up at +rb_g. Consumers on the dev path must use (rb_g+rb_u) as the
     /// row stride for BOTH projections (see MoeWeights::dev_rb_gu). One contiguous 1760B stream
@@ -617,6 +779,57 @@ pub struct MtpHead {
     /// stay at n_embd, so the trunk/verify interface is unchanged. Selected by the presence of
     /// `blk.N.nextn.out_up.weight` in a MEMRA_MTP_DRAFT file.
     pub geom: Option<DraftGeom>,
+    /// step35: the DRAFT BLOCK's RESOLVED per-layer geometry (`None` for every arch whose
+    /// geometry is uniform). Without it the head forward would use the trunk's max-derived
+    /// scalars and compute wrong attention — and the failure mode is plausible-but-wrong drafts
+    /// (tanked acceptance, correct output), exactly what the exactness gates cannot see.
+    pub step35: Option<Step35MtpGeom>,
+}
+
+/// step35 MTP-block geometry, RESOLVED at load time from the file that actually carries the
+/// block's own `Step35Config` arrays.
+///
+/// Why resolved and not "look it up per forward from the model's cfg": Step-3.7-Flash ships MTP
+/// as a SEPARATE GGUF, and the two files disagree about which layers exist. The trunk artifact
+/// declares `block_count=45` / `nextn_predict_layers=0`, so its per-layer arrays hold 45 entries
+/// (0..=44) and `Step35Config::n_head(45)` falls off the end into the `.last()` fallback — index
+/// 44, which is a FULL-attn layer at 64 heads. The draft file declares `block_count=48` /
+/// `nextn=3` and its arrays' index 45 is the truth: SWA, 96 heads (matching that file's
+/// `blk.45.attn_q.weight [4096, 12288]` = 96*128 and `blk.45.attn_gate.weight [4096, 96]`).
+/// Receipt: `research/step37-bringup-20260802/raw/gguf-header-stepfun-mtp-q8-20260802.txt` plus
+/// the tail dump in `research/step37-p2-20260806/raw/` — `head_count[43..48] = [96, 64, 96, 96,
+/// 96]`, `sliding_window_pattern[43..48] = [True, False, True, True, True]`.
+#[derive(Debug, Clone)]
+pub struct Step35MtpGeom {
+    /// Block index inside the file that carries it (45 for Step-3.7-Flash). Diagnostics only.
+    pub il: u32,
+    pub n_head: usize,    // 96 on Step-3.7-Flash's MTP block (SWA-type)
+    pub n_head_kv: usize, // 8
+    pub n_rot: usize,     // 128 (SWA keeps the unhalved rotary width)
+    pub rope_base: f32,   // 1e4 (SWA base, not the trunk's 5e6 global)
+    pub swa: bool,        // true
+    pub window: usize,    // 512
+    /// This block's `swiglu_clamp_shexp` limit. The MTP block's FFN is a DENSE SwiGLU, and
+    /// upstream's one `build_ffn` serves both the dense MLP and the shared expert off the
+    /// SHEXP array (llama-graph.cpp:1751) — so a dense MTP block keys off shexp, not exp.
+    /// 0.0 (`None`) on Step-3.7-Flash's block 45; live (16.0) only on trunk layers 43-44.
+    pub clamp_shexp: Option<f32>,
+}
+
+impl Step35MtpGeom {
+    /// Resolve block `il`'s geometry from the `Step35Config` of the file that OWNS that block.
+    pub fn resolve(s: &memra_gguf::config::Step35Config, il: u32) -> Self {
+        Step35MtpGeom {
+            il,
+            n_head: s.n_head(il) as usize,
+            n_head_kv: s.n_head_kv(il) as usize,
+            n_rot: s.n_rot(il) as usize,
+            rope_base: s.rope_base(il),
+            swa: s.is_swa(il),
+            window: s.sliding_window as usize,
+            clamp_shexp: s.clamp_shexp(il),
+        }
+    }
 }
 
 /// Draft-head geometry override for a distilled (narrower) student block.
@@ -625,6 +838,29 @@ pub struct DraftGeom {
     pub n_head: usize,  // draft attention heads (head_dim = main head_dim)
     pub n_head_kv: usize,
     pub out_up: GpuTensor, // [d_inner -> n_embd]: carrier + head input up-projection
+}
+
+/// Which tensor is the DRAFT lm_head, for a standalone NextN/MTP draft GGUF whose block index is
+/// `n`. Preference order is the artifact's, not ours — upstream step35.cpp:553 is
+/// `layer.nextn.shared_head_head ? layer.nextn.shared_head_head : model.output`.
+///
+/// Split out of `MtpHead::load_draft` purely so it is unit-testable: the loader needs a CUDA
+/// device and a multi-GB file, while the failure this guards is invisible to every exactness gate
+/// (a wrong head still produces CORRECT output — the verify arbitrates — it just accepts nothing).
+/// `has` is the tensor-presence predicate (`src.has`).
+pub fn draft_head_tensor(has: impl Fn(&str) -> bool, n: u32) -> String {
+    let own = format!("blk.{n}.nextn.shared_head_head.weight");
+    if has(&own) {
+        return own;
+    }
+    // Legacy name kept as a probe so anything that ever matched it still does; no shipped
+    // artifact or upstream mapping uses it (see the `load_draft` note).
+    let legacy = format!("blk.{n}.nextn.shared_head.weight");
+    if has(&legacy) {
+        return legacy;
+    }
+    // FR-Spec / tied-head drafts: the file-level head IS the draft head.
+    "output.weight".to_string()
 }
 
 impl MtpHead {
@@ -663,7 +899,67 @@ impl MtpHead {
             dcfg.head_dim_k, main_cfg.head_dim_k,
             "draft head_dim != model head_dim"
         );
-        if !student {
+        // step35: geometry is PER-LAYER, so "same shape as the trunk" is the wrong question — the
+        // draft block at il=45 is an SWA-type block (96 q heads, 128 rotary dims, rope base 1e4)
+        // while the trunk's full-attn layers are 64/64/5e6. Resolve the block's geometry from the
+        // DRAFT FILE's own arrays (the trunk artifact's arrays stop at index 44 — see
+        // `Step35MtpGeom`'s note) and verify it against the block's real tensor shapes. The dims
+        // that must still agree with the trunk are the INTERFACE ones (n_embd, head_dim, KV width).
+        let step35 = match (main_cfg.step35.as_ref(), dcfg.step35.as_ref()) {
+            (Some(_), Some(s)) => {
+                let g = Step35MtpGeom::resolve(s, n);
+                // ne is inner-fastest: ne[0] = in_features, ne[1] = out_features for a [in, out] 2D.
+                let out_f = |t: &str| -> Option<usize> {
+                    src.find(&p(t)).and_then(|v| v.ne.get(1).copied()).map(|x| x as usize)
+                };
+                let hd = dcfg.head_dim_k as usize;
+                let wq_out = out_f("attn_q.weight")
+                    .ok_or("step35 draft block has no attn_q.weight")?;
+                assert_eq!(
+                    wq_out, g.n_head * hd,
+                    "step35 draft blk.{n}: attn_q out {wq_out} != n_head({}) * head_dim({hd}) — \
+                     the draft file's head_count array disagrees with its own tensors",
+                    g.n_head
+                );
+                // The SEPARATE head-wise gate is [n_embd, n_head_l] — one scalar per head. Its
+                // width is the second independent witness of this block's head count.
+                let wg_out = out_f("attn_gate.weight")
+                    .ok_or("step35 draft block has no attn_gate.weight (head-wise gate)")?;
+                assert_eq!(
+                    wg_out, g.n_head,
+                    "step35 draft blk.{n}: attn_gate out {wg_out} != n_head({})", g.n_head
+                );
+                // The draft attends its OWN scratch, but `MtpScratch::new` sizes those rows from
+                // the TRUNK cfg's `n_head_kv` (for step35, the max over its per-layer array).
+                // Compare against exactly that value, not a per-layer accessor.
+                assert_eq!(
+                    g.n_head_kv, main_cfg.n_head_kv as usize,
+                    "step35 draft blk.{n} KV heads {} != trunk n_head_kv {} — the MTP scratch \
+                     rows are sized from the trunk cfg, so a differing draft KV width would \
+                     write past the row",
+                    g.n_head_kv, main_cfg.n_head_kv
+                );
+                eprintln!(
+                    "[mtp-draft] step35 MTP geometry blk.{n}: n_head={} n_head_kv={} n_rot={} \
+                     rope_base={:.0} swa={} window={}",
+                    g.n_head, g.n_head_kv, g.n_rot, g.rope_base, g.swa, g.window
+                );
+                Some(g)
+            }
+            (Some(_), None) => {
+                return Err(format!(
+                    "MEMRA_MTP_DRAFT points at a non-step35 GGUF (arch {:?}) but the model is \
+                     step35 — the draft block's per-layer geometry is unknowable from the trunk \
+                     config (its arrays stop at the trunk's last layer)",
+                    g.arch()
+                ).into())
+            }
+            (None, Some(_)) => {
+                return Err("MEMRA_MTP_DRAFT is a step35 draft but the model is not step35".into())
+            }
+            (None, None) => None,
+        };
+        if step35.is_none() && !student {
             // The head forward runs with the MAIN model's cfg — the draft block must be the
             // same shape or the forward is garbage.
             assert_eq!(dcfg.n_head, main_cfg.n_head, "draft n_head != model n_head");
@@ -673,9 +969,34 @@ impl MtpHead {
             );
         }
 
-        // Draft lm_head: the file's own output.weight (+ shared_head_norm / output_norm). For
-        // FR-Spec this is [n_embd, draft_vocab] with draft_vocab << n_vocab.
-        let head = load_t(e, &src, "output.weight")?;
+        // Draft lm_head. PREFERENCE ORDER IS THE ARTIFACT'S, NOT OURS (upstream step35.cpp:553
+        // `layer.nextn.shared_head_head ? ... : model.output`): a NextN block owns its OWN head,
+        // and only a file that omits it falls back to the file-level `output.weight`.
+        //
+        // MEASURED ON THE SHIPPED ARTIFACT (Step3.7-flash-mtp-Q8_0.gguf, byte hashes in
+        // research/step37-p2-20260806/raw/draft-head-tensor-hashes-20260807.txt): the file carries
+        // BOTH, they are DIFFERENT matrices, and the three MTP blocks' heads differ from each
+        // other too —
+        //     output.weight                        sha 3eec5831…  <- the TRUNK lm_head, re-quantized
+        //     blk.45.nextn.shared_head_head.weight sha c90b907b…  <- block 45's own head
+        //     blk.46 …                             sha a22d2957…
+        //     blk.47 …                             sha 4b21e137…
+        // The tell: this file's top-level `output_norm.weight` is BYTE-IDENTICAL to the trunk
+        // artifact's (both sha d7526f44…), i.e. the top level is a copy of the trunk's output
+        // stack, present so the draft gguf stands alone. Reading it as the draft head projects
+        // the MTP block's hidden through the TRUNK's head — coherent-looking drafts the verify
+        // never accepts. Receipt: acceptance 0/248 across K=1..8 with self-consistency PASS
+        // (raw/mtp-draft-20260806T212902Z.log) — the exact failure class run_spec.rs's
+        // "acceptance == 0 with identical output" WARNING exists to catch.
+        //
+        // FR-Spec drafts (trimmed [n_embd, draft_vocab] + d2t) publish the trimmed head as the
+        // file-level `output.weight` and carry no `nextn.shared_head_head`, so they keep the
+        // fallback — hence preference, not replacement.
+        // Name choice is factored into `draft_head_tensor` so it is testable WITHOUT a GPU or a
+        // 3.5 GB artifact (this whole function needs both). Getting it wrong is invisible to
+        // every exactness gate, so the choice itself is pinned by a unit test.
+        let head_name = draft_head_tensor(|t| src.has(t), n);
+        let head = load_t(e, &src, &head_name)?;
         let head_norm = match load_opt(e, &src, &p("nextn.shared_head_norm.weight"))? {
             Some(t) => Some(t),
             None => load_opt(e, &src, "output_norm.weight")?,
@@ -746,8 +1067,14 @@ impl MtpHead {
         } else {
             None
         };
+        // Log the name WITHOUT the blk.{n}. prefix (already printed) so the line reads
+        // `source=nextn.shared_head_head` vs `source=output.weight` — the one-glance receipt
+        // that the head choice went the right way on this artifact.
+        let blk_prefix = format!("blk.{n}.");
+        let head_src = head_name.strip_prefix(&blk_prefix).unwrap_or(&head_name);
         eprintln!(
-            "[mtp-draft] external draft head: blk.{n}, head_vocab={}{}{}",
+            "[mtp-draft] external draft head: blk.{n}, source={}, head_vocab={}{}{}",
+            head_src,
             head.out_features(),
             if d2t.is_some() {
                 " (trimmed, d2t map)"
@@ -763,6 +1090,7 @@ impl MtpHead {
             }
         );
 
+        let mut resident = ResidentPlan::unsharded(e, &src, &dcfg);
         Ok(MtpHead {
             enorm: load_t(e, &src, &p("nextn.enorm.weight"))?,
             hnorm: load_t(e, &src, &p("nextn.hnorm.weight"))?,
@@ -771,12 +1099,14 @@ impl MtpHead {
             post_attn_norm: load_opt(e, &src, &p("post_attention_norm.weight"))?
                 .or(load_opt(e, &src, &p("ffn_norm.weight"))?)
                 .expect("draft NextN block needs post_attention_norm or ffn_norm"),
-            mixer: load_mixer_kind(e, &src, n, LayerKind::FullAttention, dcfg.mla.as_ref())?,
-            ffn: load_ffn(e, &src, &dcfg, n, None)?,
+            mixer: load_mixer_kind(e, &src, n, LayerKind::FullAttention, dcfg.mla.as_ref(),
+                                   dcfg.attn_gate_separate())?,
+            ffn: load_ffn(e, &src, &dcfg, n, None, &mut resident)?,
             shared_head_norm: head_norm,
             shared_head_head: Some(head),
             d2t,
             geom,
+            step35,
         })
     }
 }
@@ -794,6 +1124,15 @@ pub struct GemmaAux {
     pub e4b: Option<Gemma4E4bModel>,
 }
 
+/// step35 model-level auxiliaries. Deliberately NOT folded into `GemmaAux`: every gemma4 path
+/// does `gemma4_aux.as_ref().unwrap()` and would then also fire on a step35 model.
+pub struct Step35Aux {
+    /// `rope_freqs.weight [n_rot_full/2]` llama3-style freq factors. Upstream applies them to
+    /// FULL-attention layers ONLY (`rope_factors = is_swa ? nullptr : get_rope_factors(...)`,
+    /// step35.cpp:246) — the SWA layers pass a null factor pointer. Step-3.7-Flash ships [64] F32.
+    pub rope_freqs: Option<CudaSlice<f32>>,
+}
+
 pub struct HybridModel {
     pub cfg: ModelConfig,
     pub embd: EmbedHost,
@@ -805,13 +1144,15 @@ pub struct HybridModel {
     /// on-device instead of host-dequant + htod). ~0.5GB; uploaded once on first use.
     pub embd_gpu: std::sync::OnceLock<cudarc::driver::CudaSlice<u8>>,
     pub gemma4_aux: Option<GemmaAux>,
+    /// step35 (Step-3.7-Flash) model auxiliaries — `Some` iff `cfg.step35.is_some()`.
+    pub step35_aux: Option<Step35Aux>,
     /// PRIME ACTIVATION SLABS (piecewise-graph foundation, 2026-07-26): the layer loop's
     /// seven trunk transients live in RESIDENT per-model buffers instead of per-call pool
     /// allocs — kills ~224 alloc/free API calls per prime AND freezes the Lt GEMM operand
     /// addresses (nvjet's alignment-variant kernels become run-to-run stable once their
     /// pointers stop moving). Sized on first prime to the largest T seen; Mutex = lazy init
     /// only (single GPU worker).
-    pub prime_slabs: std::sync::Mutex<Option<crate::hybrid_forward::PrimeSlabs>>,
+    pub prime_slabs: std::sync::Mutex<std::collections::HashMap<usize, crate::hybrid_forward::PrimeSlabs>>,
 }
 
 impl HybridModel {
@@ -886,6 +1227,7 @@ impl HybridModel {
         } else {
             load_t(e_head, src, "token_embd.weight")?
         };
+        let mut resident = ResidentPlan::pp(e, src, &cfg, n_trunk)?;
 
         // SPILLING-PLAN §2: build the tiered-spill context ONCE, before loading any experts, but
         // only for a MoE model with the disk tier forced on (`MEMRA_SPILL_DISK`). It probes free VRAM
@@ -943,12 +1285,15 @@ impl HybridModel {
                             wo: load_t(e, src, &p("attn_output.weight"))?,
                             q_norm: load_t(e, src, &p("attn_q_norm.weight"))?,
                             k_norm: load_t(e, src, &tp("attn_k_norm.weight"))?,
+                            attn_gate: None, // gemma4 has no separate head-wise gate
                         })
                     } else {
-                        load_mixer_kind(e, src, il, cfg.layer_kind(il), cfg.mla.as_ref())?
+                        load_mixer_kind(e, src, il, cfg.layer_kind(il), cfg.mla.as_ref(),
+                                        cfg.attn_gate_separate())?
                     }
                 },
-                ffn: load_ffn(e, src, &cfg, il, spill.as_mut().map(|c| (gguf.unwrap(), c)))?,
+                ffn: load_ffn(e, src, &cfg, il,
+                              spill.as_mut().map(|c| (gguf.unwrap(), c)), &mut resident)?,
                 gemma4: if cfg.gemma4.is_some() {
                     let scalar = |n: &str| -> f32 {
                         let t = src.find(&p(n)).unwrap_or_else(|| panic!("missing {n}"));
@@ -1030,12 +1375,25 @@ impl HybridModel {
                     post_attn_norm: load_opt(e, src, &p("post_attention_norm.weight"))?
                         .or(load_opt(e, src, &p("ffn_norm.weight"))?)
                         .expect("MTP block needs post_attention_norm or ffn_norm"),
-                    mixer: load_mixer_kind(e, src, n, LayerKind::FullAttention, cfg.mla.as_ref())?,
-                    ffn: load_ffn(e, src, &cfg, n, spill.as_mut().map(|c| (gguf.unwrap(), c)))?,
+                    mixer: load_mixer_kind(e, src, n, LayerKind::FullAttention, cfg.mla.as_ref(),
+                                           cfg.attn_gate_separate())?,
+                    ffn: load_ffn(e, src, &cfg, n,
+                                  spill.as_mut().map(|c| (gguf.unwrap(), c)), &mut resident)?,
                     shared_head_norm: load_opt(e, src, &p("nextn.shared_head_norm.weight"))?,
-                    shared_head_head: load_opt(e, src, &p("nextn.shared_head.weight"))?,
+                    // `nextn.shared_head_head` is the name the convert script and upstream both
+                    // use (LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD -> "blk.%d.nextn.shared_head_head");
+                    // `nextn.shared_head` is a name no shipped artifact carries, so this arm was
+                    // silently always-None and every embedded-MTP model fell back to the trunk
+                    // `self.output` in `mtp_head_forward_dev` op 12. Harmless for qwen35-family
+                    // heads that genuinely tie to the trunk head; wrong for any artifact that
+                    // ships its own — which the StepFun step35 drafter does (see `load_draft`).
+                    // Keep the old name as a fallback so nothing that did match still does.
+                    shared_head_head: load_opt(e, src, &p("nextn.shared_head_head.weight"))?
+                        .or(load_opt(e, src, &p("nextn.shared_head.weight"))?),
                     d2t: None,
                     geom: None,
+                    // EMBEDDED MTP block: same file, so its own arrays cover index `n`.
+                    step35: cfg.step35.as_ref().map(|s| Step35MtpGeom::resolve(s, n)),
                 }),
                 false => None, // nextn>0 but no embedded eh_proj (external draft GGUF) -> no head
             }
@@ -1154,6 +1512,27 @@ impl HybridModel {
             );
         }
 
+        // FA v4 GQA CAPACITY GUARD (2026-08-06, lane/122b-bringup): fa_v4_smem sizes its
+        // per-warp Q arrays q_ints[8][64]/q_d[8][8] for gqa<=8 — every model before the
+        // 122B-A10B (32 Q heads / 2 KV heads = gqa 16) fit. At gqa>8 the (32,gqa,1) block's
+        // warps 8..15 write q_ints[wy] PAST the array into the k_ints/k_d K tile, corrupting
+        // scores -> all-NaN decode logits (receipts: research/122b-bringup-20260806/, arm
+        // battery: v4/deep MISMATCH+NaN, v3/v2/smem/reg/scalar all MATCH). The hd512 lane
+        // already carries its own capacity guard at dispatch ("gqa <= 16 = fa_v4_smem_512's
+        // q-array capacity"); hd256 v4 never got one. Key FA_V4_MAX_DEFAULT=0 at load so
+        // EVERY v4 dispatch site (eager, rows-verify, dc, rows_dc, windowed, seqs) flips to
+        // the v3 lane together — decode/verify stay kernel-family-identical (the parity law).
+        // Explicit MEMRA_FA_V4_MAX env still wins (diagnostic seam). The real v4 gqa16
+        // extension is a kernel change gated on its own battery + perf receipts (fix brief
+        // in research/122b-bringup-20260806/VERDICT.md).
+        if cfg.n_head_kv > 0 && cfg.n_head / cfg.n_head_kv > 8 {
+            crate::FA_V4_MAX_DEFAULT.store(0, std::sync::atomic::Ordering::Relaxed);
+            eprintln!(
+                "[fa] v4 decode family disabled: gqa {} > fa_v4_smem capacity 8 (v3 lane serves)",
+                cfg.n_head / cfg.n_head_kv
+            );
+        }
+
         if cfg.gemma4.is_some() {
             // gemma4 fa-vec crossover default (measured sweep 2026-07-10; env overrides).
             crate::FA_VEC_MIN_DEFAULT.store(1, std::sync::atomic::Ordering::Relaxed);
@@ -1246,6 +1625,22 @@ impl HybridModel {
                 suppress_d,
                 e4b,
             })
+        } else {
+            None
+        };
+        // step35: rope_freqs.weight [n_rot_full/2] — FULL-attn layers only (SWA passes null).
+        // Loaded by tensor presence, not required: the key is absent on a sibling without
+        // llama3-style scaling, and `None` is the correct "no factors" signal for rope_neox2.
+        let step35_aux = if cfg.step35.is_some() {
+            let rope_freqs = match src.find("rope_freqs.weight") {
+                Some(t) => Some(e.htod(&memra_gguf::dequant::dequantize(
+                    t.ggml_type,
+                    &t.bytes,
+                    t.ne.iter().product::<u64>() as usize,
+                ))?),
+                None => None,
+            };
+            Some(Step35Aux { rope_freqs })
         } else {
             None
         };
@@ -1522,7 +1917,8 @@ impl HybridModel {
             mtp,
             embd_gpu: std::sync::OnceLock::new(),
             gemma4_aux,
-            prime_slabs: std::sync::Mutex::new(None),
+            step35_aux,
+            prime_slabs: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         e.configure_moe_cache_layout(model.moe_cache_block_sizes());
         if force_embd_gpu {
@@ -1580,5 +1976,139 @@ impl HybridModel {
         }
         let x = self.embd.gather(n_embd, tokens);
         Ok(e.htod(&x)?)
+    }
+}
+
+#[cfg(test)]
+mod residency_tests {
+    use super::residency_bytes_by_device;
+
+    #[test]
+    fn pp_residency_counts_only_each_devices_expert_slice() {
+        let tensors = [
+            ("blk.0.ffn_gate_exps.weight", 10usize),
+            ("blk.0.ffn_up_exps.weight", 20),
+            ("blk.1.ffn_down_exps.weight", 30),
+            ("blk.2.ffn_gate_exps.weight", 40),
+            ("blk.3.ffn_up_exps.weight", 50),
+            ("blk.0.attn_q.weight", 7),
+            ("output.weight", 11),
+        ];
+        let bytes = residency_bytes_by_device(tensors, &[0, 0, 1, 1], 0);
+        assert_eq!(bytes.experts.get(&0), Some(&60));
+        assert_eq!(bytes.experts.get(&1), Some(&90));
+        assert_eq!(bytes.rest, 18);
+        assert!(bytes.saw_experts);
+    }
+
+    #[test]
+    fn pp_residency_combines_stages_that_share_one_device() {
+        let tensors = [
+            ("blk.0.ffn_gate_exps.weight", 10usize),
+            ("blk.1.ffn_gate_exps.weight", 20),
+            ("blk.2.ffn_gate_exps.weight", 30),
+            ("blk.3.ffn_gate_exps.weight", 40),
+        ];
+        let bytes = residency_bytes_by_device(tensors, &[0, 0, 0, 0], 0);
+        assert_eq!(bytes.experts.get(&0), Some(&100));
+        assert_eq!(bytes.experts.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod draft_head_tests {
+    use super::draft_head_tensor;
+
+    /// Names present in the real Step-3.7-Flash MTP drafter (Step3.7-flash-mtp-Q8_0.gguf), as
+    /// enumerated by the on-disk byte probe in
+    /// research/step37-p2-20260806/raw/draft-head-tensor-hashes-20260807.txt.
+    /// Both candidate heads exist in that file with IDENTICAL [4096, 128896] Q8_0 shape, so no
+    /// shape or dtype check can distinguish them — only the sha256 of the payload could, and it
+    /// showed them to be different matrices (blk.45 head c90b907b… vs output.weight 3eec5831…).
+    const STEP37_DRAFTER: &[&str] = &[
+        "output.weight",
+        "output_norm.weight",
+        "token_embd.weight",
+        "blk.45.nextn.shared_head_norm.weight",
+        "blk.45.nextn.shared_head_head.weight",
+        "blk.46.nextn.shared_head_head.weight",
+        "blk.47.nextn.shared_head_head.weight",
+    ];
+
+    fn present(names: &'static [&'static str]) -> impl Fn(&str) -> bool {
+        move |t: &str| names.contains(&t)
+    }
+
+    /// THE REGRESSION. Reading `output.weight` off this drafter cost acceptance 0/248 across
+    /// K=1..8 with self-consistency PASS at every K — correct output, dead speculation, no gate
+    /// red (raw/mtp-draft-20260806T212902Z.log). The drafter's top-level output stack is a
+    /// re-quantized COPY OF THE TRUNK'S (its output_norm is byte-identical to the trunk's,
+    /// d7526f44…), so it is the standalone-decode head, not the MTP head. Preferring
+    /// blk.45.nextn.shared_head_head took K=1 to 14/18 = 77.8%
+    /// (raw/mtp-draft-PASS-20260806T215132Z.log).
+    #[test]
+    fn step37_drafter_prefers_the_blocks_own_nextn_head_over_file_level_output() {
+        assert_eq!(
+            draft_head_tensor(present(STEP37_DRAFTER), 45),
+            "blk.45.nextn.shared_head_head.weight"
+        );
+    }
+
+    /// Each NextN block owns a DIFFERENT head (c90b907b / a22d2957 / 4b21e137 — a shared head
+    /// would have collided), so the name must be built from the block index, never hardcoded.
+    /// This is what multi-block chaining (45->46->47) will index when it lands.
+    #[test]
+    fn each_nextn_block_selects_its_own_head() {
+        for n in 45..=47u32 {
+            assert_eq!(
+                draft_head_tensor(present(STEP37_DRAFTER), n),
+                format!("blk.{n}.nextn.shared_head_head.weight")
+            );
+        }
+    }
+
+    /// FR-Spec / tied-head drafts publish the (possibly vocab-trimmed) head as the file-level
+    /// `output.weight` and ship no nextn head. They must keep working — hence preference, not
+    /// replacement.
+    #[test]
+    fn draft_without_a_nextn_head_falls_back_to_file_level_output() {
+        let fr_spec: &[&str] = &["output.weight", "output_norm.weight", "d2t.weight"];
+        assert_eq!(draft_head_tensor(present(fr_spec), 45), "output.weight");
+    }
+
+    /// The legacy `nextn.shared_head` probe sits between the two: no shipped artifact and no
+    /// upstream mapping uses it (upstream is LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD ->
+    /// "blk.%d.nextn.shared_head_head"), but anything that ever matched it still must, and it
+    /// must never win over the real name.
+    #[test]
+    fn legacy_shared_head_is_probed_but_loses_to_shared_head_head() {
+        let legacy_only: &[&str] = &["output.weight", "blk.45.nextn.shared_head.weight"];
+        assert_eq!(
+            draft_head_tensor(present(legacy_only), 45),
+            "blk.45.nextn.shared_head.weight"
+        );
+
+        let both: &[&str] = &[
+            "output.weight",
+            "blk.45.nextn.shared_head.weight",
+            "blk.45.nextn.shared_head_head.weight",
+        ];
+        assert_eq!(
+            draft_head_tensor(present(both), 45),
+            "blk.45.nextn.shared_head_head.weight"
+        );
+    }
+
+    /// A drafter whose nextn head belongs to a DIFFERENT block must not be borrowed: asking for
+    /// block 45 in a file that only carries 46/47 falls back rather than silently mismatching
+    /// the geometry the trunk verified against.
+    #[test]
+    fn a_different_blocks_nextn_head_is_never_borrowed() {
+        let wrong_block: &[&str] = &[
+            "output.weight",
+            "blk.46.nextn.shared_head_head.weight",
+            "blk.47.nextn.shared_head_head.weight",
+        ];
+        assert_eq!(draft_head_tensor(present(wrong_block), 45), "output.weight");
     }
 }

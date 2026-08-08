@@ -1,0 +1,89 @@
+{
+  "cycles": 6,
+  "low_c": 2,
+  "high_c": 6,
+  "phase_s": 6.0,
+  "load_crossings": 12,
+  "ticks": 1600,
+  "ticks_with_spec": 62,
+  "demotions": 12,
+  "demote_at_generated": [
+    1,
+    1,
+    1,
+    33,
+    1,
+    1,
+    1,
+    33,
+    1,
+    33,
+    1,
+    33
+  ],
+  "admit_batched_events": 24,
+  "demotions_per_tick": 0.0075,
+  "verdict_O_load_not_O_ticks": "PASS",
+  "timeline": [
+    {
+      "t": 0.0,
+      "phase": "cyc1-LOW-c2",
+      "fired": 2
+    },
+    {
+      "t": 6.0,
+      "phase": "cyc1-HIGH-c6",
+      "fired": 6
+    },
+    {
+      "t": 12.0,
+      "phase": "cyc2-LOW-c2",
+      "fired": 2
+    },
+    {
+      "t": 18.0,
+      "phase": "cyc2-HIGH-c6",
+      "fired": 6
+    },
+    {
+      "t": 24.0,
+      "phase": "cyc3-LOW-c2",
+      "fired": 2
+    },
+    {
+      "t": 30.01,
+      "phase": "cyc3-HIGH-c6",
+      "fired": 6
+    },
+    {
+      "t": 36.01,
+      "phase": "cyc4-LOW-c2",
+      "fired": 2
+    },
+    {
+      "t": 42.01,
+      "phase": "cyc4-HIGH-c6",
+      "fired": 6
+    },
+    {
+      "t": 48.01,
+      "phase": "cyc5-LOW-c2",
+      "fired": 2
+    },
+    {
+      "t": 54.01,
+      "phase": "cyc5-HIGH-c6",
+      "fired": 6
+    },
+    {
+      "t": 60.01,
+      "phase": "cyc6-LOW-c2",
+      "fired": 2
+    },
+    {
+      "t": 66.01,
+      "phase": "cyc6-HIGH-c6",
+      "fired": 6
+    }
+  ]
+}

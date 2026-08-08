@@ -1,0 +1,132 @@
+# deepseek-v3 pre-tokenizer split — independent reference output (Python re engine)
+# generator: research/step37-p2-20260806/pretok-ref-deepseek-v3.py
+# this is the ground truth the Rust split_deepseek_v3 test corpus was generated from
+
+'Hello world'
+  -> ['Hello', ' world']
+'Hello, world!'
+  -> ['Hello', ',', ' world', '!']
+' leading and trailing '
+  -> [' leading', ' and', ' trailing', ' ']
+"don't can't we're I've I'm you'll he'd"
+  -> ['don', "'t", ' can', "'t", ' we', "'re", ' I', "'ve", ' I', "'m", ' you', "'ll", ' he', "'d"]
+'1234567 89 0'
+  -> ['123', '456', '7', ' ', '89', ' ', '0']
+'v0.71.0 and 128K ctx'
+  -> ['v', '0', '.', '71', '.', '0', ' and', ' ', '128', 'K', ' ctx']
+'Step-3.7-Flash: 196B-A11B (45 blocks)'
+  -> ['Step', '-', '3', '.', '7', '-Flash', ':', ' ', '196', 'B', '-A', '11', 'B', ' (', '45', ' blocks', ')']
+'line1\nline2\r\nline3'
+  -> ['line', '1', '\n', 'line', '2', '\r\n', 'line', '3']
+'trailing newlines\n\n\n'
+  -> ['trailing', ' newlines', '\n\n\n']
+'tabs\tand\t\tspaces   x'
+  -> ['tabs', '\tand', '\t', '\tspaces', '  ', ' x']
+'\n\n  \n indented'
+  -> ['\n\n  \n', ' indented']
+'中文测试'
+  -> ['中文测试']
+'混合 English 中文 123'
+  -> ['混合', ' English', ' ', '中文', ' ', '123']
+'日本語のテスト、カタカナ'
+  -> ['日本語のテスト', '、', 'カタカナ']
+'한국어 테스트'
+  -> ['한국어', ' 테스트']
+'emoji 🚀 and symbols ~ ^ | $ +'
+  -> ['emoji', ' 🚀', ' and', ' symbols', ' ~', ' ^', ' |', ' $', ' +']
+'naïve café résumé'
+  -> ['naïve', ' café', ' résumé']
+'Ünïcödé mÄrks'
+  -> ['Ünïcödé', ' mÄrks']
+'áb̧c'
+  -> ['áb̧c']
+'MoE top-8 288 experts@4096'
+  -> ['MoE', ' top', '-', '8', ' ', '288', ' experts', '@', '409', '6']
+'  '
+  -> ['  ']
+' '
+  -> [' ']
+''
+  -> []
+'\t'
+  -> ['\t']
+'\n'
+  -> ['\n']
+'x'
+  -> ['x']
+'@#$%^&*()'
+  -> ['@#$%^&*()']
+'snake_case camelCase kebab-case'
+  -> ['snake', '_case', ' camelCase', ' kebab', '-case']
+'path/to/file.gguf'
+  -> ['path', '/to', '/file', '.gguf']
+'{"key": [1, 2, 3]}'
+  -> ['{"', 'key', '":', ' [', '1', ',', ' ', '2', ',', ' ', '3', ']}']
+'5e6 vs 1e4 rope base'
+  -> ['5', 'e', '6', ' vs', ' ', '1', 'e', '4', ' rope', ' base']
+'ЖИВЁТ русский текст'
+  -> ['ЖИВЁТ', ' русский', ' текст']
+'Ελληνικά κείμενα'
+  -> ['Ελληνικά', ' κείμενα']
+'العربية نص'
+  -> ['العربية', ' نص']
+'▁escaped▁space'
+  -> ['▁', 'escaped', '▁', 'space']
+'100%% sure? yes!!!'
+  -> ['100', '%%', ' sure', '?', ' yes', '!!!']
+' .a'
+  -> [' .', 'a']
+' a'
+  -> [' a']
+'..'
+  -> ['..']
+'a1'
+  -> ['a', '1']
+'1a'
+  -> ['1', 'a']
+'12345678901234'
+  -> ['123', '456', '789', '012', '34']
+' 123'
+  -> [' ', '123']
+'123 '
+  -> ['123', ' ']
+'  123  '
+  -> ['  ', '123', '  ']
+'-abc'
+  -> ['-abc']
+'-abc1'
+  -> ['-abc', '1']
+'~abc'
+  -> ['~abc']
+'~'
+  -> ['~']
+'~ ^'
+  -> ['~', ' ^']
+'\xa0nbsp'
+  -> ['\xa0nbsp']
+'a\xa0\xa0b'
+  -> ['a', '\xa0', '\xa0b']
+'x \n y'
+  -> ['x', ' \n', ' y']
+'x  \n\n  y'
+  -> ['x', '  \n\n', ' ', ' y']
+'end with space '
+  -> ['end', ' with', ' space', ' ']
+'end with spaces   '
+  -> ['end', ' with', ' spaces', '   ']
+'\r'
+  -> ['\r']
+'\r\r\n\n'
+  -> ['\r\r\n\n']
+' \n '
+  -> [' \n', ' ']
+'́leading mark'
+  -> ['́leading', ' mark']
+'中1文2'
+  -> ['中', '1', '文', '2']
+'ーヽヾ'
+  -> ['ーヽヾ']
+'龥龦'
+  -> ['龥', '龦']
+'\u3040〿'
+  -> ['\u3040', '〿']

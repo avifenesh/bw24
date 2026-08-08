@@ -1,0 +1,45 @@
+=== v0.72 fix1 verification 20260808T025407Z local_commit=73c65c91 remote_base=a131e8c75849bcf1efe1b234039a14d71bb089a3
+=== artifact byte-size gate
+46483327296 /home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+46999941600 /home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00002-of-00003.gguf
+11510293728 /home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00003-of-00003.gguf
+3707276416 /home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf
+-rw-rw-r-- 1 ubuntu ubuntu  44G Aug  6 12:39 /home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+-rw-rw-r-- 1 ubuntu ubuntu  44G Aug  6 12:42 /home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00002-of-00003.gguf
+-rw-rw-r-- 1 ubuntu ubuntu  11G Aug  6 12:42 /home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00003-of-00003.gguf
+-rw-rw-r-- 1 ubuntu ubuntu 3.5G Aug  6 12:37 /home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf
+47ea7c235f0eda446ca45a7693113469428f7c22ce157bbfcafb31c74a1861f5  crates/memra-engine/src/hybrid_forward.rs
+3e14869a56904ddc4f2715a638c548080128fa330e0e875877cf06ff49c475b4  docs/FLAGS.md
+lock acquired 2026-08-08T02:54:07Z
+0, NVIDIA RTX PRO 6000 Blackwell Server Edition, 0 MiB, 27, 180 MHz
+1, NVIDIA RTX PRO 6000 Blackwell Server Edition, 0 MiB, 27, 180 MHz
+########## tickinv35: naked invariant ##########
+tick-invariance-gate: label=step35-tick assert=invariant seam=MEMRA_PRIME_CALLLOCAL legacy-seam=off got=invariant canary=0 budgets=0,1024,513,512,256,64 splits=64,256,512 model=Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+       1024 |     5 | EXACT |            -1 | 0.000e0 | - | identical
+        513 |    10 | EXACT |            -1 | 0.000e0 | - | identical
+        512 |    10 | EXACT |            -1 | 0.000e0 | - | identical
+        256 |    20 | EXACT |            -1 | 0.000e0 | - | identical
+         64 |    77 | EXACT |            -1 | 0.000e0 | - | identical
+       sp64 |     2 | EXACT |            -1 | 0.000e0 | - | identical
+      sp256 |     2 | EXACT |            -1 | 0.000e0 | - | identical
+      sp512 |     2 | EXACT |            -1 | 0.000e0 | - | identical
+    tickinv verdict: TICK-INVARIANT — prefill logits bit-identical at every per-tick prefill budget
+tick-invariance-gate: PASS (raw log /tmp/tickinv-gate-KEqlAp.log)
+tickinv35 rc=0
+########## tickinv35c: canary must break invariant ##########
+tick-invariance-gate: label=step35-tick assert=invariant seam=MEMRA_PRIME_CALLLOCAL legacy-seam=on got=variant canary=1 budgets=0,1024,513,512,256,64 splits=64,256,512 model=Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+       1024 |     5 | DIFFER |          1024 | 1.310e0 | - | step 6
+        513 |    10 | DIFFER |           513 | 1.115e0 | - | step 3
+        512 |    10 | DIFFER |           512 | 1.164e0 | - | step 6
+        256 |    20 | DIFFER |           512 | 1.164e0 | - | step 6
+         64 |    77 | DIFFER |           512 | 1.164e0 | - | step 6
+       sp64 |     2 | DIFFER |          4096 | 1.204e0 | - | step 6
+      sp256 |     2 | DIFFER |          4096 | 1.533e0 | - | step 6
+      sp512 |     2 | DIFFER |           512 | 1.164e0 | - | step 6
+    tickinv verdict: *** TICK-DEPENDENT: prefill logits move with the per-tick prefill budget (MEMRA_PREFILL_TICK / _JUDGE / _HARVEST) ***
+tick-invariance-gate: PASS (canary broke the assertion as required — gate has teeth; log /tmp/tickinv-gate-AbOjMa.log)
+tickinv35c rc=0
+0, 0 MiB, 39, 2392 MHz
+1, 0 MiB, 32, 2325 MHz
+lock released 2026-08-08T03:09:12Z
+=== verification rc=0

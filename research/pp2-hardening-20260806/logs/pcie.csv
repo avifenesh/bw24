@@ -1,0 +1,3 @@
+index, name, pci.bus_id, pcie.link.gen.max, pcie.link.gen.current, pcie.link.width.max, pcie.link.width.current, memory.total [MiB]
+0, NVIDIA RTX PRO 6000 Blackwell Server Edition, 00000000:32:00.0, 5, 1, 16, 16, 97887 MiB
+1, NVIDIA RTX PRO 6000 Blackwell Server Edition, 00000000:33:00.0, 5, 1, 16, 16, 97887 MiB

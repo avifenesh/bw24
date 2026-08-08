@@ -1,0 +1,22 @@
+		LnkCap:	Port #0, Speed 32GT/s, Width x16, ASPM L1, Exit Latency L1 unlimited
+		LnkCap2: Supported Link Speeds: 2.5-32GT/s, Crosslink- Retimer+ 2Retimers+ DRS-
+-+-[0000:00]-+-00.0  Intel Corporation 440FX - 82441FX PMC [Natoma]
+ |           +-01.0  Intel Corporation 82371SB PIIX3 ISA [Natoma/Triton II]
+ |           +-01.3  Intel Corporation 82371AB/EB/MB PIIX4 ACPI
+ |           +-03.0  Amazon.com, Inc. Device 1111
+ |           \-04.0  Amazon.com, Inc. NVMe EBS Controller
+ +-[0000:01]---00.0-[02-23]----00.0-[03-23]--+-00.0-[04]--
+ |                                           +-00.1-[05]--
+ |                                           +-00.2-[06]--
+ |                                           +-00.3-[07]--
+ |                                           +-00.4-[08]--
+ |                                           +-00.5-[09]--
+ |                                           +-00.6-[0a]--
+ |                                           +-00.7-[0b]--
+ |                                           +-01.0-[0c]--
+ |                                           +-01.1-[0d]--
+ |                                           +-01.2-[0e]--
+ |                                           +-01.3-[0f]--
+ |                                           +-01.4-[10]--
+ |                                           +-01.5-[11]--
+ |                                           +-01.6-[12]--

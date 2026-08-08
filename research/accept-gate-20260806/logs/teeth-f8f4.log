@@ -1,0 +1,59 @@
+=== accept-gate TEETH RECEIPT: direction 2 — MEMRA_MMQ_F8F4=1 must FAIL ===
+[when] 2026-08-06T18:01:10+03:00
+[commit] 5cda59b555230f4d782624e4722ee901d2757ff6 (+ control-arm MJ1 fix, uncommitted at run time)
+[cmd] MEMRA_MMQ_F8F4=1 tools/accept-gate.sh --full   (plain verdict; teeth shown by the FAILs)
+[why] the merged opt-in arm is receipted to move acceptance/text in 4 of 6 of these cells
+[gpu] 1957 MHz, 79
+
+== accept-gate: served-spec acceptance + long-text assertion ==
+   cells: q27-p1 q27-p2 q27-p3 q9-p1 q9-p2 q9-p3 (--full matrix)
+   arm env: MEMRA_MMQ_F8F4=1
+   logs: /tmp/ag-f8f4
+-- server: Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf + draft-daily-owntrim-nvfp4head-q4blk.gguf K=3 ctx=8192
+  server died during boot (log /tmp/ag-f8f4/server-Qwen3.6-27B-NVFP4-Q4_K_M.log)
+accept-gate: FAIL (server boot, cells: q27-p1 q27-p2 q27-p3)
+-- server: Qwen3.5-9B-NVFP4-MTP-GGUF.gguf + draft-9b-owntrim-nvfp4head-q4blk.gguf K=3 ctx=8192
+   up in 2s
+  q9-p1: FAIL — 5 assertion(s):
+      spec.rounds: pinned 41 -> got 44
+      spec.drafted: pinned 123 -> got 132
+      spec.accepted: pinned 89 -> got 83
+      text sha256: pinned 27c6f8ab6e247ec6 -> got 648971afce2f0a10
+      completion_tokens: pinned 131 -> got 128
+      acceptance 0.7236 -> 0.6288 (-9.48pp)   <- clock-independent; a ratio, so this is real, not drift
+      TEXT DIVERGES at char 252 (~word 28; pinned len 479, got 453)
+        common:  ..."de'] = None\n\n\nclass DoublyLinkedList:\n    def __init__(self)"
+        pinned:  ':\n        self.head: Optional[Node] = None\n        self.tail: Optional'
+        got:     ' -> None:\n        self.head: Optional[Node] = None\n        self.tail: '
+        NOTE: this divergence is at/past the 20-token golden window — the token goldens are BLIND to it. That blindness is why this gate exists.
+  q9-p2: FAIL — 5 assertion(s):
+      spec.rounds: pinned 49 -> got 50
+      spec.drafted: pinned 147 -> got 150
+      spec.accepted: pinned 79 -> got 80
+      text sha256: pinned bd392e248f7d13dc -> got a21ca3d81b889946
+      completion_tokens: pinned 129 -> got 131
+      acceptance 0.5374 -> 0.5333 (-0.41pp)   <- clock-independent; a ratio, so this is real, not drift
+      TEXT DIVERGES at char 89 (~word 14; pinned len 502, got 502)
+        common:  ...' with graceful shutdown implemented.\n\n### Key Changes\n1.  **'
+        pinned:  'Signal Handling**: Added `tokio::signal::ctrl_c()` and `tokio::signal:'
+        got:     '`shutdown_tx`**: Added a `tokio::sync::broadcast` channel to signal th'
+  q9-p3: FAIL — 3 assertion(s):
+      spec.accepted: pinned 81 -> got 82
+      text sha256: pinned 7dda5f07814d499e -> got f216c55af3916a07
+      completion_tokens: pinned 128 -> got 129
+      acceptance 0.5870 -> 0.5942 (+0.72pp)   <- clock-independent; a ratio, so this is real, not drift
+      TEXT DIVERGES at char 411 (~word 65; pinned len 501, got 490)
+        common:  ..."e is `'11 is not registered'`. This happens inside `_drive` "
+        pinned:  'at line 88.\n2.  **Analyze the Context**: The log shows `[worker-2] sel'
+        got:     'in `serve.py` (line 88).\n2.  **Analyze the Context**: The log shows `['
+        NOTE: this divergence is at/past the 20-token golden window — the token goldens are BLIND to it. That blindness is why this gate exists.
+
+accept-gate: 0 pass, 4 fail, 0 unpinned, 0 skip
+
+  ^ An acceptance or long-text FAIL is NOT a drift tripwire. Acceptance is a RATIO
+    (clock-independent) and greedy text at temperature 0 is deterministic, so neither can be
+    explained by thermals, clocks or a contended window. Read it as a real behavior change.
+    DO NOT re-pin to make it green: that is the receipted failure mode (a --refresh-goldens
+    after a kernel change silently re-pins the new arm). Root-cause first; re-pin only after
+    the change is understood, reviewed and committed.
+GATE-RC=1 (nonzero = the gate DETECTED the arm, as required)

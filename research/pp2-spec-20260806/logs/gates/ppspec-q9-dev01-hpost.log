@@ -1,0 +1,12 @@
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+loaded qwen35 (32 layers); steps=12 batch=4
+ppspec mode: verify stage-split exactness battery over 32 layers; stages=2 fence=[0, 16, 32] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+ppspec mode: T=[5] rounds=12 reps=2 (split arm)
+-- T=5: reference recorded (12 rounds x 5 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+pp gate PASS [verify-split T=5 rep0]: 14899200 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep0]: 49152 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split T=5 rep1]: 14899200 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-split h_seed T=5 rep1]: 49152 f32 logits BIT-IDENTICAL (0 differing bits)
+pp gate PASS [verify-unsplit@ppncache T=5]: 14899200 f32 logits BIT-IDENTICAL (0 differing bits)
+ppspec mode verdict: 0 failing arm(s); stages=2 fence=[0, 16, 32] devices=0,1 splits=default(even) shard=per-stage streams=per-stage
+ALL GREEN: spec-verify PP-2 stage-split exactness battery

@@ -1,0 +1,19 @@
+--- q27
+ARM OFF  internal MATCH=2 MISMATCH=0  ngen=24  logit_maxdiff=3.822e-1,2.657e-1
+ARM ON   internal MATCH=2 MISMATCH=0  ngen=24  logit_maxdiff=6.785e-1,5.062e-1
+CROSS-ARM: DIVERGE at generated index 22 (OFF=271 ON=11); identical prefix = 22/24 tokens
+GOLDEN(20) vs ARM OFF: MATCH
+GOLDEN(20) vs ARM ON: MATCH
+--- q9-n64
+ARM OFF  internal MATCH=2 MISMATCH=0  ngen=64  logit_maxdiff=9.425e-1,1.127e0
+ARM ON   internal MATCH=2 MISMATCH=0  ngen=64  logit_maxdiff=9.768e-1,9.854e-1
+CROSS-ARM: DIVERGE at generated index 38 (OFF=20340 ON=5861); identical prefix = 38/64 tokens
+GOLDEN(20) vs ARM OFF: MATCH
+GOLDEN(20) vs ARM ON: MATCH
+ARM OFF  internal MATCH=1 MISMATCH=1  ngen=0  logit_maxdiff=8.275e0
+ARM ON   internal MATCH=1 MISMATCH=1  ngen=0  logit_maxdiff=8.275e0
+ARM OFF  internal MATCH=2 MISMATCH=0  ngen=20  logit_maxdiff=8.285e-1,8.285e-1
+ARM ON   internal MATCH=2 MISMATCH=0  ngen=20  logit_maxdiff=8.285e-1,8.285e-1
+CROSS-ARM: IDENTICAL (20 tokens)
+GOLDEN(20) vs ARM OFF: MATCH
+GOLDEN(20) vs ARM ON: MATCH

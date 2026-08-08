@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
              std::env::var("MEMRA_FAST").unwrap_or_else(|_| "<unset>".into()));
 
     let mut cache = Cache::new(&e, &model.cfg, prompt.len() + tape.len() + 8)?;
-    let (mut logits, _, _) = model.prime_cache(&e, &prompt, &mut cache)?;
+    let (mut logits, _, _) = model.prime_cache(&e, &prompt, &mut cache, 0)?;
     let mut first_div: Option<usize> = None;
     for (step, &ref_tok) in tape.iter().enumerate() {
         let am = argmax(&logits) as u32;

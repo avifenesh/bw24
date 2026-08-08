@@ -1,0 +1,21 @@
+"""
+
+from typing import List, Optional, Any
+
+
+class Node:
+    def __init__(self, data: Any):
+        self.data = data
+        self.prev: Optional['Node'] = None
+        self.next: Optional['Node'] = None
+
+
+class DoublyLinkedList:
+    def __init__(self):
+        self.head: Optional[Node] = None
+        self.tail: Optional[Node] = None
+        self.size: int = 0
+
+    def insert(self, data: Any, pos: int) -> None:
+        """
+        Insert a new node with the given data at the

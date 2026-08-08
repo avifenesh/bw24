@@ -1,0 +1,58 @@
+=== run-gen argmax: 9B NVFP4 GGUF (primary delivery format) ===
+tokens: [11751, 13, 198, 760, 6511, 314, 9338, 369, 11751, 13, 198, 760, 6511, 314, 9338, 369]
+OUTPUT TEXT: " Paris.\nThe capital of France is Paris.\nThe capital of France is"
+--- generated text ---
+ Paris.
+The capital of France is Paris.
+The capital of France is
+rc=0
+=== run-gen argmax: ST 27B e4m3+nvfp4 ===
+OUTPUT TEXT: " Paris.\nThe capital of France is Paris.\nThe capital of France is"
+--- generated text ---
+ Paris.
+The capital of France is Paris.
+The capital of France is
+fp8-mmq dispatches: 0
+rc=0
+=== run-gen argmax: BLK128 27B ===
+OUTPUT TEXT: " Paris.\nThe capital of France is Paris.\nThe capital of France is"
+--- generated text ---
+ Paris.
+The capital of France is Paris.
+The capital of France is
+fp8-mmq dispatches: 0
+rc=0
+=== run-spec K=1..8: 9B NVFP4 + draft ===
+  acceptance: 29/32 = 90.6%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+  K=1 rc=0
+  acceptance: 19/112 = 17.0%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+  K=2 rc=0
+  acceptance: 18/104 = 17.3%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+  K=3 rc=0
+  acceptance: 21/80 = 26.2%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+  K=4 rc=0
+  acceptance: 19/96 = 19.8%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+  K=5 rc=0
+  acceptance: 15/136 = 11.0%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+  K=6 rc=0
+  acceptance: 24/88 = 27.3%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+  K=7 rc=0
+  acceptance: 22/88 = 25.0%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+  K=8 rc=0
+### DONE 13:19:16

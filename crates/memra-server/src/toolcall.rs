@@ -58,11 +58,25 @@ enum State {
     Scan,
     /// Inside a `<tool_call>` block, buffering until `</tool_call>`.
     InCall,
+    /// gemma dialect: just consumed `<|channel>` — the channel-name line (`thought\n`) is
+    /// syntax; swallow through its newline, then GemmaThought.
+    GemmaLabel,
+    /// gemma dialect: inside a thought channel — text routes to `reasoning` until
+    /// `<channel|>` (whose preceding syntax `\n` is also swallowed).
+    GemmaThought,
 }
 
 const OPEN: &str = "<tool_call>";
 const CLOSE: &str = "</tool_call>";
 const THINK_END: &str = "</think>";
+/// gemma4 thought-channel dialect (lane/gemma4-serve-gaps, 2026-08-07): the template's
+/// `strip_thinking` law — `<|channel>thought\n{text}\n<channel|>` — is what the model emits;
+/// the serve stream must apply the same split, thought -> `reasoning`, tags + label + the
+/// bracketing newlines are syntax. Channels may open ANYWHERE in the stream (the template
+/// strips them from any position in history), so the gemma scanner runs the whole stream,
+/// unlike the qwen prompt-open-tail Prethink.
+const GEMMA_OPEN: &str = "<|channel>";
+const GEMMA_CLOSE: &str = "<channel|>";
 
 pub struct ToolStreamParser {
     state: State,
@@ -74,6 +88,8 @@ pub struct ToolStreamParser {
     /// false = reasoning-only mode (non-tools chat on a think-class model): post-think text
     /// is pure content, never scanned for `<tool_call>` (no holdback, byte-identical stream).
     scan_tools: bool,
+    /// gemma4 thought-channel dialect: Scan watches for `<|channel>` instead of tool tags.
+    gemma: bool,
     /// OpenRouter `include_reasoning:false` — think text is separated AND dropped.
     include_reasoning: bool,
     /// Separator-newline budget right after `</think>` (the template emits `</think>\n\n`).
@@ -103,6 +119,7 @@ impl ToolStreamParser {
             schemas,
             n_calls: 0,
             scan_tools: true,
+            gemma: false,
             include_reasoning: true,
             postthink_nl: 0,
         }
@@ -114,6 +131,20 @@ impl ToolStreamParser {
     pub fn reasoning_only(include_reasoning: bool) -> Self {
         let mut p = Self::new(HashMap::new(), true);
         p.scan_tools = false;
+        p.include_reasoning = include_reasoning;
+        p
+    }
+
+    /// gemma4 thought-channel splitter (lane/gemma4-serve-gaps, 2026-08-07): the model's
+    /// `<|channel>thought\n{text}\n<channel|>` blocks route to `reasoning` (tags, the
+    /// channel label line and the bracketing newlines are syntax); everything outside a
+    /// channel is content. Channels can open at any stream position, matching the
+    /// template's own `strip_thinking` law. gemma4 templates have no `<tools>` branch,
+    /// so this is reasoning-only by construction.
+    pub fn gemma_thought(include_reasoning: bool) -> Self {
+        let mut p = Self::new(HashMap::new(), false);
+        p.scan_tools = false;
+        p.gemma = true;
         p.include_reasoning = include_reasoning;
         p
     }
@@ -159,6 +190,24 @@ impl ToolStreamParser {
                     continue;
                 }
                 State::Scan => {
+                    if self.gemma {
+                        // gemma dialect: content until a `<|channel>` opens a thought.
+                        if let Some(i) = self.buf.find(GEMMA_OPEN) {
+                            if i > 0 {
+                                emit_content(&mut out, self.buf[..i].to_string());
+                            }
+                            self.buf.drain(..i + GEMMA_OPEN.len());
+                            self.state = State::GemmaLabel;
+                            continue;
+                        }
+                        let keep = partial_suffix_len(&self.buf, GEMMA_OPEN);
+                        let emit_to = self.buf.len() - keep;
+                        if emit_to > 0 {
+                            emit_content(&mut out, self.buf[..emit_to].to_string());
+                            self.buf.drain(..emit_to);
+                        }
+                        break;
+                    }
                     if !self.scan_tools {
                         // reasoning-only mode: post-think text is pure content, unscanned.
                         if !self.buf.is_empty() {
@@ -194,6 +243,38 @@ impl ToolStreamParser {
                     }
                     continue;
                 }
+                State::GemmaLabel => {
+                    // the channel-name line (`thought\n`) is syntax — swallow through the
+                    // newline. Held back until the newline arrives (label is short).
+                    let Some(i) = self.buf.find('\n') else { break };
+                    self.buf.drain(..i + 1);
+                    self.state = State::GemmaThought;
+                    continue;
+                }
+                State::GemmaThought => {
+                    if let Some(i) = self.buf.find(GEMMA_CLOSE) {
+                        // thought -> reasoning; the tag and its preceding syntax `\n` are
+                        // not output (the template renders `{text}\n<channel|>`).
+                        let text = self.buf[..i].strip_suffix('\n').unwrap_or(&self.buf[..i]);
+                        self.emit_reasoning(&mut out, text.to_string());
+                        self.buf.drain(..i + GEMMA_CLOSE.len());
+                        self.state = State::Scan;
+                        continue;
+                    }
+                    // Hold back a partial `<channel|>` suffix, plus the newline right
+                    // before it (or a bare trailing newline) — it may be the close tag's
+                    // syntax `\n`; if prose follows instead, it flushes with the next push.
+                    let mut keep = partial_suffix_len(&self.buf, GEMMA_CLOSE);
+                    if self.buf[..self.buf.len() - keep].ends_with('\n') {
+                        keep += 1;
+                    }
+                    let emit_to = self.buf.len() - keep;
+                    if emit_to > 0 {
+                        self.emit_reasoning(&mut out, self.buf[..emit_to].to_string());
+                        self.buf.drain(..emit_to);
+                    }
+                    break;
+                }
             }
         }
         out
@@ -209,6 +290,14 @@ impl ToolStreamParser {
             match self.state {
                 State::Prethink => self.emit_reasoning(&mut out, tail),
                 State::InCall => emit_content(&mut out, format!("{OPEN}{tail}")),
+                // generation died inside a thought channel: the tail (incl. a held-back
+                // syntax newline) is reasoning, never content.
+                State::GemmaThought => {
+                    let t = tail.strip_suffix('\n').unwrap_or(&tail);
+                    self.emit_reasoning(&mut out, t.to_string());
+                }
+                // died mid-label: the partial channel name is syntax, not output.
+                State::GemmaLabel => {}
                 _ => emit_content(&mut out, tail),
             }
         }
@@ -473,6 +562,74 @@ not-a-number\n</parameter>\n</function>\n</tool_call>";
         // integer-declared param that fails JSON parse falls back to the raw string.
         assert_eq!(calls[1].arguments, r#"{"days":"not-a-number"}"#);
         assert_ne!(calls[0].id, calls[1].id);
+    }
+
+    #[test]
+    fn gemma_thought_channel_splits_reasoning_from_content_char_by_char() {
+        // the gemma4 dialect (lane/gemma4-serve-gaps): `<|channel>thought\n{t}\n<channel|>`
+        // routes to reasoning; tags/label/bracketing newlines are syntax; content follows
+        // directly. Char-by-char must agree with one-shot (streaming holdback law).
+        let text = "<|channel>thought\nThe user wants ok.\nSo reply ok.\n<channel|>ok";
+        for chunked in [false, true] {
+            let mut p = ToolStreamParser::gemma_thought(true);
+            let mut pieces = Vec::new();
+            if chunked {
+                for ch in text.chars() {
+                    pieces.extend(p.push(&ch.to_string()));
+                }
+            } else {
+                pieces.extend(p.push(text));
+            }
+            pieces.extend(p.finish());
+            let (content, reasoning, calls) = reassemble3(&pieces);
+            assert_eq!(reasoning, "The user wants ok.\nSo reply ok.", "chunked={chunked}");
+            assert_eq!(content, "ok", "chunked={chunked}");
+            assert!(calls.is_empty());
+        }
+    }
+
+    #[test]
+    fn gemma_content_before_and_between_channels() {
+        // channels can open at ANY stream position (the template's strip_thinking law) —
+        // the closed-channel prompt still lets the model open one mid-stream (observed
+        // live on the 12B QAT: think-smoke receipt, content='ok<turn|>…thought…').
+        let text = "ok<|channel>thought\nreconsidering\n<channel|> more";
+        let mut p = ToolStreamParser::gemma_thought(true);
+        let mut pieces = p.push(text);
+        pieces.extend(p.finish());
+        let (content, reasoning, _) = reassemble3(&pieces);
+        assert_eq!(reasoning, "reconsidering");
+        assert_eq!(content, "ok more");
+    }
+
+    #[test]
+    fn gemma_unclosed_thought_flushes_as_reasoning_and_excludes_reasoning_drops() {
+        // budget died inside the channel: tail is reasoning, never content.
+        let mut p = ToolStreamParser::gemma_thought(true);
+        let mut pieces = p.push("<|channel>thought\nhalf a tho");
+        pieces.extend(p.finish());
+        let (content, reasoning, _) = reassemble3(&pieces);
+        assert_eq!(reasoning, "half a tho");
+        assert_eq!(content, "");
+        // include_reasoning=false: separated AND dropped, content still clean.
+        let mut p = ToolStreamParser::gemma_thought(false);
+        let mut pieces = p.push("<|channel>thought\nhidden\n<channel|>visible");
+        pieces.extend(p.finish());
+        let (content, reasoning, _) = reassemble3(&pieces);
+        assert_eq!(reasoning, "");
+        assert_eq!(content, "visible");
+    }
+
+    #[test]
+    fn gemma_partial_open_tag_holdback_never_loses_bytes() {
+        // a `<|chan` that never becomes the tag must still be emitted as content.
+        let mut p = ToolStreamParser::gemma_thought(true);
+        let mut pieces = p.push("a <|chan");
+        pieces.extend(p.push("nel of prose"));
+        pieces.extend(p.finish());
+        let (content, reasoning, _) = reassemble3(&pieces);
+        assert_eq!(content, "a <|channel of prose");
+        assert_eq!(reasoning, "");
     }
 
     #[test]

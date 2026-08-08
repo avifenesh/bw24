@@ -1,0 +1,32 @@
+=== accept-gate TEETH RECEIPT: direction 1 — NAKED build must PASS ===
+[when] 2026-08-06T17:59:56+03:00
+[commit] 5cda59b555230f4d782624e4722ee901d2757ff6 (+ control-arm MJ1 fix, uncommitted at run time)
+[cmd] tools/accept-gate.sh --full --control
+[note] --control adds a SECOND independent server boot per group and requires byte-identity
+[gpu] 180 MHz, 56
+
+== accept-gate: served-spec acceptance + long-text assertion ==
+   cells: q27-p1 q27-p2 q27-p3 q9-p1 q9-p2 q9-p3 (--full matrix)
+   arm env: MEMRA_MMQ_F8F4=unset
+   logs: /tmp/ag-naked2
+-- server: Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf + draft-daily-owntrim-nvfp4head-q4blk.gguf K=3 ctx=8192
+   up in 8s
+  q27-p1: PASS (rounds=42 drafted=126 accepted=85 accept=0.6746, 128 tok text sha-identical)
+  q27-p2: PASS (rounds=42 drafted=126 accepted=85 accept=0.6746, 128 tok text sha-identical)
+  q27-p3: PASS (rounds=39 drafted=117 accepted=91 accept=0.7778, 131 tok text sha-identical)
+-- control boot (independent process; must reproduce byte-identically)
+  q27-p1 control: PASS (boot 1 == boot 2 — single-shot read is valid here)
+  q27-p2 control: PASS (boot 1 == boot 2 — single-shot read is valid here)
+  q27-p3 control: PASS (boot 1 == boot 2 — single-shot read is valid here)
+-- server: Qwen3.5-9B-NVFP4-MTP-GGUF.gguf + draft-9b-owntrim-nvfp4head-q4blk.gguf K=3 ctx=8192
+   up in 2s
+  q9-p1: PASS (rounds=41 drafted=123 accepted=89 accept=0.7236, 131 tok text sha-identical)
+  q9-p2: PASS (rounds=49 drafted=147 accepted=79 accept=0.5374, 129 tok text sha-identical)
+  q9-p3: PASS (rounds=46 drafted=138 accepted=81 accept=0.5870, 128 tok text sha-identical)
+-- control boot (independent process; must reproduce byte-identically)
+  q9-p1 control: PASS (boot 1 == boot 2 — single-shot read is valid here)
+  q9-p2 control: PASS (boot 1 == boot 2 — single-shot read is valid here)
+  q9-p3 control: PASS (boot 1 == boot 2 — single-shot read is valid here)
+
+accept-gate: 6 pass, 0 fail, 0 unpinned, 0 skip
+GATE-RC=0 (0 = PASS as required for the naked build)

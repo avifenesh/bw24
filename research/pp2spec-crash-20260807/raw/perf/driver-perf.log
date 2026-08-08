@@ -1,0 +1,15 @@
+gpu lock acquired 2026-08-07T21:12:22Z
+=== NAKED boot (quarantine-removed binary, no override env) ===
+NAKED: spec ran
+NAKED: clean
+=== perf rep 1: S then N ===
+=== perf rep 2: S then N ===
+=== perf rep 3: S then N ===
+=== perf rep 4: S then N ===
+=== perf rep 5: S then N ===
+==== perf table ====
+arm=N c=2: median 340.3 tok/s  N=5  min 340.1 max 340.7
+arm=N c=4: median 593.4 tok/s  N=5  min 592.9 max 594.2
+arm=S c=2: median 112.3 tok/s  N=5  min 112.3 max 112.3
+arm=S c=4: median 112.1 tok/s  N=5  min 112.0 max 112.3
+PP2CRASH_PERF_DONE

@@ -1,0 +1,911 @@
+========= COMPUTE-SANITIZER
+[server] starting; models config = [("q9", "/scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
+[worker] WARN: MEMRA_PP2SPEC_UNQUARANTINE=1 — the #87 spec+PP-2 quarantine is OVERRIDDEN for diagnostics. Expect a sticky CUDA_ERROR_ILLEGAL_ADDRESS under concurrent spec sessions; this is not a serving configuration.
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "q9" <- /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+========= CUDA API Error: HOST/HOST_NUMA pools are always read-write accessible on the HOST
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: cuMemPoolSetAccess [0x316349] in libcuda.so.1
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine2ppNtB2_5PpNRt5build [0x2a2c09e] in memra-server
+=========         Host Frame: _RNCINvMs0_NtNtCs2AWtUsOyxgP_3std4sync4onceNtB8_4Once15call_once_forceNCINvMNtBa_9once_lockINtB1b_8OnceLockINtNtCs4NRVxsYgnAr_4core6result6ResultNtNtCsdzFdMg7AY6y_12memra_engine2pp5PpNRtNtNtCscdodAO9FK5_5alloc6string6StringEE10initializeNCINvB1a_11get_or_initNCNvMB2k_B2i_3get0E0zE0E0B2m_.llvm.6850377899393207406 [0x29b1621] in memra-server
+=========         Host Frame: _RNvMs0_NtNtNtNtCs2AWtUsOyxgP_3std3sys4sync4once5futexNtB5_4Once4call [0x2c5b7b8] in memra-server
+=========         Host Frame: _RINvMNtNtCs2AWtUsOyxgP_3std4sync9once_lockINtB3_8OnceLockINtNtCs4NRVxsYgnAr_4core6result6ResultNtNtCsdzFdMg7AY6y_12memra_engine2pp5PpNRtNtNtCscdodAO9FK5_5alloc6string6StringEE10initializeNCINvB2_11get_or_initNCNvMB1x_B1v_3get0E0zEB1z_ [0x29ae989] in memra-server
+=========         Host Frame: _RNvNtCsdzFdMg7AY6y_12memra_engine2pp12layer_engine [0x2a2ecee] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6hybridNtB5_11HybridModel21load_from_source_impl [0x285a307] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6hybridNtB5_11HybridModel4load [0x2863e13] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266a54a] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= CUDA API Error: HOST/HOST_NUMA pools are always read-write accessible on the HOST
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: cuMemPoolSetAccess [0x316349] in libcuda.so.1
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine2ppNtB2_5PpNRt5build [0x2a2c09e] in memra-server
+=========         Host Frame: _RNCINvMs0_NtNtCs2AWtUsOyxgP_3std4sync4onceNtB8_4Once15call_once_forceNCINvMNtBa_9once_lockINtB1b_8OnceLockINtNtCs4NRVxsYgnAr_4core6result6ResultNtNtCsdzFdMg7AY6y_12memra_engine2pp5PpNRtNtNtCscdodAO9FK5_5alloc6string6StringEE10initializeNCINvB1a_11get_or_initNCNvMB2k_B2i_3get0E0zE0E0B2m_.llvm.6850377899393207406 [0x29b1621] in memra-server
+=========         Host Frame: _RNvMs0_NtNtNtNtCs2AWtUsOyxgP_3std3sys4sync4once5futexNtB5_4Once4call [0x2c5b7b8] in memra-server
+=========         Host Frame: _RINvMNtNtCs2AWtUsOyxgP_3std4sync9once_lockINtB3_8OnceLockINtNtCs4NRVxsYgnAr_4core6result6ResultNtNtCsdzFdMg7AY6y_12memra_engine2pp5PpNRtNtNtCscdodAO9FK5_5alloc6string6StringEE10initializeNCINvB2_11get_or_initNCNvMB1x_B1v_3get0E0zEB1z_ [0x29ae989] in memra-server
+=========         Host Frame: _RNvNtCsdzFdMg7AY6y_12memra_engine2pp12layer_engine [0x2a2ecee] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6hybridNtB5_11HybridModel21load_from_source_impl [0x285a307] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6hybridNtB5_11HybridModel4load [0x2863e13] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266a54a] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= CUDA API Error: HOST/HOST_NUMA pools are always read-write accessible on the HOST
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: cuMemPoolSetAccess [0x316349] in libcuda.so.1
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine2ppNtB2_5PpNRt5build [0x2a2c217] in memra-server
+=========         Host Frame: _RNCINvMs0_NtNtCs2AWtUsOyxgP_3std4sync4onceNtB8_4Once15call_once_forceNCINvMNtBa_9once_lockINtB1b_8OnceLockINtNtCs4NRVxsYgnAr_4core6result6ResultNtNtCsdzFdMg7AY6y_12memra_engine2pp5PpNRtNtNtCscdodAO9FK5_5alloc6string6StringEE10initializeNCINvB1a_11get_or_initNCNvMB2k_B2i_3get0E0zE0E0B2m_.llvm.6850377899393207406 [0x29b1621] in memra-server
+=========         Host Frame: _RNvMs0_NtNtNtNtCs2AWtUsOyxgP_3std3sys4sync4once5futexNtB5_4Once4call [0x2c5b7b8] in memra-server
+=========         Host Frame: _RINvMNtNtCs2AWtUsOyxgP_3std4sync9once_lockINtB3_8OnceLockINtNtCs4NRVxsYgnAr_4core6result6ResultNtNtCsdzFdMg7AY6y_12memra_engine2pp5PpNRtNtNtCscdodAO9FK5_5alloc6string6StringEE10initializeNCINvB2_11get_or_initNCNvMB1x_B1v_3get0E0zEB1z_ [0x29ae989] in memra-server
+=========         Host Frame: _RNvNtCsdzFdMg7AY6y_12memra_engine2pp12layer_engine [0x2a2ecee] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6hybridNtB5_11HybridModel21load_from_source_impl [0x285a307] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6hybridNtB5_11HybridModel4load [0x2863e13] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266a54a] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= CUDA API Error: HOST/HOST_NUMA pools are always read-write accessible on the HOST
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: cuMemPoolSetAccess [0x316349] in libcuda.so.1
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine2ppNtB2_5PpNRt5build [0x2a2c324] in memra-server
+=========         Host Frame: _RNCINvMs0_NtNtCs2AWtUsOyxgP_3std4sync4onceNtB8_4Once15call_once_forceNCINvMNtBa_9once_lockINtB1b_8OnceLockINtNtCs4NRVxsYgnAr_4core6result6ResultNtNtCsdzFdMg7AY6y_12memra_engine2pp5PpNRtNtNtCscdodAO9FK5_5alloc6string6StringEE10initializeNCINvB1a_11get_or_initNCNvMB2k_B2i_3get0E0zE0E0B2m_.llvm.6850377899393207406 [0x29b1621] in memra-server
+=========         Host Frame: _RNvMs0_NtNtNtNtCs2AWtUsOyxgP_3std3sys4sync4once5futexNtB5_4Once4call [0x2c5b7b8] in memra-server
+=========         Host Frame: _RINvMNtNtCs2AWtUsOyxgP_3std4sync9once_lockINtB3_8OnceLockINtNtCs4NRVxsYgnAr_4core6result6ResultNtNtCsdzFdMg7AY6y_12memra_engine2pp5PpNRtNtNtCscdodAO9FK5_5alloc6string6StringEE10initializeNCINvB2_11get_or_initNCNvMB1x_B1v_3get0E0zEB1z_ [0x29ae989] in memra-server
+=========         Host Frame: _RNvNtCsdzFdMg7AY6y_12memra_engine2pp12layer_engine [0x2a2ecee] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6hybridNtB5_11HybridModel21load_from_source_impl [0x285a307] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6hybridNtB5_11HybridModel4load [0x2863e13] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266a54a] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+[pp] cross-device transport: stage0=dev1 stage1=dev0 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[worker]   loaded "q9": 33 layers, eos=248046
+[worker] q9: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] q9: decode chunk cap 16 (exact-16 tier)
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q9"]
+[server] listening on http://127.0.0.1:8123
+[meter] admit id=chatcmpl-61dae48e41500569c34ef6578694514e tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-380f32e66c5d53e24c783657796cf61c tenant=default lane=interactive model="q9"
+[worker] observed session VRAM cost for "q9": 134MB (admission gate = 2x)
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine22embed_gather_device_td [0x29674db] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6hybridNtB5_11HybridModel5embed [0x2863fd9] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2823356] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dde] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine22embed_gather_device_td [0x29674db] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6hybridNtB5_11HybridModel5embed [0x2863fd9] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2823356] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine10launch_pdl [0x28d0342] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine13quantize_q8_1 [0x28ed0c3] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine17qmatvec_q8_0_fast [0x293fe81] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine6matmul [0x2997b23] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine12matmul_group [0x28e0189] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel17linear_attn_prime [0x2829d20] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a45] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine17qmatvec_q8_0_fast [0x293ff47] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine6matmul [0x2997b23] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine12matmul_group [0x28e0189] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel17linear_attn_prime [0x2829d20] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a45] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dde] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine17qmatvec_q8_0_fast [0x293ff47] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine6matmul [0x2997b23] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine12matmul_group [0x28e0189] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel17linear_attn_prime [0x2829d20] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a45] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine24ssm_conv1d_gdn_state_pad [0x2983046] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel31linear_attn_prime_core_pad_view [0x2835598] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel32linear_attn_prime_core_pad_inner [0x28368fb] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel26linear_attn_prime_core_pad [0x2834c9c] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel17linear_attn_prime [0x2829db1] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a45] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine24ssm_conv1d_gdn_state_pad [0x2983f98] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel31linear_attn_prime_core_pad_view [0x2835598] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel32linear_attn_prime_core_pad_inner [0x28368fb] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel26linear_attn_prime_core_pad [0x2834c9c] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel17linear_attn_prime [0x2829db1] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a45] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine9sigmoid_v [0x29a10cd] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel31linear_attn_prime_core_pad_view [0x2835a7a] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel32linear_attn_prime_core_pad_inner [0x28368fb] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel26linear_attn_prime_core_pad [0x2834c9c] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel17linear_attn_prime [0x2829db1] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a45] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine10gdn_glog_v [0x28ce27f] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel31linear_attn_prime_core_pad_view [0x2835b33] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel32linear_attn_prime_core_pad_inner [0x28368fb] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel26linear_attn_prime_core_pad [0x2834c9c] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel17linear_attn_prime [0x2829db1] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a45] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine14gdn_chunk_k123 [0x28f7c67] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine16gdn_scan_chunked [0x291c47d] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine16gdn_scan_prefill [0x292199c] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel31linear_attn_prime_core_pad_view [0x2836002] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel32linear_attn_prime_core_pad_inner [0x28368fb] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel26linear_attn_prime_core_pad [0x2834c9c] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel17linear_attn_prime [0x2829db1] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a45] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine14gdn_chunk_k123 [0x28f8a55] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine16gdn_scan_chunked [0x291c47d] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine16gdn_scan_prefill [0x292199c] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel31linear_attn_prime_core_pad_view [0x2836002] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel32linear_attn_prime_core_pad_inner [0x28368fb] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel26linear_attn_prime_core_pad [0x2834c9c] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel17linear_attn_prime [0x2829db1] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a45] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine14gdn_chunk_k123 [0x28f9e83] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine16gdn_scan_chunked [0x291c47d] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine16gdn_scan_prefill [0x292199c] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel31linear_attn_prime_core_pad_view [0x2836002] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel32linear_attn_prime_core_pad_inner [0x28368fb] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel26linear_attn_prime_core_pad [0x2834c9c] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel17linear_attn_prime [0x2829db1] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a45] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine16gdn_scan_chunked [0x291d7ad] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine16gdn_scan_prefill [0x292199c] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel31linear_attn_prime_core_pad_view [0x2836002] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel32linear_attn_prime_core_pad_inner [0x28368fb] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel26linear_attn_prime_core_pad [0x2834c9c] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel17linear_attn_prime [0x2829db1] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a45] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine16gdn_scan_chunked [0x291fdab] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine16gdn_scan_prefill [0x292199c] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel31linear_attn_prime_core_pad_view [0x2836002] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel32linear_attn_prime_core_pad_inner [0x28368fb] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel26linear_attn_prime_core_pad [0x2834c9c] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel17linear_attn_prime [0x2829db1] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a45] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine16gated_rmsnorm_zv [0x291b8dc] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel31linear_attn_prime_core_pad_view [0x283621e] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel32linear_attn_prime_core_pad_inner [0x28368fb] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel26linear_attn_prime_core_pad [0x2834c9c] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel17linear_attn_prime [0x2829db1] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a45] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine12q_gate_split [0x28e063f] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel26full_attn_prime_core_inner [0x28339eb] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel15full_attn_prime [0x282814d] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a93] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine24append_kv_quantized_rows [0x2975910] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel26full_attn_prime_core_inner [0x2834048] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel15full_attn_prime [0x282814d] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a93] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dde] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine24append_kv_quantized_rows [0x2975910] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel26full_attn_prime_core_inner [0x2834048] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel15full_attn_prime [0x282814d] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a93] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dfd] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine24append_kv_quantized_rows [0x2975910] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel26full_attn_prime_core_inner [0x2834048] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel15full_attn_prime [0x282814d] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a93] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine18fa_prefill_view_ws [0x2944780] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel26full_attn_prime_core_inner [0x2834886] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel15full_attn_prime [0x282814d] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a93] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dde] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine18fa_prefill_view_ws [0x2944780] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel26full_attn_prime_core_inner [0x2834886] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel15full_attn_prime [0x282814d] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a93] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dfd] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine18fa_prefill_view_ws [0x2944780] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel26full_attn_prime_core_inner [0x2834886] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel15full_attn_prime [0x282814d] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a93] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine18fa_prefill_view_ws [0x2945263] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel26full_attn_prime_core_inner [0x2834886] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel15full_attn_prime [0x282814d] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a93] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dde] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine18fa_prefill_view_ws [0x2945263] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel26full_attn_prime_core_inner [0x2834886] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel15full_attn_prime [0x282814d] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a93] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dfd] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine18fa_prefill_view_ws [0x2945263] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel26full_attn_prime_core_inner [0x2834886] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel15full_attn_prime [0x282814d] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x2824a93] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine17qmatvec_mmvq_into [0x293c4a2] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine12qmatvec_mmvq [0x28e1b6a] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine6matmul [0x2997d21] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x282700b] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dde] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine17qmatvec_mmvq_into [0x293c4a2] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine12qmatvec_mmvq [0x28e1b6a] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine6matmul [0x2997d21] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x282700b] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine10launch_pdl [0x28d0342] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine17qmatvec_mmvq_into [0x293e48b] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine12qmatvec_mmvq [0x28e1b6a] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine6matmul [0x2997d21] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_chunk [0x282700b] in memra-server
+=========         Host Frame: _RNvMNtCsdzFdMg7AY6y_12memra_engine14hybrid_forwardNtNtB4_6hybrid11HybridModel11prime_cache [0x2822895] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x28764bf] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine14q8_fused2_core [0x28fc670] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine23matmul_pre_dual_noscale [0x2971177] in memra-server
+=========         Host Frame: _RNCNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB9_6hybrid11HybridModel24linear_attn_decode_inner0B9_ [0x28145be] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel24linear_attn_decode_inner [0x2855290] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel18attn_in_norm_mixer [0x2851719] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel19decode_layers_eager [0x2852217] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel13decode_step_h [0x284b69a] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x2877cbd] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dde] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine14q8_fused2_core [0x28fc670] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine23matmul_pre_dual_noscale [0x2971177] in memra-server
+=========         Host Frame: _RNCNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB9_6hybrid11HybridModel24linear_attn_decode_inner0B9_ [0x28145be] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel24linear_attn_decode_inner [0x2855290] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel18attn_in_norm_mixer [0x2851719] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel19decode_layers_eager [0x2852217] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel13decode_step_h [0x284b69a] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x2877cbd] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine17qmatvec_mmvq_into [0x293c4a2] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine12qmatvec_mmvq [0x28e1b6a] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine10matmul_pre [0x28d174c] in memra-server
+=========         Host Frame: _RNCNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB9_6hybrid11HybridModel24linear_attn_decode_inners_0B9_ [0x2814bfb] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel24linear_attn_decode_inner [0x2855354] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel18attn_in_norm_mixer [0x2851719] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel19decode_layers_eager [0x2852217] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel13decode_step_h [0x284b69a] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x2877cbd] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dde] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine17qmatvec_mmvq_into [0x293c4a2] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine12qmatvec_mmvq [0x28e1b6a] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine10matmul_pre [0x28d174c] in memra-server
+=========         Host Frame: _RNCNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB9_6hybrid11HybridModel24linear_attn_decode_inners_0B9_ [0x2814bfb] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel24linear_attn_decode_inner [0x2855354] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel18attn_in_norm_mixer [0x2851719] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel19decode_layers_eager [0x2852217] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel13decode_step_h [0x284b69a] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x2877cbd] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine17qmatvec_mmvq_into [0x293c4a2] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine12qmatvec_mmvq [0x28e1b6a] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine10matmul_pre [0x28d174c] in memra-server
+=========         Host Frame: _RNCNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB9_6hybrid11HybridModel24linear_attn_decode_inners_0B9_ [0x2814c58] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel24linear_attn_decode_inner [0x2855354] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel18attn_in_norm_mixer [0x2851719] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel19decode_layers_eager [0x2852217] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel13decode_step_h [0x284b69a] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x2877cbd] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dde] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine17qmatvec_mmvq_into [0x293c4a2] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine12qmatvec_mmvq [0x28e1b6a] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine10matmul_pre [0x28d174c] in memra-server
+=========         Host Frame: _RNCNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB9_6hybrid11HybridModel24linear_attn_decode_inners_0B9_ [0x2814c58] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel24linear_attn_decode_inner [0x2855354] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel18attn_in_norm_mixer [0x2851719] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel19decode_layers_eager [0x2852217] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel13decode_step_h [0x284b69a] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x2877cbd] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine23ssm_conv1d_fused_decode [0x297383f] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel24linear_attn_decode_inner [0x285591d] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel18attn_in_norm_mixer [0x2851719] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel19decode_layers_eager [0x2852217] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel13decode_step_h [0x284b69a] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x2877cbd] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+========= Program hit CUDA_ERROR_NOT_FOUND (error 500) due to "named symbol not found" on CUDA API call to cuModuleGetFunction.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: _RNvMs1s_NtNtNtCshwZG8mnI0fj_6cudarc6driver4safe4coreNtB6_10CudaModule13load_function [0x2a6a98f] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine4func [0x2995dba] in memra-server
+=========         Host Frame: _RNvMsd_CsdzFdMg7AY6y_12memra_engineNtB5_6Engine15gdn_prep_decode [0x29088df] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel24linear_attn_decode_inner [0x2855d54] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel18attn_in_norm_mixer [0x2851719] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel19decode_layers_eager [0x2852217] in memra-server
+=========         Host Frame: _RNvMs2_NtCsdzFdMg7AY6y_12memra_engine6decodeNtNtB7_6hybrid11HybridModel13decode_step_h [0x284b69a] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel20generate_spec_inner2 [0x2877cbd] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel33generate_spec_session_constrained [0x288d85f] in memra-server
+=========         Host Frame: _RNvMs4_NtCsdzFdMg7AY6y_12memra_engine4specNtNtB7_6hybrid11HybridModel29generate_spec_session_sampled [0x288d5a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker12step_session [0x26644a3] in memra-server
+=========         Host Frame: _RNvNtCslbAoPRFhIpo_12memra_server6worker3run [0x266f05c] in memra-server
+=========         Host Frame: _RINvNtNtCs2AWtUsOyxgP_3std3sys9backtrace28___rust_begin_short_backtraceNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEB1d_ [0x27012ea] in memra-server
+=========         Host Frame: _RNSNvYNCINvNtNtCs2AWtUsOyxgP_3std6thread9lifecycle15spawn_uncheckedNCNvNtCslbAoPRFhIpo_12memra_server6worker5spawn0uEs_0INtNtNtCs4NRVxsYgnAr_4core3ops8function6FnOnceuE9call_once6vtableB19_ [0x2748f2b] in memra-server
+=========         Host Frame: _RNvNvMs0_NtNtNtCs2AWtUsOyxgP_3std3sys6thread4unixNtB7_6Thread3new12thread_start [0x2c77a5e] in memra-server
+=========         Host Frame:  [0x9caa3] in libc.so.6
+=========         Host Frame:  [0x129c6b] in libc.so.6
+========= 
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=227 burst=24/24 cum=24/24=1.000
+[spec-acc] ctx=260 burst=12/12 cum=36/36=1.000
+[meter] admit id=chatcmpl-bddf8be33cdfd056bc781fad2f15ce4f tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 1 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=261 burst=11/12 cum=36/39=0.923
+[meter] admit id=chatcmpl-10f42bacf62b15b5c429b819ee279b7d tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=261 burst=11/12 cum=36/39=0.923
+[meter] admit id=chatcmpl-8c5e5c4d123c8061673b6d7c55f5b2cc tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=261 burst=11/12 cum=36/39=0.923
+[meter] admit id=chatcmpl-4a58257b6fdc3a5aba2f50f86ea80cee tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=261 burst=11/12 cum=36/39=0.923
+[meter] admit id=chatcmpl-6f574ff7c3d2da6738087d2fe7f0f621 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=261 burst=11/12 cum=36/39=0.923
+[meter] admit id=chatcmpl-04dcad65fdc52af34ae1377ac589d3a0 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=261 burst=11/12 cum=36/39=0.923
+[spec-acc] ctx=261 burst=11/12 cum=36/39=0.923
+[meter] admit id=chatcmpl-e5d7200d78c856ef902780b65e34952e tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-80351eb41076d98896b8dbe523003984 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-768eea0d7a292b293d3a88640f7c7bde tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-3c8635799b62efc9f4c0c5b349f01b98 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=261 burst=11/12 cum=36/39=0.923
+[meter] admit id=chatcmpl-a1d931d821dc574db0ea8d211fc8858c tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=261 burst=11/12 cum=36/39=0.923
+[meter] admit id=chatcmpl-7bc397a6869791d5e510df87c9038a55 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=261 burst=11/12 cum=36/39=0.923
+[meter] admit id=chatcmpl-7330a3906ba15a6c6fead7fa275bcd83 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=261 burst=11/12 cum=36/39=0.923
+[meter] admit id=chatcmpl-05aee9ccfb9db1c573e31e43baba4850 tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 2 parked, 226 prompt tokens; model q9)
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=261 burst=11/12 cum=36/39=0.923
+[spec-acc] ctx=261 burst=11/12 cum=36/39=0.923
+[spec-acc] ctx=261 burst=11/12 cum=36/39=0.923
+[spec-acc] ctx=261 burst=11/12 cum=36/39=0.923
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

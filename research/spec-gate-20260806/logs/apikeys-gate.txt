@@ -1,0 +1,26 @@
+[gen-key] tenant "acme" lane interactive appended to /tmp/apikeys-gate-M4ck.toml — the plaintext above is shown ONCE and stored only as SHA-256
+[gen-key] tenant "acme" lane interactive appended to /tmp/apikeys-gate-M4ck.toml — the plaintext above is shown ONCE and stored only as SHA-256
+[gen-key] tenant "blue" lane interactive appended to /tmp/apikeys-gate-M4ck.toml — the plaintext above is shown ONCE and stored only as SHA-256
+[gen-key] tenant "bulk" lane batch appended to /tmp/apikeys-gate-M4ck.toml — the plaintext above is shown ONCE and stored only as SHA-256
+[gen-key] tenant "dead" lane interactive appended to /tmp/apikeys-gate-M4ck.toml — the plaintext above is shown ONCE and stored only as SHA-256
+[revoke-key] mk-dead-6c07f4f52a1b disabled in /tmp/apikeys-gate-M4ck.toml (takes effect on the next keyring poll, <=2s on a running server)
+[revoke-key] mk-acme-1cb887bc7f82 disabled in /tmp/apikeys-gate-M4ck.toml (takes effect on the next keyring poll, <=2s on a running server)
+  ok: no-key-401 {'status': 401}
+  ok: bad-key-401 {'status': 401}
+  ok: revoked-key-403 {'status': 403, 'message': 'api key is disabled'}
+  ok: single-key-200 {'status': 200}
+  ok: acme-k1-seed-P {'prompt': 94, 'cached': 0}
+  ok: acme-k2-HIT-P-same-tenant {'prompt': 94, 'cached': 94}
+  ok: blue-MISS-P-cross-tenant {'prompt': 94, 'cached': 0}
+  ok: blue-seed-Q {'prompt': 101, 'cached': 0}
+  ok: blue-HIT-own-Q-cache-alive {'prompt': 101, 'cached': 101}
+  ok: acme-MISS-Q-cross-tenant-reverse {'prompt': 101, 'cached': 0}
+  ok: acme-salted-MISS-vs-unsalted {'prompt': 94, 'cached': 0}
+  ok: acme-salted-HIT-itself {'prompt': 94, 'cached': 94}
+  ok: tenant-rl-override-headers {'status': 200, 'limit': 2, 'remaining': 1}
+  ok: uncapped-key-global-cap {'limit': 64}
+  ok: batch-key-interactive-403 {'status': 403, 'message': 'this api key is batch-class: x-lane interactive is not permitted (use judge or harvest)'}
+  ok: batch-key-judge-admits {'status': 200}
+  ok: hot-revoke-403-within-poll {'status': 403}
+  ok: sibling-key-survives-revoke {'status': 200}
+apikey_gate: 0 failed / 18 gates

@@ -1,0 +1,7 @@
+-r requirements.txt
+iniconfig==2.3.0
+packaging==26.3
+pluggy==1.6.0
+Pygments==2.20.0
+pytest==9.1.1
+pytest-asyncio==1.4.0

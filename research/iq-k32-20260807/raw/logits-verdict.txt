@@ -1,0 +1,4 @@
+gemma: logits DIFFER — 0 differing bytes of 
+kat: logits DIFFER — 0 differing bytes of 
+gemma: logits DIFFER — 831999 differing bytes of 1048576
+kat: logits DIFFER — 733381 differing bytes of 993280

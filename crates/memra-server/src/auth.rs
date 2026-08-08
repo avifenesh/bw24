@@ -417,6 +417,19 @@ pub fn scope_namespace(tenant: &str, raw_salt: &str) -> String {
     format!("t:{tenant}{NS_SEP}{raw_salt}")
 }
 
+/// The per-tenant METERING key for a PC-ISO namespace (lane/cache-metering): the tenant
+/// half of `scope_namespace` — keyring deployments aggregate one row per tenant across
+/// all its end-user salts; no-keyring namespaces (the raw salt) pass through unchanged
+/// ("" = the default single-tenant namespace). Unforgeable for the same reason
+/// scope_namespace is: NS_SEP is excluded from tenant ids, so a salt can never move its
+/// tokens into another tenant's row.
+pub fn meter_key(cache_ns: &str) -> &str {
+    match cache_ns.strip_prefix("t:").and_then(|rest| rest.find(NS_SEP)) {
+        Some(sep) => &cache_ns[..2 + sep],
+        None => cache_ns,
+    }
+}
+
 // ---- key lifecycle CLI (--gen-key / --revoke-key) ----
 
 /// 24 bytes of /dev/urandom as 48 hex chars — the key's secret part.
@@ -774,6 +787,24 @@ mod tests {
         assert_ne!(scope_namespace("acme", &forged_salt), scope_namespace("blue", ""));
         // salted vs unsalted stay distinct within a tenant.
         assert_ne!(scope_namespace("acme", "s"), scope_namespace("acme", ""));
+    }
+
+    #[test]
+    fn meter_key_extracts_tenant_and_passes_raw_salts_through() {
+        // keyring namespaces collapse to the tenant half — salts never split a tenant's row.
+        assert_eq!(meter_key(&scope_namespace("acme", "u1")), "t:acme");
+        assert_eq!(meter_key(&scope_namespace("acme", "u2")), "t:acme");
+        assert_eq!(meter_key(&scope_namespace("blue", "")), "t:blue");
+        // no keyring: raw salts pass through, "" = the default namespace.
+        assert_eq!(meter_key("session-7"), "session-7");
+        assert_eq!(meter_key(""), "");
+        // a raw salt that merely LOOKS like a scoped namespace but has no separator
+        // stays itself (client text cannot contain NS_SEP-scoped rows without a keyring
+        // because scope_namespace only runs when auth is configured).
+        assert_eq!(meter_key("t:fake"), "t:fake");
+        // unforgeable within a keyring: a salt carrying NS_SEP cannot escape its tenant.
+        let forged = scope_namespace("acme", &format!("blue{}", '\u{1f}'));
+        assert_eq!(meter_key(&forged), "t:acme");
     }
 
     #[test]

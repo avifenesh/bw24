@@ -45,15 +45,18 @@ PROMPT = ("Summarize the operational state of a GPU serving cluster in exactly t
           "sentences, then list four risks. Context follows. " + FILLER * 8)
 
 
-def one_request(base, model, max_tokens, greedy, seed, timeout, headers=None):
+def one_request(base, model, max_tokens, greedy, seed, timeout, headers=None, stream=False):
     body = {
         "model": model,
         "messages": [{"role": "user", "content": PROMPT}],
         "max_tokens": max_tokens,
         "temperature": 0.0 if greedy else 0.7,
         "seed": seed,
-        "stream": False,
+        "stream": bool(stream),
     }
+    if stream:
+        # ask for the usage block on the final SSE frame so token counts stay server-authoritative
+        body["stream_options"] = {"include_usage": True}
     h = {"Content-Type": "application/json"}
     if headers:
         h.update(headers)
@@ -61,6 +64,8 @@ def one_request(base, model, max_tokens, greedy, seed, timeout, headers=None):
                                  data=json.dumps(body).encode(), headers=h)
     t0 = time.monotonic()
     try:
+        if stream:
+            return _stream_request(req, timeout, t0)
         with urllib.request.urlopen(req, timeout=timeout) as r:
             data = json.load(r)
         dt = time.monotonic() - t0
@@ -93,8 +98,66 @@ def one_request(base, model, max_tokens, greedy, seed, timeout, headers=None):
                 "error": f"{type(e).__name__}: {e} {detail}".strip()}
 
 
+def _stream_request(req, timeout, t0):
+    """SSE read that timestamps the FIRST content-bearing frame — the TTFT observable.
+
+    TTFT needs streaming: with `stream: False` the only timestamp a client gets is the whole
+    response, so a scheduler change that delays the first token but not the last is invisible.
+    A frame counts as first-token only if it carries actual text — role-only openers and empty
+    deltas are protocol overhead, not the user-visible first token. `reasoning` counts: on a
+    thinking model that IS the visible stream (a content-only reader would time the wrong frame,
+    or never fire at all).
+    """
+    ttft = None
+    ntok = 0
+    usage = {}
+    rid = None
+    finish = None
+    chunks = []
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        for raw in r:
+            line = raw.decode(errors="replace").strip()
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if payload == "[DONE]":
+                break
+            try:
+                ev = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            rid = ev.get("id") or rid
+            if ev.get("usage"):
+                usage = ev["usage"]
+            for ch in ev.get("choices") or []:
+                d = ch.get("delta") or {}
+                piece = (d.get("content") or "") + (d.get("reasoning") or "")
+                if piece:
+                    if ttft is None:
+                        ttft = time.monotonic() - t0
+                    ntok += 1
+                    chunks.append(piece)
+                if ch.get("finish_reason"):
+                    finish = ch["finish_reason"]
+    dt = time.monotonic() - t0
+    return {
+        "ok": True,
+        "latency_s": dt,
+        "ttft_s": ttft,
+        # decode-only rate: excludes prefill, so it isolates the steady-state token cadence
+        "decode_s": (dt - ttft) if ttft is not None else None,
+        "rid": rid,
+        # server usage when present, else the counted content frames (labelled either way)
+        "completion_tokens": usage.get("completion_tokens", ntok),
+        "prompt_tokens": usage.get("prompt_tokens", 0),
+        "usage_from_server": bool(usage),
+        "finish_reason": finish,
+        "text": "".join(chunks),
+    }
+
+
 def run_point(base, model, concurrency, requests, max_tokens, greedy, timeout,
-              headers=None, duration=None, retry_shed=False):
+              headers=None, duration=None, retry_shed=False, stream=False):
     results = []
     rlock = threading.Lock()
     idx = {"n": 0}
@@ -116,7 +179,7 @@ def run_point(base, model, concurrency, requests, max_tokens, greedy, timeout,
                     idx["n"] += 1
             while True:
                 res = one_request(base, model, max_tokens, greedy, seed=1000 + my,
-                                  timeout=timeout, headers=headers)
+                                  timeout=timeout, headers=headers, stream=stream)
                 if res.get("shed") and retry_shed and \
                         (deadline is None or time.monotonic() < deadline):
                     with rlock:
@@ -164,7 +227,22 @@ def run_point(base, model, concurrency, requests, max_tokens, greedy, timeout,
         "lat_mean_s": statistics.mean(lats) if lats else None,
         "lat_max_s": lats[-1] if lats else None,
         "errors_sample": [e["error"] for e in errs[:3]],
+        **_ttft_summary(oks),
     }, results
+
+
+def _ttft_summary(oks):
+    """TTFT percentiles, present only in --stream mode (absent, not zero, otherwise)."""
+    tt = sorted(r["ttft_s"] for r in oks if r.get("ttft_s") is not None)
+    if not tt:
+        return {}
+
+    def q(p):
+        k = min(len(tt) - 1, max(0, int(round(p / 100 * (len(tt) - 1)))))
+        return tt[k]
+
+    return {"ttft_p50_s": q(50), "ttft_p95_s": q(95),
+            "ttft_mean_s": statistics.mean(tt), "ttft_max_s": tt[-1], "n_ttft": len(tt)}
 
 
 def main():
@@ -178,6 +256,10 @@ def main():
                     help="run for SECS instead of a request count")
     ap.add_argument("--max-tokens", type=int, default=128)
     ap.add_argument("--greedy", action="store_true", help="temperature=0")
+    ap.add_argument("--stream", action="store_true",
+                    help="SSE mode: adds per-request ttft_s + decode_s and ttft p50/p95 to the "
+                         "point (TTFT is unobservable without streaming). Default off so "
+                         "existing lanes' numbers stay comparable.")
     ap.add_argument("--lane", default=None,
                     help="x-lane QoS class header (interactive|judge|harvest)")
     ap.add_argument("--tenant", default=None, help="x-tenant-id header")
@@ -208,7 +290,7 @@ def main():
     summary, results = run_point(args.base, args.model, args.concurrency, requests,
                                  args.max_tokens, args.greedy, args.timeout,
                                  headers=headers, duration=args.duration,
-                                 retry_shed=args.retry_shed)
+                                 retry_shed=args.retry_shed, stream=args.stream)
     point = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "label": args.label,

@@ -23,6 +23,11 @@ __device__ __forceinline__ size_t k45_canon(int st, int r, int kk) {
     return (size_t)st * 2048 + (r / 8) * 256 + (kk / 8) * 128 + (r % 8) * 16 + (kk % 8) * 2;
 }
 #ifdef MEMRA_K45_REAL
+// rate-audited 2026-08-06, see research/sm120-empirical-capabilities.md
+//   NOT-APPLICABLE on sm_120a: wgmma is an sm_90a (Hopper) instruction and does not exist in
+//   the sm_120a ISA -- unmeasurable on this rig, and no instruction is emitted here in the
+//   shipped build. Gated by MEMRA_K45_REAL, which is an internal arch-derived macro
+//   (__CUDA_ARCH__ == 900), not a user-settable flag.
 __device__ __forceinline__ void k45_wgmma(float acc[32], unsigned long long da,
                                           unsigned long long db, int scale_d) {
     asm volatile(
@@ -55,6 +60,10 @@ __device__ __forceinline__ void k45_wgmma_tf32(float acc[32], unsigned long long
                                                unsigned long long db, int scale_d) {
     asm volatile(
         "{\n.reg .pred p;\nsetp.ne.b32 p, %34, 0;\n"
+        // rate-audited 2026-08-06: wgmma is sm_90a-only, NOT-APPLICABLE on sm_120a (see
+        // research/sm120-empirical-capabilities.md). For reference the sm_120a mma.sync tf32
+        // form (m16n8k8, the only tf32 shape the ISA offers) is the slowest form on this rig:
+        // 32.03 cyc/warp-MMA for just 1024 MACs = 38.9 TFLOP/s.
         "wgmma.mma_async.sync.aligned.m64n64k8.f32.tf32.tf32 "
         "{%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15,"
         "%16,%17,%18,%19,%20,%21,%22,%23,%24,%25,%26,%27,%28,%29,%30,%31}, "

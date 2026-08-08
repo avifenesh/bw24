@@ -1,0 +1,17 @@
+== arm O1 (default, solo) ==
+  [O1] X completion_tokens=768 bytes=3148
+== arm O1R (default, solo, determinism control) ==
+  [O1R] X completion_tokens=768 bytes=3148
+== arm O2 (default, Y co-resident at staggered/moving depth) ==
+  [O2] Y completion_tokens=2400 (must be > X's total ticks)
+  [O2] X completion_tokens=768 bytes=3119
+== arm O3S (batched-body-everywhere, solo) ==
+  [O3S] X completion_tokens=768 bytes=3119
+== arm O3L (batched-body-everywhere, Y co-resident) ==
+  [O3L] Y completion_tokens=2400 (must be > X's total ticks)
+  [O3L] X completion_tokens=768 bytes=3119
+{
+ "O1_determinism": "PASS (byte-identical)",
+ "O2_vs_O1": "DIVERGES at byte 659 of 3148/3119 \u2014 the REF/REF_LOAD class reproduced",
+ "O3L_vs_O3S": "IDENTICAL \u2014 H-B confirmed (one program => co-resident invisible)"
+}

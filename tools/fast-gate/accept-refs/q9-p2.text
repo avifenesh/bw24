@@ -1,0 +1,9 @@
+
+
+Here is the refactored code with graceful shutdown implemented.
+
+### Key Changes
+1.  **Signal Handling**: Added `tokio::signal::ctrl_c()` and `tokio::signal::unix::signal` (for SIGTERM) to catch OS termination requests.
+2.  **Shutdown State**: Added a `shutdown_tx` to the `AppState` to signal the worker thread to stop accepting new commands.
+3.  **Worker Coordination**: The `worker::spawn` function now returns a `shutdown_tx` alongside the command sender.
+4.  **Drain Logic**: The `main` function

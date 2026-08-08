@@ -1,0 +1,20 @@
+== accept-gate: served-spec acceptance + long-text assertion ==
+   cells: q27-p1 (smoke tier; --full for the matrix)
+   arm env: MEMRA_MMQ_F8F4=1  [--teeth: verdict INVERTED, must FAIL]
+   logs: /tmp/accept-gate-20260806-184328
+-- server: Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf + draft-daily-owntrim-nvfp4head-q4blk.gguf K=3 ctx=8192
+   up in 8s
+  q27-p1: FAIL — 4 assertion(s):
+      spec.rounds: pinned 42 -> got 43
+      spec.drafted: pinned 126 -> got 129
+      text sha256: pinned 8fcb13e8f3347340 -> got 33d69474edad2d10
+      completion_tokens: pinned 128 -> got 129
+      acceptance 0.6746 -> 0.6589 (-1.57pp)   <- clock-independent; a ratio, so this is real, not drift
+      TEXT DIVERGES at char 208 (~word 30; pinned len 537, got 508)
+        common:  ..."ional, TypeVar, Generic, Iterator\n\nT = TypeVar('T')\n\n\nclass "
+        pinned:  'DoublyLinkedList(Generic[T]):\n    """A doubly-linked list implementati'
+        got:     '_Node(Generic[T]):\n    """Internal node for the doubly-linked list."""'
+        NOTE: this divergence is at/past the 20-token golden window — the token goldens are BLIND to it. That blindness is why this gate exists.
+
+accept-gate: TEETH OK (1 cell(s) FAILED under MEMRA_MMQ_F8F4=1 — the gate detects
+  the receipted acceptance/text move that the 20-token goldens are blind to).

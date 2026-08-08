@@ -1,0 +1,51 @@
+[server] starting; models config = [("smoke", "/scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "smoke" <- /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[worker]   loaded "smoke": 33 layers, eos=248046
+[worker] smoke: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] smoke: decode chunk cap 16 (exact-16 tier)
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["smoke"]
+[server] listening on http://127.0.0.1:8177
+[meter] admit id=chatcmpl-33de203325a2a1c01abd02573139691b tenant=default lane=interactive model="smoke"
+[worker] observed session VRAM cost for "smoke": 134MB (admission gate = 2x)
+[spec-acc] ctx=18 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=53 burst=9/15 cum=34/42=0.810
+[meter] admit id=chatcmpl-2b32d719f48476af85edefbc0c6cc616 tenant=default lane=interactive model="smoke"
+[worker] spec-affinity: declined (history diverged at 3 of checkpoint 18; 1 parked, 18 prompt tokens; model smoke)
+[spec-acc] ctx=18 burst=23/24 cum=23/24=0.958
+[spec-acc] ctx=50 burst=12/18 cum=35/42=0.833
+[meter] admit id=cmpl-6f55f1fad0cea0392d6b27495f738f5f tenant=default lane=interactive model="smoke"
+[worker] spec-affinity: declined (history diverged at 0 of checkpoint 18; 2 parked, 5 prompt tokens; model smoke)
+[spec-acc] ctx=5 burst=7/9 cum=7/9=0.778
+[meter] admit id=chatcmpl-2557699130daea9cd707b5e7f03919b9 tenant=default lane=interactive model="smoke"
+[worker] spec-affinity: declined (history diverged at 3 of checkpoint 18; 2 parked, 20 prompt tokens; model smoke)
+[spec-acc] ctx=20 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=54 burst=20/30 cum=44/57=0.772
+[meter] admit id=chatcmpl-c42b6948c1d80f702a575637435246b2 tenant=default lane=interactive model="smoke"
+[worker] spec-affinity: declined (history diverged at 0 of checkpoint 5; 2 parked, 20 prompt tokens; model smoke)
+[spec-acc] ctx=20 burst=24/27 cum=24/27=0.889
+[spec-acc] ctx=54 burst=20/30 cum=44/57=0.772
+[meter] admit id=chatcmpl-84f02925784bac657ffcdce438b522de tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-e288fa5fc02e0fb6729a9a99c14cafc2 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-b5962a3f6198278bf626b24604a24ee9 tenant=default lane=interactive model="smoke"
+[worker] spec-affinity: declined (history diverged at 3 of checkpoint 20; 2 parked, 19 prompt tokens; model smoke)
+[worker] spec-affinity: declined (history diverged at 3 of checkpoint 20; 2 parked, 19 prompt tokens; model smoke)
+[worker] spec-affinity: declined (history diverged at 3 of checkpoint 20; 2 parked, 19 prompt tokens; model smoke)
+[spec-acc] ctx=19 burst=23/24 cum=23/24=0.958
+[spec-acc] ctx=19 burst=23/24 cum=23/24=0.958
+[spec-acc] ctx=19 burst=23/24 cum=23/24=0.958
+[meter] admit id=chatcmpl-03cf221acc23df6045e2e7195b27ceb9 tenant=default lane=interactive model="smoke"
+[worker] spec-affinity: declined (history diverged at 3 of checkpoint 19; 2 parked, 20 prompt tokens; model smoke)
+[spec-acc] ctx=20 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=55 burst=23/36 cum=48/63=0.762
+[spec-acc] ctx=90 burst=22/30 cum=70/93=0.753
+[spec-acc] ctx=122 burst=20/39 cum=90/132=0.682
+[spec-acc] ctx=155 burst=20/39 cum=110/171=0.643
+[spec-acc] ctx=188 burst=23/30 cum=133/201=0.662
+[spec-acc] ctx=221 burst=23/36 cum=156/237=0.658
+[spec-acc] ctx=256 burst=20/36 cum=176/273=0.645
+[spec-acc] ctx=288 burst=23/27 cum=199/300=0.663
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

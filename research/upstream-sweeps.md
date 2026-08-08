@@ -291,3 +291,264 @@ _finding), session/prefix affinity, batch-invariance._
 
 _Review protocol: anything testable gets ported behind a seam + A/B'd per the_
 _flags doctrine; parity items get a one-line note; the jsonl is the record._
+
+## Sweep 2026-08-07T03:15:50Z (since 2026-08-05T12:20:53Z)
+
+_Frame: self-competition; upstreams are idea mines. Filter: chunked-prefill/prime_
+_invariance + reduction-order exactness (step35 just killed two segmentation axes —_
+_chunk-boundary determinism is gold), spec/MTP acceptance + scheduling (concurrency-gated_
+_spec live; PP-2+spec crash under debug), PP 2-stage on workstation GPUs, sm_120 FP8/NVFP4_
+_MMA + block-scale, MoE residency/spill, serve QoS (admission/isolation/prefix-cache)._
+
+### llama.cpp commits (decode-relevant, CUDA)
+
+- #26672 — model-loader: fix quantized reshaped tensor strides — the #26531 reshape-on-load
+  path built `nb` without accounting for quantized block types. CARE: memra loads GGUF; if
+  we ever reshape quantized tensors at load, stride math must be block-aware. Audit-grade
+  only — memra doesn't use llama's loader. lever-queue: no (their-stack bug).
+- PR #26675 (OPEN, ggerganov) — **ggml_prec spec rework**: explicit per-op declaration of
+  accumulator type AND src1 on-the-fly quantization type
+  (`ggml_mul_mat_set_prec_acc(z, GGML_PREC_F16)`, `_set_prec_src1(z, GGML_PREC_Q8)`),
+  with GGUF-carried per-op precision policy planned. This is the gate ggerganov set for
+  W4A8 PR #24364 ("we need to agree on that before proceeding"). CARE: llama is
+  formalizing exactly the thing memra's FP8-ST program hand-rolls — a per-op contract for
+  activation-side quantization and accumulator precision. Two takes: (1) W4A8-on-Blackwell
+  is now on llama's critical path, endorsed at the architecture level — more receipts for
+  FP8-ST as THE prod direction; (2) the GGUF metadata-driven precision-policy idea is a
+  clean pattern if memra ever wants artifact-pinned per-layer activation formats.
+  lever-queue: YES (track both PRs; FP8-ST lane).
+- #26649 — ggml_build_forward_order: expand-as-ordering-hint marked unselected branches
+  for compute, running ops on never-uploaded inputs. SKIP: their graph-API footgun.
+- #26645/#26656/#26660/#26665/#26613 — mtmd, server cors, conversion, grammar. SKIP.
+- W4A8 PR #24364 — no code movement this window, but the #26675 dependency (above) is the
+  first maintainer-driven unblock since it opened. Still the FP8-ST convergence signal.
+
+### vllm-project/vllm commits
+
+- #51113 (merged) — **mamba "align" chunking: prefix-cache poisoning past
+  `last_cache_position`**. Their invariant: block-table slot p may only be hashed as
+  state@(p+1)*block_size; chunk-end alignment was enforced only *below*
+  last_cache_position, so under CONCURRENCY one request's mid-block chunk end left a
+  slot holding state@364 that later got hashed as state@1600 — silent, persistent,
+  poisoned every resume; single requests were accidentally safe. Fix: gate end-alignment
+  on prefill_end (only the final chunk may end unaligned) + unconditional mid-block
+  realign stop for off-grid resumes. CARE: DIRECT sequel to step35 — this is the
+  *prefix-cache* flavor of the same disease (chunk segmentation must land on the state
+  grain, at every boundary, including resume-from-cache starts). memra's chunk-fix keyed
+  the SWA prefill arm on seq_end; the vLLM lesson is the *cache-entry* side: any state
+  snapshot keyed by position must only ever be published at grain-aligned chunk ends,
+  and the unaligned-START (resume off-grid) is a second hole. Audit memra prefix/session
+  reuse for both when serve prefix-cache lands. Also note their test shape: a dedicated
+  regression test on the split function. lever-queue: YES (top candidate).
+- #48341 (merged) — async scheduling now DEFAULT-ON for draft-model spec decode (was
+  classified unsupported by the default-resolution path; explicit enable already worked).
+  CARE: spec + async scheduling co-existence is table stakes upstream now; memra's
+  concurrency-gated spec (spec only when idle) is the conservative cousin. When MTP-p2
+  revisits the gate, the receipt that draft-model spec runs under overlapped scheduling
+  upstream is the bar. lever-queue: yes (MTP-p2 design input).
+- #50183 (merged) — NaN in target logits → `tl.argmax` on all-NaN block returns
+  out-of-range index → OOB read → IMA in the rejection sampler (hit during DSpark warmup).
+  Fix: NaN→-inf before argmax + clamp index. CARE: memra's verify path does argmax over
+  target logits; a NaN row must not turn into an OOB index. Fold a NaN-poisoned-logits
+  case into the lsampler top_p/min_p bugfix battery (dogfood already found sampler
+  truncation injecting low-id tokens — same neighborhood). lever-queue: yes (rides
+  existing lsampler fix).
+- #50939 (merged) — -1 placeholder draft-token ids reached block verification and caused
+  OOB (greedy path was guarded, block-verify path was not). CARE: if memra's verify ever
+  pads draft slots, the pad id must be rejected in EVERY verify flavor, not just the one
+  that was tested. Checklist item for MTP-p2 verify. lever-queue: audit.
+- #49206 (merged) — PRIORITY preemption silently skipped the next request for a whole
+  scheduling step (req_index bookkeeping off-by-one when the preempted request sat before
+  the cursor). CARE: serve QoS — admission/preemption bookkeeping bugs are silent
+  starvation, exactly what memra-serve's isolation work must gate with a
+  sustained-KV-pressure regression test, not eyeballs. lever-queue: yes (serve QoS test
+  pattern).
+- #51089 (merged) — request priority via HTTP header (`X-Request-Priority`-style parse into
+  engine priority). NOTE: pairs with #48048 session_id from last sweep — the serve QoS
+  ingress surface upstream is converging on header-carried per-request knobs.
+  lever-queue: no (fold into the existing serve session/QoS item).
+- #50507 (merged) — partial-tail prefix reuse for hybrid models: preserve/lookup/restore a
+  fine-grained prefix boundary *inside* a physical block (block large due to mamba state),
+  copy-on-write append after restore; 784→896 cached tokens on a 900-token prompt. CARE:
+  same grain-vs-block tension memra will hit if prefix cache lands with large KV pages.
+  lever-queue: no (design note for serve prefix-cache).
+- #50230 (merged) — PDL for DSA decode kernels: Triton kernels get a USE_PDL constexpr with
+  `gdc_wait()`/`gdc_launch_dependents()`; NVFP4 quant kernels switch to
+  `cudaLaunchKernelEx` + programmatic stream serialization; +2.8% output tok/s at MTP=5.
+  PARITY-ish: memra already runs PDL on sm_120; the news is they're threading PDL through
+  the *spec-decode draft* path specifically. Cross-check MTP-p2 draft kernels are inside
+  memra's PDL chain, not breaking it (last sweep's SGLang #33063 showed fills breaking
+  chains). lever-queue: audit (extends existing graph/PDL audit item).
+- #50904 (merged) — MTP draft loop skip_topk: reuse the step-0 top-k buffer across draft
+  steps instead of recomputing indexer top-k per step (2x kernel-level). CARE: same
+  draft-cost family as #49969 last sweep — compute once on the target pass, reuse across
+  draft steps. Portable pattern for MTP-p2 per-step cost. lever-queue: yes (merge with
+  the existing draft-cost item).
+- #50029/#49764 (merged) — online NVFP4 expert packing: quantize each expert from the
+  ORIGINAL tensor + FP32 global scale directly (the old path folded scale into BF16 and
+  recast — an extra rounding step before group-16 scale selection); share online weight
+  scales across TP. CARE: nvfp4-strict lane — if memra's NVFP4 repack ever stages through
+  a scaled BF16 temporary, it's leaving quality on the floor; quantize from source with
+  the scale applied in FP32. One-line audit of tools/repack paths. lever-queue: yes
+  (nvfp4-strict audit).
+- #50276 (merged) — packed KV block zeroing stride bug. SKIP: their layout.
+- #50613 (merged) — per-request scheduling for MLA chunked context. SKIP: MLA-specific.
+- #51304 — NaN-in-logits counts copied to host asynchronously (follow-up to the NaN CI
+  gate from last sweep). NOTE: they made the NaN gauge cheap enough to leave on in prod.
+  lever-queue: no.
+
+### sgl-project/sglang commits
+
+- #33587 (merged) — **WAR fences aligned with CUDA-graph metadata reads**: the overlap
+  scheduler rewrites shared request/attention metadata while the previous forward still
+  runs on another stream; the read_done fence could only be published before/after a whole
+  graph replay, so prefill fell back to a coarse whole-forward barrier AND TRTLLM SWA
+  cache writes re-read the live full-to-SWA mapping after an early fence instead of the
+  snapshot. Fix: lift read_done after CG metadata init; snapshot SWA write locations
+  during metadata prep. CARE: memra-serve's overlap between batch-prep and in-flight
+  forward has the identical hazard shape — any host-side rewrite of metadata a replaying
+  graph still reads is a silent racer. The *snapshot-at-prep, consume-snapshot-at-write*
+  discipline is the portable fix. lever-queue: YES (serve overlap audit).
+- #33253 (merged) — breakable-graph padding: padded `positions` reached the attention
+  backend, and DCP used positions for KV ownership → virtual padded tokens competed with
+  real tokens for physical KV slots, silently corrupting cache (GSM8K-verified fix).
+  CARE: graph-decode padding hygiene — every tensor the backend consumes must be narrowed
+  to the real token count, not just Q/K/V. memra pads decode batches to graph buckets;
+  audit which per-token side tensors (positions, slot maps) flow in un-narrowed.
+  lever-queue: YES (pairs with #33587).
+- #33666 (merged) — PP: mamba pool sized per whole model instead of per stage → per-slot
+  cost overestimated ~pp_size×, clamping max_running_requests to 6 on K3 PP8. Fix scales
+  by the HEAVIEST stage's layer share so derived limits stay uniform across ranks without
+  a collective (own-share sizing diverged in 95/145 budget sweeps). CARE: memra PP-2 — any
+  per-stage resource (KV pool, spec scratch, draft KV) must be budgeted on the stage's own
+  layer slice, and cross-stage-derived limits (micro-batch size) must be computed
+  identically on both stages. Direct checklist for the PP-2 lane. lever-queue: YES.
+- #32700 (merged) — SWA chunk-cap escape hatch fired under *transient* SWA pressure, not
+  just true head-of-line livelock: admitting shrunken prefill chunks into headroom that
+  running decodes needed collapsed the evictable cushion → retraction storm, 40%+ of
+  prefill compute was re-prefill rework at 0.9 pool usage. Fix: hatch only when budget ≥
+  whole pool (can never fit); transient pressure WAITS. CARE: serve admission — memra's
+  admission gate must distinguish "can't fit now" (wait, protect decode cushion) from
+  "can never fit" (act). The B<R / R≤B<C / B≥C three-case table is the cleanest admission
+  framing seen upstream. lever-queue: YES (serve QoS design).
+- #33794 (merged) — paged SWA retraction resume: align full+SWA preallocation to physical
+  allocator pages; keep remaining SWA budget consistent when multiple retracted requests
+  resume. NOTE: retraction-resume accounting is a bug-farm; memra-serve doesn't retract
+  yet. lever-queue: no.
+- #30393 (merged) — HiCache restores draft-side caches (packed tail-layers or sidecar
+  pools) so an L2/L3 prefix hit doesn't silently drop spec acceptance because the draft
+  KV/indexer state is missing. CARE: when memra prefix-cache + MTP coexist, a "cache hit"
+  that restores only target KV will quietly halve acceptance — the failure is invisible
+  without per-position acceptance telemetry (last sweep's #26389 item). lever-queue: yes
+  (design constraint, serve prefix-cache × MTP-p2).
+- #33788 (merged) — inference-mode mismatch in FlashInfer warmup. SKIP.
+- #33663/#33527 (merged) — serving benchmark: post-warmup /flush_cache raced the scheduler
+  (400 aborts); fix waits for idle with a timeout. NOTE: memra bench scripts flush between
+  phases — same race shape if serve goes async. lever-queue: no (bench hygiene note).
+- #33618 (merged) — MoE deferred finalize default-on. SKIP: their kernel plumbing.
+- #33115/#33621 (merged) — ModelOpt FP4 online MoE weight quant + pinned 4over6 settings.
+  NOTE: online-quant settings are getting pinned as correctness surface upstream;
+  nvfp4-strict already treats them as locked. SKIP (parity).
+
+### flashinfer-ai/flashinfer commits (v0.6.18 tagged this window)
+
+- #4165 (merged) — **gate cuDNN out of SM12x bmm_fp8 auto**: on RTX 5090 the cuDNN FP8
+  path without override_shape (a) builds a fresh execution graph per distinct (M,K,N) —
+  measured 236ms host-side PER SHAPE, unbounded under serving load; (b) raises
+  cudaErrorMisalignedAddress ASYNCHRONOUSLY, uncatchable at the call site. CARE: two
+  general laws for the FP8-ST lane on sm_120: per-shape host-side compilation is a
+  serving hazard (memra's fixed-shape graph doctrine already avoids this — receipt), and
+  async faults escape try/except-style guards, so backend-selection gates must be
+  capability-checked up front, not caught. Also: evidence gathered on a 5090 with an
+  FP8-dense/FP4-expert mixed model — someone is running memra's exact rig shape through
+  vLLM. lever-queue: yes (doctrine receipt + FP8 backend-gate audit).
+- #3984 (merged) — autotuner nearest-profile cache keyed on objects whose hash excluded
+  but equality included per-call closures → same-hash-never-equal entries, permanent
+  LRU churn + GIL contention, ~4% TTFT. CARE: hash/eq contract violations in hot host
+  paths are invisible until py-spy; memra's Rust host side is largely immune, but any
+  Python tooling on the serve path (bench drivers) can hit this. lever-queue: no
+  (evidence note).
+- #4295 (merged) — top-k tie-break: deterministic *selection* decoupled from deterministic
+  output *ordering* — tie-break modes keep deterministic filtered selection at the
+  boundary but skip the index sort unless deterministic=True. CARE: exactness doctrine
+  vocabulary — memra's top-k (router + sampler) should state which of the two properties
+  each caller needs; chunk-invariance gates need deterministic selection, not sorted
+  output. lever-queue: yes (small; exactness lane).
+- #4352 (merged) — FP8 block-scale + BF16 routed MoE now accept unpacked (topk_ids,
+  topk_weights) so FP32 routing weights reach the combine un-truncated (the packed form
+  crushed them to bf16). CARE: router-weight precision through the combine is a quality
+  axis memra controls; verify memra's expert-combine keeps router weights at FP32.
+  lever-queue: audit (one-liner).
+- #4266 (merged) — Blackwell CuTeDSL BF16 split-k dense GEMM. NOTE: split-k on Blackwell
+  dense is upstream now; memra's decode GEMMs already split-k where profitable. SKIP.
+- #4186/#4027 (merged) — CuTe DSL finalize tail handling + MoE monokernel barrier removal.
+  SKIP: their kernels.
+
+### NVIDIA/TensorRT-LLM commits
+
+- #16170 (merged) — **PP sample-state relay deadlock**: a background relay thread
+  (last rank→0→1→...) needed the GIL; when the executor thread blocked in a GIL-holding
+  native call waiting on GPU progress (DeepGEMM JIT cold load), the relay starved, the
+  downstream rank never launched its forward, and the in-flight NCCL p2p kernel deadlocked
+  the ring. Fix: relay INLINE in the executor loop (default), drain pending isends before
+  entering any forward, and fail loudly on a missing relayed batch. Verified 0/20 hangs vs
+  ~25% before. CARE: PRIME suspect shape for memra's PP-2+spec crash-under-debug — debug
+  builds change timing exactly where a cross-stage relay/side-channel can starve. Laws to
+  port: no cross-stage delivery on a thread that competes with the executor for a lock;
+  drain outstanding sends before blocking in compute; missing-relay = loud error, never
+  infinite wait. lever-queue: YES (top candidate, PP-2 lane).
+- #17162 (merged) — spec warmup under-counted blocks (ignored num_extra_kv_tokens +
+  draft-token reserve) AND add_dummy_requests leaked registered sequences on failure →
+  LLM() startup hang on mamba-hybrid + spec. CARE: same family as last sweep's #16072
+  (warmup preallocation must mirror real allocation EXACTLY, spec tokens included);
+  extends the existing gate item — memra warmup accounting must include MTP draft
+  tokens. lever-queue: yes (extends existing gate item).
+- #16925 (merged) — MTP acceptance-rate regression at large batch: stale token→request map
+  in the one-model draft loop (built for max_draft_len+1 tokens/req, reused after layout
+  changed to 1 token/req) corrupted sparse-index reads AND indexer-K writes across
+  requests. CARE: MTP-p2 — any per-token→request map must be rebuilt (or indexed
+  layout-invariantly) between target and draft phases; corruption showed up as an
+  ACCEPTANCE-RATE gap, not a crash — another receipt that per-position acceptance
+  telemetry is the cheap detector. lever-queue: yes (MTP-p2 checklist + telemetry
+  receipt).
+- #17323 (merged) — Kimi identity-RoPE table sized to 65536 but chunked-context indexes by
+  absolute position → OOB on longer prefills; radix-tree stale walk destroyed chains
+  holding live pages of in-flight sequences. CARE: position-indexed tables must be sized
+  to max_position, and cache eviction must check liveness across ALL lifecycles.
+  lever-queue: audit (rope-table sizing one-liner).
+- #16603 (merged) — reject MNNVL on split NVLink topology. SKIP: multi-node.
+- #15138 (merged) — CuTeDSL FP8/FP16 MLA decode fmha lib. SKIP: MLA/SM100.
+- #17277 (merged) — BREAKING block-reuse policy rename + tests. SKIP: their API.
+
+### Ranked shortlist (lever candidates, with receipts)
+
+1. **PP relay/side-channel starvation laws** (TRT-LLM #16170 + SGLang #33666): the PP
+   deadlock anatomy — cross-stage delivery starved by a lock the executor holds, sends
+   not drained before blocking compute, silent infinite wait — plus per-stage resource
+   budgeting with rank-uniform derived limits. Both are direct checklist items for the
+   PP-2 lane and #16170 is the best candidate mechanism yet for the PP-2+spec
+   crash-under-debug (debug timing widens exactly that starvation window).
+2. **Grain-aligned state publication, including resume** (vLLM #51113): the prefix-cache
+   sequel to step35 — a state snapshot keyed by position may only be published at
+   grain-aligned chunk ends, only the FINAL chunk may end unaligned, and the off-grid
+   *start* (resume from cache/connector) is a second hole. Feeds the chunk-invariance
+   gate and becomes a hard design constraint the day serve prefix-cache lands.
+3. **Overlap-scheduler write-after-read hygiene** (SGLang #33587 + #33253): metadata
+   rewritten by batch-prep while a graph replay still reads it, and padded per-token side
+   tensors (positions/slot maps) leaking into backends. Snapshot-at-prep +
+   narrow-everything are one audit of memra-serve's overlap path; high found-money odds
+   given F5/prime-chunk already touch this region.
+4. **Admission: wait-vs-never-fits three-case gate** (SGLang #32700 + vLLM #49206):
+   transient pressure must WAIT (protect the decode cushion; the escape hatch caused a
+   40%-rework retraction storm), only provably-never-fits acts; and preemption
+   bookkeeping needs a sustained-pressure regression test because its failure mode is
+   silent starvation. Direct design input for memra-serve QoS/admission.
+5. **FP8/NVFP4 quality + backend-gate receipts** (llama.cpp #26675 + vLLM #50029 +
+   FlashInfer #4165): ggml_prec formalizes per-op activation-quant/accumulator contracts
+   (the W4A8 unblock — FP8-ST direction endorsed upstream); online NVFP4 packing must
+   quantize from source with FP32 scale (no BF16 fold-recast round-trip — audit memra
+   repack); and SM12x FP8 backend selection must be capability-gated up front because
+   async faults are uncatchable. All three feed nvfp4-strict/FP8-ST.
+
+_Review protocol: anything testable gets ported behind a seam + A/B'd per the_
+_flags doctrine; parity items get a one-line note; the jsonl is the record._

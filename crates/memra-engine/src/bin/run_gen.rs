@@ -174,14 +174,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or(1);
             for _ in 0..warmups {
                 let mut c = memra_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + 64)?;
-                let _ = model.prime_cache(&e, &prompt, &mut c)?;
+                let _ = model.prime_cache(&e, &prompt, &mut c, 0)?;
             }
             e.stream().synchronize()?;
             let mut times = Vec::with_capacity(reps);
             for r in 0..reps {
                 let mut c = memra_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + 64)?;
                 let tp = std::time::Instant::now();
-                let _ = model.prime_cache(&e, &prompt, &mut c)?;
+                let _ = model.prime_cache(&e, &prompt, &mut c, 0)?;
                 e.stream().synchronize()?;
                 let dt = tp.elapsed().as_secs_f64();
                 times.push(dt);
@@ -233,7 +233,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // though it is not prime's own m=1 head.
             {
                 let mut c = memra_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + 64)?;
-                let (last, _h_seed, hiddens) = model.prime_cache(&e, &prompt, &mut c)?;
+                let (last, _h_seed, hiddens) = model.prime_cache(&e, &prompt, &mut c, 0)?;
                 if let Ok(f) = std::env::var("MEMRA_PP_LOGITS") {
                     let mut raw = Vec::with_capacity(last.len() * 4);
                     for v in &last {
@@ -835,6 +835,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for _ in 0..warmups {
             let _ = model.forward_last(&e, &prompt)?;
         }
+        // MEMRA_PP_LOGITS=<path>: dump the last-row prefill logits (raw LE f32) — the GGUF twin
+        // of the ST branch's dump above. Diagnostic: cross-arm byte-compare of two builds'
+        // prefill output (e.g. the iq-k32 MMA-form A/B, research/iq-k32-20260807/).
+        if let Ok(f) = std::env::var("MEMRA_PP_LOGITS") {
+            let last = model.forward_last(&e, &prompt)?;
+            let mut raw = Vec::with_capacity(last.len() * 4);
+            for v in &last {
+                raw.extend_from_slice(&v.to_le_bytes());
+            }
+            std::fs::write(&f, &raw)?;
+            println!("pp-only prefill logits -> {f} ({} f32)", last.len());
+        }
         e.stream().synchronize()?;
         if let Some((hits, misses, staged, n_slots)) = e.moe_cache_stats() {
             println!("pp-only MoE cache after {warmups} warmup(s): {n_slots} slots hits={hits} misses={misses} staged_bytes={staged}");
@@ -889,13 +901,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if am_p == am_d { "MATCH" } else { "MISMATCH" }
     );
     if am_p != am_d {
-        // near-tie vs real-gap diagnosis before the panic: both sides' view of both ids.
+        // near-tie vs real-gap diagnosis before the panic: both sides' view of both ids, PLUS
+        // the number that actually decides which of the two it is (lane/q8-argmax,
+        // research/q8-argmax-20260806/VERDICT.md). A flip is only meaningful if the config
+        // spread at the contending ids is large enough to reach across the top-2 margin:
+        // margin >= spread means a real numeric defect moved a logit further than the gap it
+        // crossed; margin << spread is the documented near-tie coin. `logit maxdiff` above is
+        // NOT that number — it is the max over a ~250k-wide vocab, dominated by tail noise,
+        // and it is routinely LARGER on runs this same gate calls MATCH (measured: MATCH at
+        // 1.165 beside MISMATCH at 0.466). Do not read it as severity.
+        let margin_p = (prefill[am_p] - prefill[am_d]).abs();
+        let margin_d = (dec_logits[am_d] - dec_logits[am_p]).abs();
+        let spread = (prefill[am_p] - dec_logits[am_p])
+            .abs()
+            .max((prefill[am_d] - dec_logits[am_d]).abs());
         eprintln!("[gate] prefill: l[{am_p}]={:.4} l[{am_d}]={:.4} | decode: l[{am_p}]={:.4} l[{am_d}]={:.4}",
                   prefill[am_p], prefill[am_d], dec_logits[am_p], dec_logits[am_d]);
+        eprintln!("[gate] top-2 margin: prefill {margin_p:.4} decode {margin_d:.4} | config spread at these ids {spread:.4} -> {}",
+                  if spread > margin_p.min(margin_d) {
+                      "NEAR-TIE class (the spread covers the margin; run tools/argmax-margin-gate.sh \
+                       to see this position's margin against the prompt's own distribution)"
+                  } else {
+                      "WIDE-MARGIN flip — the spread does NOT cover the margin; this is a real defect"
+                  });
     }
     assert_eq!(
         am_p, am_d,
-        "decode-step diverges from prefill — cache threading bug"
+        "decode-step diverges from prefill at the last position (see the [gate] lines above for \
+         the near-tie-vs-defect diagnosis; a wide-margin flip means a cache/threading/kernel bug, \
+         a margin inside the config spread is the documented cross-config drift class)"
     );
 
     // --- gap #46: the BATCHED-PRIME config (prime_cache — what actually seeds generation in
@@ -915,7 +949,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         use memra_engine::forward::PrimeGateClass;
         let mut pc = memra_engine::cache::Cache::new(&e, &model.cfg, prompt.len() + 8)?;
-        let (l_bp, _, _) = model.prime_cache(&e, &prompt, &mut pc)?;
+        let (l_bp, _, _) = model.prime_cache(&e, &prompt, &mut pc, 0)?;
         let v = memra_engine::forward::prime_gate_verdict(&dec_logits, &l_bp);
         println!(
             "batched-prime argmax={}  tokenwise argmax={}  logit maxdiff={:.3e}  {}",

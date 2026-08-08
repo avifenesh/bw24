@@ -165,12 +165,28 @@ class Router:
             self.slot_free.notify_all()
 
     def health_loop(self, interval=2.0):
+        # ROUTING ASKS READINESS, NOT LIVENESS (lane/serve-hardening 2026-08-06). A router's
+        # question is "should I send traffic here?", which is /readyz: a backend that is
+        # draining, still loading its weights, or whose worker died must leave rotation even
+        # though the process is perfectly alive and /health deliberately answers 200 for a
+        # drain. Using /health here would keep feeding a backend that is shutting down.
+        # /health is kept as the fallback so a mixed-version fleet (an older replica without
+        # /readyz, which answers 404) degrades to the previous behavior instead of marking
+        # every backend DOWN.
+        probe = "/readyz"
         while True:
             changed = False
             for b in self.backends:
                 try:
-                    with urllib.request.urlopen(b.url + "/health", timeout=2) as r:
+                    with urllib.request.urlopen(b.url + probe, timeout=2) as r:
                         ok = r.status == 200
+                except urllib.error.HTTPError as e:
+                    if e.code == 404 and probe != "/health":
+                        print(f"[proxy] {b.url} has no {probe} (pre-serve-hardening binary); "
+                              f"falling back to /health for the whole fleet", flush=True)
+                        probe = "/health"
+                        continue
+                    ok = False   # 503 = not ready (draining / loading / worker dead)
                 except Exception:
                     ok = False
                 if ok != b.healthy:

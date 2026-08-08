@@ -1,0 +1,4 @@
+== serve-stress-gate: c=64 staggered short streams (128-256 tok) ==
+completed 64/64; wall p50=46.2s p95=53.3s max=54.0s; ttfb p50=0.51s p95=5.00s  (informational)
+serve-stress-gate: ALL GREEN (c=64 complete, streams well-formed, worker alive, log clean)
+STRESS_RC=0

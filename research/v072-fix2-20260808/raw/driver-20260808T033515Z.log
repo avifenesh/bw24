@@ -1,0 +1,95 @@
+=== v072-fix2 verify 20260808T033515Z  tree=aa2895b2 wip(spot-guard): auto-checkpoint 023823Z
+lock acquired 2026-08-08T03:35:15Z
+0, 0 MiB, 180 MHz
+1, 0 MiB, 180 MHz
+### building BASE (tree as found)
+### applying fix patch + building FIX
+tree restored: 0 dirty files (expect the pre-existing set only)
+
+########## BASE R1: dev10 naked c=1 x6 (spec admitted at c<=2) — expect ~17.5 class ##########
+[worker] Engine ready (device=1, MEMRA_FAST=true)
+{"ts": "2026-08-08T03:36:11+0000", "label": "base-dev10-spec-c1", "base": "http://127.0.0.1:8123", "concurrency": 1, "requests": 6, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 34.07327395200082, "n_ok": 6, "n_shed": 0, "n_err": 0, "completion_tokens_total": 594, "prompt_tokens_total": 1356, "agg_tok_s": 17.43301805505308, "req_per_s": 0.1760910914651826, "lat_p50_s": 5.679162857000847, "lat_p95_s": 5.686165571998572, "lat_mean_s": 5.678775038999447, "lat_max_s": 5.686165571998572, "errors_sample": []}
+
+########## BASE R2: dev10 SPEC_GATE=0 c=2 x8 (the 112.5 gate shape) ##########
+[worker] Engine ready (device=1, MEMRA_FAST=true)
+{"ts": "2026-08-08T03:37:08+0000", "label": "base-dev10-spec-c2", "base": "http://127.0.0.1:8123", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 45.369682638000086, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 792, "prompt_tokens_total": 1808, "agg_tok_s": 17.456591140812787, "req_per_s": 0.1763292034425534, "lat_p50_s": 11.331535191000512, "lat_p95_s": 13.700963250001223, "lat_mean_s": 10.928168740250385, "lat_max_s": 13.700963250001223, "errors_sample": []}
+
+########## BASE R3: dev10 spec-OFF c=1 x6 (control ~223) ##########
+[worker] Engine ready (device=1, MEMRA_FAST=true)
+{"ts": "2026-08-08T03:37:19+0000", "label": "base-dev10-specoff-c1", "base": "http://127.0.0.1:8123", "concurrency": 1, "requests": 6, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 2.5978557739999815, "n_ok": 6, "n_shed": 0, "n_err": 0, "completion_tokens_total": 576, "prompt_tokens_total": 1356, "agg_tok_s": 221.72131561911877, "req_per_s": 2.309597037699154, "lat_p50_s": 0.4324107259999437, "lat_p95_s": 0.4342125090006448, "lat_mean_s": 0.4328793028334985, "lat_max_s": 0.4342125090006448, "errors_sample": []}
+
+########## FIX F1r1: dev10 naked c=1 x6 — expect ~112 class ##########
+[worker] Engine ready (device=0, MEMRA_FAST=true)
+{"ts": "2026-08-08T03:37:34+0000", "label": "fix-dev10-spec-c1-r1", "base": "http://127.0.0.1:8123", "concurrency": 1, "requests": 6, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 5.3177683250014525, "n_ok": 6, "n_shed": 0, "n_err": 0, "completion_tokens_total": 594, "prompt_tokens_total": 1356, "agg_tok_s": 111.7009925399181, "req_per_s": 1.1282928539385666, "lat_p50_s": 0.8868713370011392, "lat_p95_s": 0.891106340000988, "lat_mean_s": 0.8862018225002734, "lat_max_s": 0.891106340000988, "errors_sample": []}
+
+########## FIX F1r2: dev10 naked c=1 x6 — expect ~112 class ##########
+[worker] Engine ready (device=0, MEMRA_FAST=true)
+{"ts": "2026-08-08T03:37:48+0000", "label": "fix-dev10-spec-c1-r2", "base": "http://127.0.0.1:8123", "concurrency": 1, "requests": 6, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 5.302625161999458, "n_ok": 6, "n_shed": 0, "n_err": 0, "completion_tokens_total": 594, "prompt_tokens_total": 1356, "agg_tok_s": 112.01998667694262, "req_per_s": 1.1315150169388144, "lat_p50_s": 0.8834618769997178, "lat_p95_s": 0.888072830000965, "lat_mean_s": 0.8836619573330609, "lat_max_s": 0.888072830000965, "errors_sample": []}
+
+########## FIX F1r3: dev10 naked c=1 x6 — expect ~112 class ##########
+[worker] Engine ready (device=0, MEMRA_FAST=true)
+{"ts": "2026-08-08T03:38:02+0000", "label": "fix-dev10-spec-c1-r3", "base": "http://127.0.0.1:8123", "concurrency": 1, "requests": 6, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 5.309904985000685, "n_ok": 6, "n_shed": 0, "n_err": 0, "completion_tokens_total": 594, "prompt_tokens_total": 1356, "agg_tok_s": 111.86640847207615, "req_per_s": 1.129963721940163, "lat_p50_s": 0.8844062369989842, "lat_p95_s": 0.8895096259984712, "lat_mean_s": 0.8848918131664808, "lat_max_s": 0.8895096259984712, "errors_sample": []}
+
+########## FIX F2r1: dev10 SPEC_GATE=0 c=2 x8 — expect ~112 class ##########
+[worker] Engine ready (device=0, MEMRA_FAST=true)
+{"ts": "2026-08-08T03:38:18+0000", "label": "fix-dev10-spec-c2-r1", "base": "http://127.0.0.1:8123", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 7.086998378999851, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 792, "prompt_tokens_total": 1808, "agg_tok_s": 111.75394118148091, "req_per_s": 1.1288276887018274, "lat_p50_s": 1.7730822220000846, "lat_p95_s": 2.3883829440001136, "lat_mean_s": 1.738988421749582, "lat_max_s": 2.3883829440001136, "errors_sample": []}
+
+########## FIX F2r2: dev10 SPEC_GATE=0 c=2 x8 — expect ~112 class ##########
+[worker] Engine ready (device=0, MEMRA_FAST=true)
+{"ts": "2026-08-08T03:38:34+0000", "label": "fix-dev10-spec-c2-r2", "base": "http://127.0.0.1:8123", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 7.076334407000104, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 792, "prompt_tokens_total": 1808, "agg_tok_s": 111.92235336087734, "req_per_s": 1.1305288218270437, "lat_p50_s": 1.7725742260008701, "lat_p95_s": 2.384140154999841, "lat_mean_s": 1.736389032125544, "lat_max_s": 2.384140154999841, "errors_sample": []}
+
+########## FIX F2r3: dev10 SPEC_GATE=0 c=2 x8 — expect ~112 class ##########
+[worker] Engine ready (device=0, MEMRA_FAST=true)
+{"ts": "2026-08-08T03:38:50+0000", "label": "fix-dev10-spec-c2-r3", "base": "http://127.0.0.1:8123", "concurrency": 2, "requests": 8, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 7.080434276998858, "n_ok": 8, "n_shed": 0, "n_err": 0, "completion_tokens_total": 792, "prompt_tokens_total": 1808, "agg_tok_s": 111.85754559898272, "req_per_s": 1.1298741979695224, "lat_p50_s": 1.7742459129985946, "lat_p95_s": 2.3836698890008847, "lat_mean_s": 1.7374243543749799, "lat_max_s": 2.3836698890008847, "errors_sample": []}
+
+########## FIX F3: dev10 spec-OFF c=1 x6 — expect ~223 unchanged ##########
+[worker] Engine ready (device=0, MEMRA_FAST=true)
+{"ts": "2026-08-08T03:39:02+0000", "label": "fix-dev10-specoff-c1", "base": "http://127.0.0.1:8123", "concurrency": 1, "requests": 6, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 2.598544637001396, "n_ok": 6, "n_shed": 0, "n_err": 0, "completion_tokens_total": 576, "prompt_tokens_total": 1356, "agg_tok_s": 221.662538252442, "req_per_s": 2.308984773462938, "lat_p50_s": 0.4326544610012206, "lat_p95_s": 0.4338747930014506, "lat_mean_s": 0.43299620433390373, "lat_max_s": 0.4338747930014506, "errors_sample": []}
+
+########## FIX F4: door-shut single-card spec smoke c=4 x16 — expect ~548 unchanged ##########
+[worker] Engine ready (device=0, MEMRA_FAST=true)
+{"ts": "2026-08-08T03:39:13+0000", "label": "fix-doorshut-c4", "base": "http://127.0.0.1:8123", "concurrency": 4, "requests": 16, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 2.826041353999244, "n_ok": 16, "n_shed": 0, "n_err": 0, "completion_tokens_total": 1536, "prompt_tokens_total": 3616, "agg_tok_s": 543.5164626399911, "req_per_s": 5.661629819166574, "lat_p50_s": 0.633825003000311, "lat_p95_s": 0.9580443340000784, "lat_mean_s": 0.6820383440625619, "lat_max_s": 0.958459622999726, "errors_sample": []}
+
+########## FIX F5: dev01 naked c=1 x6 — THEORY DIFFERENTIATOR: was always slow, head-affinity says now FAST ##########
+[worker] Engine ready (device=1, MEMRA_FAST=true)
+{"ts": "2026-08-08T03:39:27+0000", "label": "fix-dev01-spec-c1", "base": "http://127.0.0.1:8123", "concurrency": 1, "requests": 6, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 5.35294751299989, "n_ok": 6, "n_shed": 0, "n_err": 0, "completion_tokens_total": 594, "prompt_tokens_total": 1356, "agg_tok_s": 110.96690161027033, "req_per_s": 1.1208777940431345, "lat_p50_s": 0.891728664000766, "lat_p95_s": 0.8970848730004946, "lat_mean_s": 0.8920654475004994, "lat_max_s": 0.8970848730004946, "errors_sample": []}
+
+########## FIX F6: #87 quick crash gate — dev10 SPEC_GATE=0 c=4 x50 — expect 50/50 clean ##########
+[worker] Engine ready (device=0, MEMRA_FAST=true)
+{"ts": "2026-08-08T03:40:21+0000", "label": "fix-dev10-crash-c4", "base": "http://127.0.0.1:8123", "concurrency": 4, "requests": 50, "duration_s": null, "lane": null, "tenant": null, "max_tokens": 96, "greedy": true, "wall_s": 44.35191862700049, "n_ok": 50, "n_shed": 0, "n_err": 0, "completion_tokens_total": 4950, "prompt_tokens_total": 11300, "agg_tok_s": 111.60734762411265, "req_per_s": 1.1273469456981076, "lat_p50_s": 3.421644878999359, "lat_p95_s": 3.9000905209995835, "lat_mean_s": 3.524513800700079, "lat_max_s": 5.401166124000156, "errors_sample": []}
+crash-gate fault-line count (want 0): 0
+
+########## run-spec q9 dev10 PP-2 (lane gate shape DC=0 NGEN=64) ##########
+run-spec exit=0
+  acceptance: 36/84 = 42.9%   self-consistency: PASS (identical to generate)
+[generate_spec K=4] 64 tok in 0.627s = 100.46 tok/s (0.88x vs generate; this run's prime 0.005s)
+  acceptance: 36/112 = 32.1%   self-consistency: PASS (identical to generate)
+[generate_spec K=5] 64 tok in 0.689s = 91.41 tok/s (0.80x vs generate; this run's prime 0.005s)
+  acceptance: 36/140 = 25.7%   self-consistency: PASS (identical to generate)
+[generate_spec K=6] 64 tok in 0.790s = 79.72 tok/s (0.70x vs generate; this run's prime 0.005s)
+  acceptance: 36/168 = 21.4%   self-consistency: PASS (identical to generate)
+[generate_spec K=7] 64 tok in 0.858s = 73.42 tok/s (0.64x vs generate; this run's prime 0.005s)
+  acceptance: 36/196 = 18.4%   self-consistency: PASS (identical to generate)
+[generate_spec K=8] 64 tok in 0.921s = 68.38 tok/s (0.60x vs generate; this run's prime 0.005s)
+  acceptance: 36/224 = 16.1%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
+
+--- summary ---
+base-dev10-spec-c1         c1 ok   6 err 0 agg    17.4 p50 5.68
+base-dev10-spec-c2         c2 ok   8 err 0 agg    17.5 p50 11.33
+base-dev10-specoff-c1      c1 ok   6 err 0 agg   221.7 p50 0.43
+fix-dev10-spec-c1-r1       c1 ok   6 err 0 agg   111.7 p50 0.89
+fix-dev10-spec-c1-r2       c1 ok   6 err 0 agg   112.0 p50 0.88
+fix-dev10-spec-c1-r3       c1 ok   6 err 0 agg   111.9 p50 0.88
+fix-dev10-spec-c2-r1       c2 ok   8 err 0 agg   111.8 p50 1.77
+fix-dev10-spec-c2-r2       c2 ok   8 err 0 agg   111.9 p50 1.77
+fix-dev10-spec-c2-r3       c2 ok   8 err 0 agg   111.9 p50 1.77
+fix-dev10-specoff-c1       c1 ok   6 err 0 agg   221.7 p50 0.43
+fix-doorshut-c4            c4 ok  16 err 0 agg   543.5 p50 0.63
+fix-dev01-spec-c1          c1 ok   6 err 0 agg   111.0 p50 0.89
+fix-dev10-crash-c4         c4 ok  50 err 0 agg   111.6 p50 3.42
+0, 0 MiB
+1, 0 MiB
+lock released 2026-08-08T03:40:33Z
+=== rc=0
+=== done 2026-08-08T03:40:33Z

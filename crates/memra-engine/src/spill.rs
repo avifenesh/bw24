@@ -73,13 +73,17 @@ pub fn disk_tier_enabled() -> bool {
 
 /// Shared load-time spill context (SPILLING-PLAN §2 step 4). Built ONCE per model load when the
 /// disk tier is on, then handed by `&mut` to each `HostExps::load` so all layers/projections share
-/// ONE file mmap and draw down a single running pinned-RAM budget. Greedy in load order: pin until
-/// `pinned_remaining` is exhausted, then spill every later expert to `Mmap`.
+/// ONE file mmap PER SHARD and draw down a single running pinned-RAM budget. Greedy in load order:
+/// pin until `pinned_remaining` is exhausted, then spill every later expert to `Mmap`.
 pub struct SpillCtx {
-    /// One `MAP_SHARED` mmap of the whole GGUF, shared (`Arc`) across every spilled expert block.
-    pub file_map: Arc<Mmap>,
-    /// The same opened inode backing `file_map`, retained for future positioned expert reads.
-    pub file: Arc<std::fs::File>,
+    /// One `MAP_SHARED` mmap per physical GGUF shard, shared (`Arc`) across every spilled expert
+    /// block that lives in that shard. Index = `TensorInfo::shard`. Single-file models have len 1.
+    /// PER-SHARD, not one map: a split model's `tensor_file_range` offsets are relative to the
+    /// OWNING shard's file, so pairing them with shard 0's mmap would read the wrong bytes (and
+    /// would index out of bounds for any shard larger than shard 0).
+    pub file_maps: Vec<Arc<Mmap>>,
+    /// The opened inodes backing `file_maps`, same indexing, retained for positioned expert reads.
+    pub files: Vec<Arc<std::fs::File>>,
     /// Pinned-RAM budget still available (bytes); decremented as experts are pinned.
     pub pinned_remaining: usize,
     /// Diagnostics: how many experts landed pinned vs. mmap'd, and total disk-tier bytes.
@@ -89,21 +93,28 @@ pub struct SpillCtx {
 }
 
 impl SpillCtx {
-    /// Clone the parsed GGUF's opened inode, create a `MAP_SHARED` mmap from it, and seed the pinned
-    /// budget from a live `MemBudget` probe.
+    /// Clone each parsed shard's opened inode, create a `MAP_SHARED` mmap per shard, and seed the
+    /// pinned budget from a live `MemBudget` probe.
     /// The whole-map expert advice defaults to random (the historical behavior); setting
     /// `MEMRA_MOE_MMAP_ADVICE=normal` restores ordinary Linux readahead. SPILLING-PLAN §1.
     pub fn open(
         g: &memra_gguf::GgufFile,
         budget: &MemBudget,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let file = g.opened_file().clone();
-        // MAP_SHARED, no MAP_POPULATE (memmap2's default Mmap::map): zero upfront copy, demand-fault.
-        let map = unsafe { Mmap::map(file.as_ref())? };
-        let _ = memra_gguf::source::apply_expert_mmap_advice(&map);
+        let mut files = Vec::with_capacity(g.n_shards());
+        let mut file_maps = Vec::with_capacity(g.n_shards());
+        for i in 0..g.n_shards() {
+            let file = g.shard_file(i).clone();
+            // MAP_SHARED, no MAP_POPULATE (memmap2's default Mmap::map): zero upfront copy,
+            // demand-fault.
+            let map = unsafe { Mmap::map(file.as_ref())? };
+            let _ = memra_gguf::source::apply_expert_mmap_advice(&map);
+            files.push(file);
+            file_maps.push(Arc::new(map));
+        }
         Ok(SpillCtx {
-            file_map: Arc::new(map),
-            file,
+            file_maps,
+            files,
             pinned_remaining: budget.free_pinnable_ram,
             n_pinned: 0,
             n_mmap: 0,
@@ -114,13 +125,15 @@ impl SpillCtx {
 
 /// Build one expert's `HostBuf`, choosing its tier under the running budget (SPILLING-PLAN §1.1):
 /// pin (Tier 1) while `pinned_remaining` covers the block, else `Mmap` it (Tier 2). `file_off` is
-/// this expert's absolute byte offset within the GGUF file (= `data_start + tensor.offset + e*stride`).
-/// Returns the chosen `HostBuf`; the bytes are bit-identical whichever tier is picked.
+/// this expert's byte offset within ITS OWN SHARD's file
+/// (= `shards[t.shard].data_start + tensor.offset + e*stride`), and `shard` selects the matching
+/// mmap. Returns the chosen `HostBuf`; the bytes are bit-identical whichever tier is picked.
 pub fn place_expert(
     ctx: &mut SpillCtx,
     e: &Engine,
     raw: &[u8],
     file_off: usize,
+    shard: usize,
 ) -> Result<HostBuf, Box<dyn std::error::Error>> {
     let len = raw.len();
     if ctx.pinned_remaining >= len {
@@ -143,8 +156,8 @@ pub fn place_expert(
         ctx.n_mmap += 1;
         ctx.mmap_bytes += len;
         Ok(HostBuf::Mmap {
-            map: ctx.file_map.clone(),
-            file: ctx.file.clone(),
+            map: ctx.file_maps[shard].clone(),
+            file: ctx.files[shard].clone(),
             off: file_off,
             len,
         })
@@ -207,8 +220,9 @@ mod tests {
             free_pinnable_ram: 0,
         };
         let spill = SpillCtx::open(&gguf, &budget).unwrap();
-        assert!(std::sync::Arc::ptr_eq(&spill.file, gguf.opened_file()));
-        assert_eq!(&spill.file_map[..], original.as_slice());
+        assert_eq!(spill.files.len(), 1, "single-file GGUF must yield exactly one shard map");
+        assert!(std::sync::Arc::ptr_eq(&spill.files[0], gguf.opened_file()));
+        assert_eq!(&spill.file_maps[0][..], original.as_slice());
         assert_eq!(std::fs::read(&path).unwrap(), vec![0xA5u8; original.len()]);
 
         std::fs::remove_file(path).ok();

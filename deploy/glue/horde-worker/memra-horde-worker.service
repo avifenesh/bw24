@@ -1,0 +1,40 @@
+[Unit]
+Description=memra AI Horde text worker
+Documentation=https://aihorde.net/
+Wants=network-online.target
+After=network-online.target memra-server.service
+Requires=memra-server.service
+
+[Service]
+Type=simple
+User=memra
+Group=memra
+EnvironmentFile=/etc/memra/horde-worker.env
+StateDirectory=memra-horde-worker
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/memra-horde-worker
+ExecStart=/opt/memra/deploy/glue/horde-worker/run.sh
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGINT
+TimeoutStopSec=45s
+UMask=0077
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/memra-horde-worker
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=true
+LockPersonality=true
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // CLI-oracle config: batched prime (prime_cache), then tokenwise decode_step.
     let mut cache = memra_engine::cache::Cache::new(&e, &model.cfg, ids.len() + served.len() + 8)?;
-    let (mut logits, _h, _x) = model.prime_cache(&e, &ids, &mut cache)?;
+    let (mut logits, _h, _x) = model.prime_cache(&e, &ids, &mut cache, 0)?;
 
     let mut margins: Vec<f32> = Vec::with_capacity(served.len());
     let mut n_flips = 0usize;

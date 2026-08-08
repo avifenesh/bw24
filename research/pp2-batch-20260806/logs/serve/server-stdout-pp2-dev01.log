@@ -1,0 +1,23 @@
+[server] starting; models config = [("smoke", "/scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
+[worker] Engine ready (MEMRA_FAST=true)
+[worker] loading model "smoke" <- /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[worker]   loaded "smoke": 33 layers, eos=248046
+[worker] smoke: template caps tools=true think=true think_switch=true chat_ok=true ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] smoke: decode chunk cap 8
+[server] worker ready; serving models: ["smoke"]
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] listening on http://127.0.0.1:8177
+[meter] admit id=chatcmpl-b44b2c70e2bd9f44d6694008e11d6815 tenant=default lane=interactive model="smoke"
+[worker] observed session VRAM cost for "smoke": 101MB (admission gate = 2x)
+[meter] admit id=chatcmpl-5a7250d98849f33cb800ecd4c123c9ed tenant=default lane=interactive model="smoke"
+[meter] admit id=cmpl-0a6b6ca69462c0254f097468836682cc tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-3a6a813f707ee8aa3b5b868c18ca2804 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-5b4a9789837ad17189c381f3910ba4d1 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-797e8455c1b3c41676d9828be51fdb9d tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-ab5e40181d851e241fdf3ca40dd6f513 tenant=default lane=interactive model="smoke"
+[meter] admit id=chatcmpl-bc4ff516c76f957e9b95c8f2341fe779 tenant=default lane=interactive model="smoke"
+[prime-batch] B=3 tokens=57 in 399.2ms
+[meter] admit id=chatcmpl-aefba0b1cac90fde8dbc6e2c22caf085 tenant=default lane=interactive model="smoke"
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

@@ -59,7 +59,18 @@
 //! readback stream) drains the last stage, whose TX-wait chain transitively drains all.
 //!
 //! Scope: plain eager decode only (generic arm N-stage; gemma4 arm 2-stage). NOT wired:
-//! batch/dc/graph/spec loops and the gemma4-E4B eager arm (`warn_unwired_once` fires).
+//! batch/dc/graph/spec loops and the gemma4-E4B eager arm.
+//!
+//! CORRECTION (pp2-hardening 2026-08-06): this header used to add "(`warn_unwired_once`
+//! fires)" to that list, which was wrong. `warn_unwired_once` has exactly two call sites
+//! and BOTH are gemma4-specific (decode.rs, hybrid_forward.rs) — the batch/dc/graph/spec
+//! loops never warned. Worse, the batched loop did not merely run unsplit: it walked the
+//! whole trunk on the primary stream and, under a sharded cross-device placement,
+//! peer-read every remote stage's weights each step — 28x slower at B=1 with all three
+//! `decode-batch-gate` gates PASSING (peer reads are byte-exact, so only perf broke).
+//! `decode_step_batch` now FAILS CLOSED in that regime via `pp_sharded_cross_device()`
+//! (`MEMRA_PP_ALLOW_UNSPLIT_BATCH=1` = measurement override). "Unwired" for dc/graph/spec
+//! still means "runs unsplit, silently" — audit each before trusting it on a pair.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -190,6 +201,123 @@ pub fn pp_multi_stream_same_device() -> bool {
             v.len() < n // repeated device = shared-device streams
         }
     }
+}
+
+/// True iff the ppN door is open AND the placement spans 2+ DISTINCT devices AND the
+/// per-stage sharded loader is on — i.e. some layers' weights live on a device other than
+/// the primary. Any path that walks the WHOLE trunk on one stream in this regime reads
+/// those weights over PCIe every step. Env-only read (callable pre-runtime).
+///
+/// Measured cost of doing that (pp2-hardening 2026-08-06, 2x RTX PRO 6000, PCIe Gen5 x16
+/// P2P, decode-batch-bench q9, N=5 interleaved, `research/pp2-hardening-20260806`):
+/// **B=1 7.4 vs 208.9 tok/s (28x), B=4 29.8 vs 491.3 (16.5x), B=8 47.4 vs 657.0 (13.9x)**.
+/// The same sweep with `MEMRA_PP_SHARD=0` (weights all home) returns 178.5/491.1/656.6 —
+/// identical to the single-device door-open arm — so the entire cliff is the peer read,
+/// not the door and not the placement plumbing. Exactness is NOT the issue: peer reads
+/// return identical bytes and every `decode-batch-gate` gate PASSED on this config, which
+/// is precisely why it needs a refusal rather than a gate.
+pub fn pp_sharded_cross_device() -> bool {
+    let stages_open = std::env::var("MEMRA_PP_STAGES")
+        .map(|v| v.parse::<usize>().map(|n| n >= 2).unwrap_or(false))
+        .unwrap_or(false);
+    // MEMRA_PP_STREAMS=0 (2026-08-06, pp2-batch): the same-stream rollback seam ALSO turns
+    // the sharded loader off — `layer_engine` returns the primary engine whenever
+    // `pp2_streams_off()`, and `new_cache` skips `Cache::new_ppn` on the same condition. So
+    // in that regime every weight and every cache is home on the primary and an unsplit walk
+    // peer-reads NOTHING. Without this term the guard refused that config too: a spurious
+    // refusal of a placement that is sound and full-speed. Found wiring the batched pp arm.
+    if !stages_open || pp_shard_off() || pp2_streams_off() {
+        return false;
+    }
+    match pp2_devices_env() {
+        None => false, // no placement: every stage is the primary device, nothing remote
+        Some(s) => {
+            let mut v: Vec<&str> = s.split(',').map(|p| p.trim()).collect();
+            v.sort_unstable();
+            v.dedup();
+            v.len() >= 2
+        }
+    }
+}
+
+/// The shared fail-closed guard for EVERY decode path that has no pp stage split.
+/// Returns `Err` iff `pp_sharded_cross_device()` — i.e. the caller would walk the whole
+/// trunk on one stream while some layers' weights live on another device, peer-reading
+/// them every step. `path` names the refusing function so the operator knows which loop
+/// they hit; `alt` names the working alternative for that loop.
+///
+/// One helper rather than four copies because the audit found FOUR paths with the same
+/// hole (`decode_step_batch`, `decode_step_dc`, the graph capture that wraps dc, and
+/// `decode_step_t*` verify), and a per-path copy is how one gets missed on the next
+/// addition. Override: `MEMRA_PP_ALLOW_UNSPLIT_BATCH=1` (one door for all of them —
+/// they are the same measurement question).
+pub fn refuse_unsplit_if_remote(path: &str, alt: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if pp_sharded_cross_device()
+        && std::env::var("MEMRA_PP_ALLOW_UNSPLIT_BATCH").as_deref() != Ok("1")
+    {
+        return Err(format!(
+            "{path}: refused with the ppN door open across 2+ devices — this path has no pp \
+             stage split, so it would walk ALL layers on one stream and peer-read every \
+             remote stage's weights each step (measured 28x slower at B=1, 13.9x at B=8 on \
+             a PRO 6000 pair over PCIe Gen5 x16 P2P; research/pp2-hardening-20260806). \
+             Exactness is unaffected — peer reads return identical bytes and the exactness \
+             gates PASS on this config — which is exactly why it must refuse instead of \
+             being caught by a gate. Fixes, in order: {alt}; or MEMRA_PP_SHARD=0 (all \
+             weights home on the primary — full speed, forfeits the capacity PP-2 exists \
+             for); or close the pp door. MEMRA_PP_ALLOW_UNSPLIT_BATCH=1 overrides for \
+             measurement."
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// MEMRA_BATCH_PP=0: rollback/A-B seam for the BATCHED stage split (pp2-batch 2026-08-06).
+/// Default ON — with the ppN door open the batched decode step takes its own stage split
+/// (`decode_step_batch_ppn`) exactly as the eager step does. Setting 0 sends the batched
+/// path back through the unsplit body, which under a sharded cross-device placement is
+/// then caught by `refuse_unsplit_if_remote` (the 28x peer-read regime) rather than run
+/// silently. Exists so the bit-identity gate can A/B split vs unsplit IN ONE PROCESS
+/// against the same loaded weights — read per step, never memoized, for that reason.
+pub fn batch_pp_on() -> bool {
+    std::env::var("MEMRA_BATCH_PP").as_deref() != Ok("0")
+}
+
+/// MEMRA_PRIME_PP=0: rollback/A-B seam for the PRIME (chunked prefill) stage split
+/// (lane/pp-leverb 2026-08-08). Default ON — with the ppN door open the chunked prime takes
+/// its own per-stage range walk exactly as the eager/batched/verify steps do. Setting 0 sends
+/// prime back through the unsplit whole-trunk walk. NOTE: unlike batch/dc/graph/spec, prime
+/// keeps NO `refuse_unsplit_if_remote` — its unsplit walk over a sharded placement is the
+/// measured 22% amortized peer-read tax (research/pp-prefill-20260807 anatomy: m=4096
+/// amortizes the weight reads), not the decode 28x cliff, and the unsplit walk IS the
+/// split-vs-unsplit gate's reference arm (`prime-split-gate`), so it must stay callable.
+/// Read per call, never memoized (the gate A/Bs both arms in one process).
+pub fn prime_pp_on() -> bool {
+    std::env::var("MEMRA_PRIME_PP").as_deref() != Ok("0")
+}
+
+/// SPLIT-LIVENESS COUNTER for the prime stage split: bumped ONCE per prime chunk that
+/// actually executed the per-stage walk. The `prime-split-gate` requires this to ADVANCE
+/// during its split arm — bit-identity of two identical UNSPLIT walks is vacuous, so a gate
+/// that only compared bits would go green while the walker doesn't exist. With the counter,
+/// the gate is RED until the walker lands (the tickinv35 pattern: the gate exists and fails
+/// before the mechanism does). Relaxed ordering: single-threaded host issue, count-only.
+pub static PRIME_SPLIT_CHUNKS: AtomicUsize = AtomicUsize::new(0);
+
+/// Read the split-liveness counter (gate-side).
+pub fn prime_split_chunks() -> usize {
+    PRIME_SPLIT_CHUNKS.load(Ordering::Relaxed)
+}
+
+/// MEMRA_SPEC_PP=0: rollback/A-B seam for the SPEC VERIFY stage split (pp2-spec 2026-08-06).
+/// Default ON — with the ppN door open the verify forward (`decode_step_t_core_ppn`) takes its
+/// own stage split exactly as the eager and batched steps do. Setting 0 sends verify back through
+/// the unsplit trunk walk, which under a sharded cross-device placement is then caught by
+/// `refuse_unsplit_if_remote` (the 28x peer-read regime) rather than running silently. Exists so
+/// the bit-identity gate can A/B split vs unsplit IN ONE PROCESS against the same loaded weights
+/// — read per verify call, never memoized, for that reason.
+pub fn spec_pp_on() -> bool {
+    std::env::var("MEMRA_SPEC_PP").as_deref() != Ok("0")
 }
 
 /// MEMRA_PP_OVERLAP=1: alternate the double-buffered boundary slots per step (the
@@ -566,6 +694,14 @@ impl PpNRt {
     /// guard), copy `x` into the slot's persistent buffer via the boundary's transport on
     /// stage-b's stream (the owning-stream/publication law), record ev_tx. Returns the
     /// slot index for the paired rx().
+    ///
+    /// `n` is the PAYLOAD ELEMENT COUNT, not a fixed model constant: the eager arm passes
+    /// `n_embd` (one row), the batched arm passes `b_n * n_embd` (B stacked rows, the
+    /// [B, n_embd] boundary). The slot buffer is GROW-ONLY and the transport moves exactly
+    /// the first `n` elements — batched serving changes B every tick (chunk fill), and a
+    /// realloc-on-every-size-change would host-sync the RX stream per width change (see the
+    /// SLOT FIRST-USE ORDERING note below for why each allocation needs that sync). Growing
+    /// to the high-water mark makes the syncs O(distinct widths) instead of O(width changes).
     pub fn tx(&self, b: usize, x: &CudaSlice<f32>, n: usize)
               -> Result<usize, Box<dyn std::error::Error>> {
         assert_eq!(x.len(), n, "pp tx: residual length mismatch");
@@ -579,7 +715,7 @@ impl PpNRt {
         let s_tx = &self.stages[b].stream;
         s_tx.wait(&sl.ev_rx)?;
         let mut guard = sl.buf.lock().unwrap();
-        if guard.as_ref().map(|bf| bf.len() != n).unwrap_or(true) {
+        if guard.as_ref().map(|bf| bf.len() < n).unwrap_or(true) {
             // allocated on the RX stage's stream: the buffer lives on the RX device.
             let s_rx = &self.stages[b + 1].stream;
             *guard = Some(s_rx.alloc_zeros::<f32>(n)?);
@@ -630,12 +766,90 @@ impl PpNRt {
         s_rx.wait(&sl.ev_tx)?;
         let guard = sl.buf.lock().unwrap();
         let buf = guard.as_ref().expect("pp rx before tx");
+        assert!(buf.len() >= n, "pp rx: slot holds {} < requested {n}", buf.len());
         // uninit working buffer (fully overwritten by the copy), allocated explicitly on
         // the stage stream so rx() is correct even outside an enter() scope.
         let mut work = unsafe { s_rx.alloc::<f32>(n)? };
-        s_rx.memcpy_dtod(buf, &mut work)?;
+        // Slice the slot to the payload: the buffer is grow-only (see tx), so at a narrower
+        // width it is LONGER than `work` and cudarc's memcpy_dtod (dst.len() >= src.len())
+        // would assert. The paired tx wrote exactly these first n elements.
+        s_rx.memcpy_dtod(&buf.slice(0..n), &mut work)?;
         sl.ev_rx.record(s_rx)?;
         Ok(work)
+    }
+
+    /// PUBLISH a DEVICE-RESIDENT result off the last stage to the caller's stream
+    /// (lane/pp2-spec 2026-08-06).
+    ///
+    /// Every ppN body before this one returned HOST values — `decode_step_h_ppn` and
+    /// `decode_step_batch_ppn` both `dtoh` inside the last-stage scope, and a dtoh on the
+    /// producing stream is self-ordering. The verify trunk is the FIRST ppN body whose
+    /// contract is device-resident output (`decode_step_t_h_emb_dev` exists precisely so the
+    /// accept walk argmaxes on-device instead of moving T x n_vocab f32 per round), and
+    /// device slices carry no stream affinity: the caller resumes on the PRIMARY stream and
+    /// dereferences buffers whose producing kernels are still queued on the last stage's
+    /// stream. Nothing orders them.
+    ///
+    /// Why this only ever failed on ONE device: with stages on separate devices the caller's
+    /// first touch is a cross-device copy that the driver orders against the source context,
+    /// and the readback path syncs. Two streams on the SAME device genuinely overlap, so the
+    /// primary stream reads a buffer whose matmul has not run — nondeterministic garbage
+    /// (measured: NaN, 3155.677, and 2.87e-5 where the reference had -2.0048926), and it
+    /// poisons the NEXT arm in the same process because the corrupted KV persists. This is
+    /// the same class as the SLOT FIRST-USE ORDERING find above, one level up: there the
+    /// unordered pair was alloc-memset vs TX copy, here it is stage-N compute vs the
+    /// caller's consumer.
+    ///
+    /// Fix = the boundary law applied to the exit: record an event on the producing stage
+    /// stream, make the caller's stream wait on it. Event-wait, not a device sync, so the
+    /// stage streams keep running for the deferred-readback arm. Call INSIDE the last-stage
+    /// scope, after the last enqueue, with the caller's (pre-`enter`) stream.
+    pub fn publish_to(&self, s: usize, dst: &Arc<CudaStream>)
+                      -> Result<(), Box<dyn std::error::Error>> {
+        let st = &self.stages[s];
+        // Same stream (STREAMS=0 rollback, or a caller already on the stage stream): the
+        // stream orders itself; recording+waiting would be a no-op with a stray event.
+        if Arc::ptr_eq(&st.stream, dst) {
+            return Ok(());
+        }
+        let ev = st.ctx.new_event(None)?;
+        ev.record(&st.stream)?;
+        dst.wait(&ev)?;
+        Ok(())
+    }
+
+    /// REVERSE PUBLICATION (#87 root cause, lane/pp2spec-crash 2026-08-07): order every
+    /// STAGE stream behind the CALLER's stream — the mirror of `publish_to`.
+    ///
+    /// `publish_to` orders caller READS behind stage COMPUTE. Nothing ordered the other
+    /// direction: buffers ALLOCATED on a stage stream (the verify's returned logits/hidden,
+    /// the VerifyCkpt stashes) are CONSUMED by kernels the caller enqueues on the PRIMARY
+    /// stream, and when they drop, cudarc enqueues `free_async` on the ALLOCATING (stage)
+    /// stream. With event tracking elided (the decode-path default) the drop carries no
+    /// read-guard, so the pool can hand the block to the NEXT stage-stream allocation and
+    /// its writes overwrite memory the queued primary-stream consumer has not read yet.
+    /// Measured (research/pp2spec-crash-20260807): the spec round-seed read 13/4096 NaN =
+    /// the uninitialized-bits signature (P(NaN|random u32) ~ 1/256), clean by host re-read
+    /// time — a read-before-write race, fatal via the argmax-sentinel -> embed_gather MMU
+    /// fault, and gated on c>=2 because a backed-up primary stream widens the window.
+    ///
+    /// Fix law: before a ppN body enqueues NEW stage-stream work (allocations that may
+    /// reuse freed blocks), every stage stream waits the caller's stream at its current
+    /// point. All primary consumers of the previous round's stage-allocated buffers are
+    /// enqueued by then (single host thread), so reuse-writes land strictly after them.
+    /// Call at ppN-body ENTRY with the pre-`enter` caller stream. Door-shut configs never
+    /// build a PpNRt, so single-card behavior is untouched.
+    pub fn fence_stages_behind(&self, src: &Arc<CudaStream>)
+                               -> Result<(), Box<dyn std::error::Error>> {
+        let ev = src.context().new_event(None)?;
+        ev.record(src)?;
+        for st in &self.stages {
+            if Arc::ptr_eq(&st.stream, src) {
+                continue;
+            }
+            st.stream.wait(&ev)?;
+        }
+        Ok(())
     }
 
     /// Deferred readback: record a fresh completion event on the LAST stage's stream
@@ -698,6 +912,15 @@ pub fn new_cache(e: &Engine, cfg: &memra_gguf::config::ModelConfig, max_ctx: usi
                 rt.n_stages(), n_st,
                 "PpNRt stage count {} != fence stages {n_st}", rt.n_stages()
             );
+            // #87 REVERSE PUBLICATION at ADMISSION (lane/pp2spec-crash): this is the one
+            // stage-stream allocation site OUTSIDE the ppN step bodies — a NEW session's
+            // KV alloc_zeros enqueue on the STAGE streams, and their pool blocks can be
+            // reuse of buffers freed from ANOTHER session's in-flight verify whose
+            // primary-stream reads are still queued (the c=2 residual: exactly one trap
+            // per admission collision, round 0, after the step-body fences landed).
+            // Order the stage streams behind the caller before the memsets can clobber.
+            // Anatomy: `PpNRt::fence_stages_behind`.
+            rt.fence_stages_behind(&e.stream())?;
             let devs: Vec<&dyn memra_kv::KvDev> =
                 (0..n_st).map(|s| rt.engine(s, e) as &dyn memra_kv::KvDev).collect();
             let cache = crate::cache::Cache::new_ppn(&devs, &fence, cfg, max_ctx)?;

@@ -1,0 +1,53 @@
+=== lane/tick-seg 5090 unaffected-arch control 20260807T114112Z commit=3544fba5
+lock acquired 2026-08-07T11:41:12Z
+768 MiB
+
+########## qwen chunkinv (pre-existing arm, default label/seam/prompts) ##########
+chunk-invariance-gate: label=qwen-grain assert=invariant seam=MEMRA_PRIME_F32CHUNK0 legacy-seam=off got=invariant canary=0 chunks=2048,64,32 model=Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+chunk-invariance-gate: PASS (raw log /tmp/chunkinv-gate-gfGFcT.log)
+=== qwen chunkinv rc=0
+
+########## qwen chunkinvc canary ##########
+chunk-invariance-gate: label=qwen-grain assert=invariant seam=MEMRA_PRIME_F32CHUNK0 legacy-seam=on got=variant canary=1 chunks=2048,64,32 model=Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+         64 | DIFFER |            64 | 5.269e-1 | - | identical
+         32 | DIFFER |            32 | 6.375e-1 | - | step 18
+    chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+         64 | DIFFER |            64 | 3.909e-1 | - | step 47
+         32 | DIFFER |            32 | 5.041e-1 | - | step 16
+    chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+chunk-invariance-gate: PASS (canary broke the assertion as required — gate has teeth; log /tmp/chunkinv-gate-g1A56M.log)
+=== qwen chunkinvc rc=0
+
+########## qwen TICKINV control (q9): multi-call prime must be EXACT on an arch that never reads seq_end ##########
+loaded qwen35 (32 layers)
+tickinv: T=149 chat=false budgets=[0, 64, 32] splits=[64] steps=24 PRIME_MIN_T=16 (budget 0 = single monolithic call)
+ref budget=0 calls=1 argmax=4558
+ budget | calls | logits | first_div_row | maxdiff   | argmax | stream_div
+     64 |     3 | EXACT |            -1 | 0.000e0 | - | identical
+     32 |     5 | EXACT |            -1 | 0.000e0 | - | identical
+   sp64 |     2 | EXACT |            -1 | 0.000e0 | - | identical
+tickinv verdict: TICK-INVARIANT — prefill logits bit-identical at every per-tick prefill budget
+=== q9 tickinv rc=0
+
+########## run-gen q9 argmax ##########
+prefill argmax=760  decode argmax=760  logit maxdiff=9.425e-1  MATCH
+batched-prime argmax=760  tokenwise argmax=760  logit maxdiff=1.127e0  MATCH
+prefill 90 tok in 0.0357s = 2523.4 tok/s (pp90)
+generated 20 tokens in 0.148s = 134.77 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.036s) [stop: MaxNew]
+=== run-gen q9 rc=0
+
+########## run-gen q35 argmax ##########
+prefill argmax=8160  decode argmax=8160  logit maxdiff=7.077e-1  MATCH
+batched-prime argmax=8160  tokenwise argmax=8160  logit maxdiff=9.002e-1  MATCH
+prefill 99 tok in 0.0599s = 1653.9 tok/s (pp99)
+generated 20 tokens in 0.106s = 188.36 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.060s) [stop: MaxNew]
+=== run-gen q35 rc=0
+768 MiB
+lock released 2026-08-07T11:41:43Z
+=== done 2026-08-07T11:41:43Z

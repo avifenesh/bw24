@@ -1,0 +1,16 @@
+loaded qwen35 (32 layers); steps=2 batch=4
+ppspec mode: verify stage-split exactness battery over 32 layers; stages=2 fence=[0, 16, 32] devices=default(primary) splits=default(even) shard=per-stage streams=per-stage
+ppspec mode: T=[2] rounds=2 reps=1 (split arm)
+-- T=2: reference recorded (2 rounds x 2 cols x 248320 f32 + h_seed, door OFF over the sharded placement)
+[verify-split T=2 rep0] MISMATCH step 1 row 0: 248320/248320 logits differ, first @[0] ref=2.1425796 pp=8.461358e-36
+[verify-split T=2 rep0] MISMATCH step 1 row 1: 248320/248320 logits differ, first @[0] ref=7.363105 pp=-3.6370442
+[verify-split h_seed T=2 rep0] MISMATCH step 1 row 0: 4096/4096 logits differ, first @[0] ref=-2.2916267 pp=3.1117108
+pp gate FAIL [verify-split T=2 rep0]: 2 rows mismatched of 993280 f32 compared (first @ step 1 row 0 idx 0: ref=2.1425796 pp=8.461358e-36)
+pp gate FAIL [verify-split h_seed T=2 rep0]: 1 rows mismatched of 8192 f32 compared (first @ step 1 row 0 idx 0: ref=-2.2916267 pp=3.1117108)
+[verify-unsplit@ppncache T=2] MISMATCH step 0 row 0: 248320/248320 logits differ, first @[0] ref=6.7108545 pp=6.5841203
+[verify-unsplit@ppncache T=2] MISMATCH step 0 row 1: 248318/248320 logits differ, first @[0] ref=7.15536 pp=7.0156593
+[verify-unsplit@ppncache T=2] MISMATCH step 1 row 0: 248320/248320 logits differ, first @[0] ref=2.1425796 pp=2.0271535
+[verify-unsplit@ppncache T=2] MISMATCH step 1 row 1: 248319/248320 logits differ, first @[0] ref=7.363105 pp=7.224667
+pp gate FAIL [verify-unsplit@ppncache T=2]: 4 rows mismatched of 993280 f32 compared (first @ step 0 row 0 idx 0: ref=6.7108545 pp=6.5841203)
+ppspec mode verdict: 3 failing arm(s); stages=2 fence=[0, 16, 32] devices=default(primary) splits=default(even) shard=per-stage streams=per-stage
+Error: "decode-batch-gate --mode ppspec FAILED"

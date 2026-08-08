@@ -1,0 +1,29 @@
+=== think-smoke 20260807T094506Z (local 5090) ===
+0, 2377 MiB
+ready after ~9s
+[worker] gemma: template caps tools=false think=false think_switch=true chat_ok=true effort_levels=false ctx=262144 tok="gemma4" instruct=None
+[worker] qwen: template caps tools=true think=true think_switch=true chat_ok=true effort_levels=false ctx=262144 tok="qwen35" instruct=Some("chatml")
+
+########## qwen class (thinking default ON) ##########
+--- qwen / absent (default=thinking ON) ---
+prompt_tokens=17 reasoning='Thinking Process:\n\n1.  **Analyze the Req' content=''
+--- qwen / high (same open think as default) ---
+prompt_tokens=17 reasoning='Thinking Process:\n\n1.  **Analyze the Req' content=''
+--- qwen / low (thinking stays ON) ---
+prompt_tokens=17 reasoning='Thinking Process:\n\n1.  **Analyze the Req' content=''
+--- qwen / none (thinking OFF, closed think block) ---
+prompt_tokens=19 reasoning='' content='ok'
+--- qwen / openrouter enabled:false ---
+prompt_tokens=19 reasoning='' content='ok'
+
+########## gemma4 class (thinking default OFF) ##########
+--- gemma / absent (default=thinking OFF) ---
+prompt_tokens=20 reasoning='' content='ok<turn|><turn|><turn|>thought\n<channel|'
+--- gemma / none (same as default) ---
+prompt_tokens=20 reasoning='' content='ok<turn|><turn|><turn|>thought\n<channel|'
+--- gemma / low (thinking ON: <|think|> system turn appears) ---
+prompt_tokens=23 reasoning='' content='<|channel>thought\nThe user wants me to r'
+--- gemma / high (same ON shape) ---
+prompt_tokens=23 reasoning='' content='<|channel>thought\nThe user wants me to r'
+0, 2377 MiB
+=== end think-smoke 20260807T094506Z ===

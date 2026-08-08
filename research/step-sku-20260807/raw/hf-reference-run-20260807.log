@@ -1,0 +1,4 @@
+wrote /home/avifenesh/projects/wt-stepsku/research/step-sku-20260807/ref-ids.tsv: 113 cases, 1708 special-mode tokens total
+  digits-14: [0, 6895, 18009, 25744, 16993, 2012]
+  special-im-start-end: [0, 128006, 5265, 201, 6366, 128007]
+  cjk-sentence: [0, 88768, 1576, 109288, 410, 15961, 11767, 15961, 27071]

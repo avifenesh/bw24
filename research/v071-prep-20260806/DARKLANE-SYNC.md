@@ -109,3 +109,37 @@ the daily pill; 128 is a live owner call for throughput-tier/non-streaming endpo
   FP4" number, it does not exist as a net figure — no rotation method publishes runtime
   latency, and the estimate is 0.9–1.8x net after Hadamard overhead. W4A8 is the flagged
   pragmatic alternative, unfunded.
+
+## 5. Shipped-state confirmation (filled in after the tag, 2026-08-06)
+
+- **v0.71.0 is live and public.** Tag `v0.71.0` → `98da33bd`; GitHub release published
+  (not a draft) at 11:41:31Z; `release` workflow SUCCESS; `publish` workflow SUCCESS in
+  11m45s with **no crates.io 429** — the resumable per-crate path from v0.69's recovery did
+  not need to engage. `origin/main` = `98da33bd`. Everything in §1–4 above is now quotable.
+- **Pin exactly `0.71.0`.** All 8 intra-workspace deps are pinned `=0.71.0` and the publish
+  workflow refuses a tag/version mismatch, so a partial pin will fail loudly rather than
+  silently mixing versions.
+
+### One security item, and it is NOT a product-copy item
+
+An `nsys` profile committed by a research lane had captured the profiled process's whole
+environment into the binary `.nsys-rep` blob, including live credentials. GitHub's push
+protection blocked the release push and the blobs were removed from the (still unpublished)
+history before anything reached the remote — **nothing leaked publicly**, `origin` never
+received them, and no secret-scanning unblock URL was used. `*.nsys-rep` is now in
+`.gitignore`.
+
+Two consequences that touch darklanes:
+
+1. **One of the captured secrets was `REVUTO_GITHUB_WEBHOOK_SECRET` — it belongs to a
+   different project entirely.** Anything sharing that shell environment is in scope for
+   review, not just this engine repo.
+2. **Credential rotation is an owner action and is NOT done by the engine lane.** The
+   captured `GH_TOKEN` and `AWS_BEARER_TOKEN_BEDROCK` should be treated as exposed
+   regardless of the clean push, because the profile was taken on a rented pod and sat in
+   world-readable files locally. Rotation status: **owner-blocked, unresolved at the time of
+   this note.**
+
+Standing lesson worth carrying into any darklanes profiling runbook: profilers serialize the
+environment. Never commit a raw profiler capture; commit the derived summary (this release
+kept the `_cuda_gpu_kern_sum.csv` files, which carry the actual evidence and are clean).

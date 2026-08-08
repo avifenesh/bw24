@@ -1,0 +1,171 @@
+Changes since v0.71.0:
+
+## Performance
+- LEVER A — windowed hd128 FA prefill stamp; the f32 SWA floor (41% of the pp4096 prime) is retired from the default path
+- m16n8k32.s8 is the IQ-experts/IQ4_XS-dense MMA default — gemma26b pp +5.15%, KAT pp +2.82% (N=5 interleaved, DISJOINT, 5/5 pairwise); MEMRA_IQEXP_K16 build seam keeps the k16 numeric class reproducible
+- B=1 per-stage fast path — opening the pp door was costing solo sessions 15%, and it was never a split cost
+- the per-block FP8 prefill tile rides the block_scale MMA form at the ue8m0 identity scale — +6.54% e2e pp512, bit-identical
+- f8f4 tile rides the block_scale MMA form at the ue8m0 identity scale — 1.994x MMA rate, bit-identical output
+- hoist the e4m3 dequant out of the batched column loop — it was running MCOLS times per weight fetch
+
+## Features
+- add qwen 3.8 fp8 day-one runbook
+- add DeepSeek SFT trace generator
+- add RunPod Step API runbook
+- add fleet replay driver
+- add OpenRouter provider model listing
+- add fleet cache receipt tools
+- serve-smoke cache-metering arm + exactness/teeth/overhead receipts
+- background job runner — yield-first valley work below every serving lane
+- tools/cache_economics.py — /metrics scrape -> the earning-model row
+- full prefix-cache counter set + LCP histogram + per-tenant split on /metrics
+- valley detection — the serve-idle signal for dead-darklane background work
+- tickinv35 registered — the per-tick segmentation assertion, RED until the fix lands
+- thinking control for EVERY supported model — one surface, per-arch native mechanism
+- isogap/isogapc fast-gate arms — the rung-crossing isolation shape no other gate reaches, straddle placed per-rig
+- reasoning_effort reaches the step35 render — the SKU's headline control is on the wire
+- step35 external MTP drafter rides the '+draft' attach, and a step35 model served WITHOUT one now says so
+- load-serve --stream mode — TTFT is unobservable without it
+- concurrency-gated spec scheduling — admit gate + live demotion handoff (task #89)
+- MTP drafter wiring for step35 — per-layer draft geometry, SWA-windowed draft attention, step35 spec verify
+- inference-liveness health + engine-fault taxonomy + GPU-fault watcher
+- step35 chat template — the StepFun ChatML dialect
+- step35 attention mixer — per-layer n_head, dual-base partial RoPE, SWA 3:1, head-wise gate
+- decode-batch-gate --mode ppspec — the verify stage-split bit-identity gate
+- spec verify trunk takes its own PP-N stage split
+- wire accept-gate into local-ci + the fast-gate registry/map
+- accept-gate port guard + the 6 pinned acceptance references (naked build)
+- accept-gate — in-battery acceptance-delta + long-text assertion for served spec configs
+- decode-batch-gate --mode pp — the batched stage-split bit-identity gate, plus two harness paths that allocated stage-1's KV on the wrong card
+- the BATCHED stage split — decode_step_batch_ppn, so a >VRAM SKU can serve more than one stream
+- step35's two new math kernels + their kernel-check cells
+- step35 separate head-wise attn gate in the loader
+- step35 arch support — Step-3.7-Flash config parse + per-layer geometry
+- Q8_0-base + Q4_K + Q5_K b16 twins — chunk-16 was unreachable on EVERY mixed checkpoint
+- NVFP4 b16 batched twins — the ACTUAL blocker keeping FP8-ST off the c=16 serve tier
+- batched decode kernel classes for BOTH FP8-ST scale classes — the real c=16/32 blocker (the rp mirror is a no-op on ST)
+
+## Fixes
+- the worker primary follows the PP HEAD stage, not stage 0 — the spec round's draft chain reads the last-stage-resident lm head every token (v0.72 tag-blocker 2: 112.5 -> 17.5 agg tok/s on spec+PP-2)
+- restore tick canary under FA default
+- follow PP primary device
+- size resident experts per PP device
+- #87 CLOSED — the spec+PP-2 quarantine is LIFTED
+- admission fence — new_cache's stage-stream KV allocation joins the reverse-publication law
+- the reverse-publication fence on all three ppN bodies — eager (decode_step_h_ppn) and batched (decode_step_batch_ppn) join the verify
+- dispatch orphan probes by regression surface
+- add retry contract to readiness probes
+- add retry contract to liveness probes
+- #87 root cause — reverse publication: stage streams must wait the caller before new stage work reuses freed blocks
+- gemma4 thought/content separation + turn-token stop — gap 2 of lane/gemma4-serve-gaps
+- gemma4 no longer panics the worker on the DEFAULT scheduler — EAGER-ONLY per-model route, asserts become per-request refusals
+- the canary seam went inert under the FA default — MEMRA_STEP35_SWA_TKV=1 now restores BOTH halves of the pre-fix arithmetic (predicate + unaligned offset)
+- wire run-spec sweep into local battery
+- honor retry contract on worker send failure
+- chunkinv35 caught the FA arm's tile-grid chunk-dependence — SWA view offset now aligns down to the BK=32 tile size
+- iso_gap_probe adopts prime_cache's 4-arg form (queued_after=0, the single-shot contract) — cross-lane seam between iso-gap and tick-seg
+- request-level seq_end survives tick splits — prime_cache carries queued_after
+- step35 byte-parity gate 113/113 vs HF — and the one mismatch was UPSTREAM's bug
+- a non-GGUF file is an Err, not a panic — the panic made the caller's refusal unreachable
+- the #87 spec-over-PP2 refusal lands BEFORE the 105 GB load, not after it
+- bound the perf stage's dirty-window wait — a persistent co-resident deadlocked it
+- SWA prefill arm keyed on the REQUEST's seq_end, not the chunk's t_kv — kills the chunk-dependence on THE SKU
+- validate the '+draft' path at PARSE time, like the model path already was
+- kernel-check's IQ4_XS weight oracle could never see the step35 SKU's own bytes
+- MTP draft head read the TRUNK lm_head, not the NextN block's own — 0% acceptance
+- step35_verify sized its output from head geometry, not n_embd — first MTP drafter attach panicked
+- finish G6 — the lane refusals were the last bare-string error body
+- the drain 503 joins the retry contract (code + retry-after-ms) + lane gate receipts
+- relay the worker's load verdict concurrently — the supervisor deadlocked startup
+- gate the DC-eager doors on arch — step35 boots PP-2 and generates
+- split (multi-shard) GGUF support — the model that boots PP-2 or not at all was reading 1 of 3 shards
+- guard the step35 windowed-prefill primitive at hd128
+- zero-emit burst underflowed the session-tail commit (c=8 serve panic)
+- publish the verify trunk's device-resident exit to the caller's stream
+- accept-gate reported a 3-pass run as a wholesale SKIP
+- accept-gate — drop the two unused seq loop counters (shellcheck SC2034)
+- argmax-margin-gate wrote into the tracked research dir and hard-failed on another lane's OOM — both are flake sources, not findings
+- the pod 27B Q8_0 argmax red is a three-way near-tie, not a cache bug — calibrate the gate and name the mechanism
+- step35 dispatch guards — sigmoid-router arch #3 was entering the SOFTMAX device router, and every fused SiLU epilogue ignored the per-layer SwiGLU clamp
+- argmax-margin-gate — calibrate run-gen's prefill-vs-decode argmax assert and close its one-position coverage hole; wired into fast-gate as amargin + amarginc (teeth)
+- accept-gate control arm compared every cell against the LAST cell's json
+- the verdict label conflated two independent axes — 0 flips with margin OUTSIDE the config spread is the SAFEST case, and the probe was calling it 'UNEXPLAINED' (caught on the local 27B NVFP4 run: 24/24 agree, margin 0.560 > delta 0.187). Split into (flips, exposed): STABLE / NEAR-TIE-EXPOSED / NEAR-TIE / UNEXPLAINED / SYSTEMATIC. Adds three local-5090 receipts on the same board-2048 prompt: 9B Q8_0 pos-2047 margin 0.0686 = rank 1/24 (the minimum), 9B NVFP4 0.5355, 27B NVFP4 0.8223 — same {332,485} contenders, margin varies by model
+- pre-push perf-ci freshness gate failed OPEN on an empty timestamp
+- the FP8-ST v3 gate's Q1 instrument was not single-variable — equalizing the MMA form FLIPS its sign, +17.6pp becomes -8.8pp, and the v3 case is refuted
+- step35 kernel-check ALL GREEN — the swiglu divergence guard was a bad test, not a bad kernel
+- resolve nvcc from MEMRA_NVCC/CUDA_HOME/PATH, newest release wins — the pinned /usr/local/cuda-13.1 has now cost two lanes their first build
+- implement the deepseek-v3 pre-tokenizer — Step-3.7-Flash was mis-tokenized
+- the same fail-open hole was in FOUR decode paths — dc, graph capture, and spec verify all had ZERO pp-awareness
+- decode_step_batch fails closed under an open ppN door across devices — a silent 28x cliff that PASSED every exactness gate
+- the MMQ-W4A8 rung judged the e4m3-act f8f4 tile against the int8 rung's band — 4 FAILs on a correct kernel, in every build
+- refuse pushes containing nsys profile blobs + ignore *.nsys-rep/*.qdrep/*.qdstrm
+- retire the stale B>cap assert message + pod (PRO 6000, 96 GB) gate receipts
+- v4 decode family capacity guard at gqa>8 — 122B (32qh/2kvh, gqa16) overflowed fa_v4_smem's q_ints[8][64] per-warp Q arrays into the K tile (all-NaN decode logits above the vec floor). Load-time FA_V4_MAX_DEFAULT=0 keys EVERY v4 dispatch site to the v3 lane together (decode/verify parity preserved); explicit MEMRA_FA_V4_MAX stays the diagnostic seam. Verified on-pod: previously-failing 110-tok prompt MATCH + x2-identical, original 4k-prompt repro MATCH (research/122b-bringup-20260806/verify-122b.out). Real v4 gqa16 extension = follow-up kernel work with its own battery
+
+## Documentation
+- document replay-calibrated fleet traffic
+- document OpenRouter model metadata
+- add fleet receipt operations
+- PROGRESS — the complete arc: root-cause paragraph, fix inventory, final all-green table, non-blockers (EVT/ppN incompatibility, dev01 placement perf, cuda-gdb param readout)
+- record scoped fast-gate dispatch
+- record bare 503 closure
+- lane cut decision — LEVER A ships standalone from this lane; LEVER B (stage-split prime) declared >2h-from-receipts and moves to its own lane off the fresh train
+- lane PROGRESS — panic path mapped, fix shape chosen (fail-closed eager route), 3 adjacent silent-wrong holes found on the same walk
+- LEVER A CLOSED — pp4096 90.9 -> ~141 tok/s (1.55x), 4k TTFT 38.2 -> 32.0s p50, all gates green; SERVING.md chunk-invariance section updated for both closed step35 doors
+- record local-ci run-spec gate
+- receipt worker retry contract fix
+- deliverable summary — the second segmentation axis is dead, gated both directions, default +0.068%
+- SERVING.md cache-hit metering section + lane PROGRESS + full-battery receipt
+- 5090 fast-gate + serve-smoke + unit-test receipts folded into the checklist
+- dead-darklane background jobs — SERVING.md section + FLAGS rows + lane PROGRESS
+- correctness argument written out — request-end is segmentation-invariant by construction; continuations pass 0 by contract
+- exactness receipts recorded
+- gate battery 4/4 recorded
+- the step35 chunk-dependence paragraph is now history in two gated stages — within-call (chunkinv35) and across-call/tick+LCP (tickinv35)
+- fast-gate dispatch list current — chunkinv35/c + tickinv35/c in map rows; the step35 long-prompt arm is landed-green, tickinv owns the level-up axis
+- canary has teeth — and the split arms give the FIRST MEASURED LCP-split receipt (sp64 1.735e0@10, sp256 1.594e0@6, sp512 1.813e0@6 pre-fix)
+- tickinv35 GREEN on the pair box — all budgets + all three off-grid-resume splits EXACT
+- progress — controls green, box dispatched; the extent-class prefix-cache residual named (vLLM #51113 cache-entry-side law; canonical fix = one numeric class regardless of extent, its own measured lane)
+- lane PROGRESS — all four listing items + the cross-model thinking directive, receipts indexed
+- the staggered-depth 'open gap' is attributed and re-scoped — depth is innocent, the solo<->batched program flip at the co-residence boundary is the carrier
+- deliverable summary + why tickinv stays unregistered
+- step35's separate-file MTP head, and the #87 serving quarantine, are documented where operators look
+- rewrite the ledger's commit hashes after the rebase
+- pass 4 — the base moved mid-lane, and deferred item 1 resolved itself
+- the spec tier is one gated process in the README too, and the isolation contract was unconditional where the code scopes it
+- fold in the two audit passes that read code instead of prose — 34 fixed, 4 deferred, 6 owner calls
+- the supervision contract's couplings were undocumented, and gate3c is a sub-check not a gate
+- the compatibility contract described MEMRA_COMPAT-gated behavior as unconditional, and one 503 sits outside the retry contract
+- a doc sentence inverted accept-gate's central law, and tier 2 does not run what three docs say it runs
+- the docs-fit drift ledger — 20 fixed, 4 deferred with reason, 3 owner calls
+- price the 'PP ~free' floor and mark the Hy3 PP-2 spec spike as unpriced
+- retire a phantom gate, correct four stale PP entries, add the two user-facing gaps
+- PP-2 cells + correct my own 'boots resident' error on the Step SKU
+- catalog the two default-ON PP stage-split seams + scope PRIME_CHUNK per-arch
+- document the PP-N exactness gates + bound the chunkinv coverage claim
+- Step-3.7-Flash bring-up entry + the 2x PRO 6000 PP-2 rig row
+- PP-2 is a serving shape, not a merged seam — and chunk-invariance is scoped per-arch
+- PP-2 is a real serving path, step35 is in bring-up, and chunk-invariance is scoped per-arch
+- the spec tier is one gated process now, and the isolation contract states its real scope
+- health/readiness/taxonomy docs + route the proxy at /readyz
+- AUDIT.md — 22 sites verdicted, 0 wrong forms live, and sm120-empirical-capabilities.md becomes THE canonical rate table
+- a rate-audit pointer at every one of the 22 PTX MMA sites
+- DESIGN — add the post-merge reproduction as a fourth evidence level, plus a log index
+- document amargin/amarginc, which landed undocumented in the same merge
+- document the accept probe + commit the end-to-end battery receipt
+- DESIGN.md — the blind spot, the assertions, the teeth, the two false-green classes found building it
+- f8f4 re-verdict — still opt-in, now with the regime-matched battery behind it
+- mark the plain-vs-block-scale FP8 row as the finding three live kernels ignored
+- catalog the two MMA-form seams and kill the false 381-TF ceiling on the per-block FP8 tile
+- VERDICT — GO. The f8f4 W4A8 tile was wired to a rate-neutral PTX form; one line = 1.2153x e2e prefill
+- DARKLANE-SYNC — shipped-state confirmation + the nsys-capture security lesson
+- document MEMRA_EXACT16_WHY + retire the "Q8_0 needs the q8rp mirror" claim, plus the local exactness + no-regression receipts
+- PROGRESS.md closed out — all six plan items done, pointers to VERDICT.md
+
+## Other
+- test(serve): gemma4 arm wired INTO serve-smoke + full gate wave green — the lane's regression tests live in the battery, not beside it
+- test(step37): pin the MTP draft-head choice — the bug it guards is invisible to every exactness gate
+- test(serve): prove the G5 death/respawn ladder on a real CUDA worker (MEMRA_PANIC_AFTER)
+- refactor(decode): extract the batched-decode PP SEAM — decode_batch_layers(lo..hi)
+
+Boards + reproduction artifacts: https://huggingface.co/Avifenesh/memra-bench · full experiment log in research/tune-data/

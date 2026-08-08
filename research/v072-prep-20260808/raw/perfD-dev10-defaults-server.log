@@ -1,0 +1,67 @@
+[server] starting; models config = [("q9", "/scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf", None)]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (device=1, MEMRA_FAST=true)
+[worker] loading model "q9" <- /scratch-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+[pp] cross-device transport: stage0=dev1 stage1=dev0 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[worker]   loaded "q9": 33 layers, eos=248046
+[worker] q9: template caps tools=true think=true think_switch=true chat_ok=true effort_levels=false gemma_think=false ctx=262144 tok="qwen35" instruct=Some("chatml")
+[worker] q9: decode chunk cap 16 (exact-16 tier)
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["q9"]
+[server] listening on http://127.0.0.1:8123
+[meter] admit id=chatcmpl-26a17cd24f3e683405255ef105a20a7b tenant=default lane=interactive model="q9"
+[worker] observed session VRAM cost for "q9": 134MB (admission gate = 2x)
+[spec-acc] ctx=226 burst=13/15 cum=13/15=0.867
+[meter] admit id=chatcmpl-146b2f948f4444f7c02515d3f867a590 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-4b7095c4088d811a0cb133156d065458 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-10535be0d92629bb503f56f40fbf0df0 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-295bd07de1450e6310648de33bd0229d tenant=default lane=interactive model="q9"
+[worker] spec-affinity: declined (empty suffix; 1 parked, 226 prompt tokens; model q9)
+[worker] spec-affinity: declined (empty suffix; 1 parked, 226 prompt tokens; model q9)
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[spec-acc] ctx=226 burst=25/27 cum=25/27=0.926
+[prime-batch] B=2 tokens=452 in 1039.5ms
+[prefix-cache] insert (seed): 226 tokens, 58.2MB (resident 58.2MB / 268MB, model q9)
+[spec-gate] demoted session to batched decode: 4 active >= HIGH=4 (model q9, committed 261, generated 35)
+[spec-gate] demoted session to batched decode: 4 active >= HIGH=4 (model q9, committed 261, generated 35)
+[meter] admit id=chatcmpl-1bd96b719033c6a621a427f80a273bf2 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-8e5204bd9d9afd4aa43404af471ed0b3 tenant=default lane=interactive model="q9"
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[meter] admit id=chatcmpl-0e318eb8d1e637a99ab30f83aecdacb5 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-4e73dc05f637fef1e72aa35757164874 tenant=default lane=interactive model="q9"
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[meter] admit id=chatcmpl-b97dfd4a7d635c420453f788f63d0f07 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-8c4d443c001880c099191ee58af1794c tenant=default lane=interactive model="q9"
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[meter] admit id=chatcmpl-0fa4cb14db6c26cfff5f3c9ee95f413c tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-6f6f8cfe2cec979d352e5f5190af3795 tenant=default lane=interactive model="q9"
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[meter] admit id=chatcmpl-c980dc5f12369af70f2da420c09253f8 tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-22f685717b15ab9325de4dfc35b3df76 tenant=default lane=interactive model="q9"
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[meter] admit id=chatcmpl-547833bbcdfde408de91fab44b0cb1ec tenant=default lane=interactive model="q9"
+[meter] admit id=chatcmpl-8a56a099d15aca6d936aa4d582bacdf3 tenant=default lane=interactive model="q9"
+[spec-gate] admit batched: 2 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[spec-gate] admit batched: 3 active (+1) > LOW=2 — spec would queue
+[prefix-cache] hit: 226 of 226 prompt tokens from cache (model q9)
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

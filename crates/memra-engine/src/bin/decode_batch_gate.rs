@@ -34,8 +34,25 @@
 //!     gate2: B=N per-seq LOGITS bit-identical to isolated decode_step_batch B=1 runs —
 //!            the serving isolation contract (batchmates must not change your stream),
 //!            enforced at full bit strength WITHIN the config.
+//!   pp     — THE BATCHED STAGE-SPLIT EXACTNESS GATE (pp2-batch 2026-08-06). See
+//!            `pp_battery` below. Opens `MEMRA_PP_STAGES` BEFORE load (weight sharding is
+//!            a load-time decision), then proves `decode_step_batch_ppn` is BIT-IDENTICAL
+//!            to the unsplit batched body over the same weights, per row, per step.
+//!            gate1/2/3 are skipped in this mode — they are single-device jurisdiction and
+//!            run in their own invocations.
+//!   ppspec — THE SPEC-VERIFY STAGE-SPLIT EXACTNESS GATE (pp2-spec 2026-08-06). Same
+//!            method, different forward: `decode_step_t_core_ppn` (T = K+1 verify) must be
+//!            BIT-IDENTICAL to the unsplit verify trunk, per logit COLUMN, per round, plus
+//!            the h_seed column the drafter is re-seeded from. See `ppspec_battery`.
 //!
-//! Usage: decode-batch-gate <model.gguf> [--steps 32] [--batch 4] [--mode config|strict]
+//! Usage: decode-batch-gate <model.gguf> [--steps 32] [--batch 4]
+//!        [--mode config|strict|pp|ppspec]
+//!        pp mode also honours: --batch 1,4,8 (list), --stages N (default 2), --reps R
+//!        (default 2 — the split arm repeats, because the shared-scratch race class this
+//!        gate must catch was a 35% FLAKE, so one green replay is not evidence), and passes
+//!        MEMRA_PP_DEVICES / MEMRA_PP_SPLITS / MEMRA_PP_SHARD through from the caller.
+//!        ppspec mode honours --stages/--reps/--steps the same way and takes --ts 2,5,9
+//!        (the verify widths T=K+1; default 2,5,9 = K=1,4,8).
 
 use memra_engine::cache::Cache;
 use memra_engine::forward::argmax;
@@ -49,10 +66,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rest: Vec<String> = args.collect();
     let steps: usize = rest.iter().position(|a| a == "--steps")
         .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(32);
-    let b_n: usize = rest.iter().position(|a| a == "--batch")
-        .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(4);
-    let strict: bool = rest.iter().position(|a| a == "--mode")
-        .and_then(|i| rest.get(i + 1)).map(|v| v == "strict").unwrap_or(false);
+    // --batch takes a comma list in pp mode (one battery per width in ONE process, so all
+    // widths are measured against the SAME loaded weights); the other modes use the first.
+    let batches: Vec<usize> = rest.iter().position(|a| a == "--batch")
+        .and_then(|i| rest.get(i + 1))
+        .map(|v| v.split(',').filter_map(|p| p.trim().parse().ok()).collect::<Vec<usize>>())
+        .filter(|v: &Vec<usize>| !v.is_empty())
+        .unwrap_or_else(|| vec![4]);
+    let b_n: usize = batches[0];
+    let mode: String = rest.iter().position(|a| a == "--mode")
+        .and_then(|i| rest.get(i + 1)).cloned().unwrap_or_else(|| "config".into());
+    let strict: bool = mode == "strict";
+    let ppspec_mode: bool = mode == "ppspec";
+    // Both stage-split modes need the door open BEFORE load; only the battery differs.
+    let pp_mode: bool = mode == "pp" || ppspec_mode;
+    // ppspec: the verify widths. T = K+1, so 2,5,9 covers K=1,4,8 — the same K range the
+    // run-spec self-consistency gate walks, and 9 crosses the t>=3 batched-linear window.
+    let ts: Vec<usize> = rest.iter().position(|a| a == "--ts")
+        .and_then(|i| rest.get(i + 1))
+        .map(|v| v.split(',').filter_map(|p| p.trim().parse().ok()).collect::<Vec<usize>>())
+        .filter(|v: &Vec<usize>| !v.is_empty())
+        .unwrap_or_else(|| vec![2, 5, 9]);
+    let stages: usize = rest.iter().position(|a| a == "--stages")
+        .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(2);
+    let reps: usize = rest.iter().position(|a| a == "--reps")
+        .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(2);
+    // --plen: base synthetic-prompt length (default 20 = the historic prompts, row i adds
+    // 5i). Exists for SWA archs (lane/step35-batched-decode): step35's window is 512, so
+    // the 20-token prompts leave every session INSIDE the window and the per-session view
+    // offset (`off = len - win`, the mechanism the batched arm adds) never fires — the
+    // chunkinv35 lesson (a gate whose prompts sit inside the window compares one kernel
+    // against itself). The step35 battery passes --plen 520 so row 0 crosses the window
+    // during decode and later rows start past it.
+    let plen: u32 = rest.iter().position(|a| a == "--plen")
+        .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(20);
 
     // PIN THE PRIME CONFIG (2026-07-26): this gate compares DECODE configs
     // (decode_step_batch vs decode_step_h) from a shared primed state — the GDN prime
@@ -75,11 +122,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // gate2+gate3 bit-strength PASS, and pinning it off restores 6/6 seeds). The door's
     // own correctness is covered by kernel-check + run-gen argmax + run-spec gates.
     unsafe { std::env::set_var("MEMRA_MOE_F16G", "0"); }
-    let e = Engine::new(0)?;
-    let g = GgufFile::open(&path)?;
-    let model = HybridModel::load_without_mtp(&e, &g)?;
+    // PP MODE OPENS THE DOOR BEFORE LOAD (ppn-gate's method): weight sharding is a
+    // LOAD-TIME decision — `hybrid.rs` asks `pp::layer_engine` per layer, so a door opened
+    // after load would test a split walk over unsharded weights, i.e. not the serving
+    // placement at all. The primary device follows MEMRA_PP_DEVICES[0] for the same reason
+    // (stage 0's engine IS the primary engine).
+    let primary_dev: usize = if pp_mode {
+        unsafe { std::env::set_var("MEMRA_PP_STAGES", stages.to_string()); }
+        std::env::var("MEMRA_PP_DEVICES").ok()
+            .and_then(|v| v.split(',').next().and_then(|s| s.trim().parse().ok()))
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let e = Engine::new(primary_dev)?;
+    // DIRECTORY path = safetensors HF checkpoint (lane/rp-on-st, 2026-08-06). This gate was
+    // GGUF-only, and `Mmap::map` on a directory fd returns ENODEV — so pointing it at an ST
+    // checkpoint died with `Os { code: 19, ... "No such device" }` BEFORE loading anything,
+    // which reads like a GPU-acquisition failure and is not one. That mattered: the exact-16
+    // serve tier now admits both FP8-ST scale classes (QT_F8_E4M3 via the new b16 twin,
+    // QT_F8_E4M3_BLK via its first batched family), and the ONLY model-level exactness gate
+    // for decode_step_batch could not be pointed at either of them. Same branch as run_gen.
+    let (model, arch) = if std::path::Path::new(&path).is_dir() {
+        let dir = std::path::Path::new(&path);
+        let src: Box<dyn memra_gguf::source::TensorSource> = if dir.join("manifest.json").exists() {
+            Box::new(memra_gguf::source::Hy3RepackSource::open(dir)?)
+        } else {
+            Box::new(memra_gguf::source::SafetensorsSource::open(dir)?)
+        };
+        let m = HybridModel::load_from_source_without_mtp(&e, src.as_ref())?;
+        (m, "safetensors".to_string())
+    } else {
+        let g = GgufFile::open(&path)?;
+        let a = g.arch().unwrap_or("?").to_string();
+        (HybridModel::load_without_mtp(&e, &g)?, a)
+    };
     println!("loaded {} ({} layers); steps={steps} batch={b_n}",
-             g.arch().unwrap_or("?"), model.layers.len());
+             arch, model.layers.len());
+
+    if pp_mode {
+        let seed: u32 = std::env::var("MEMRA_GATE_SEED").ok()
+            .and_then(|v| v.parse().ok()).unwrap_or(0);
+        if ppspec_mode {
+            let fails = ppspec_battery(&e, &model, stages, steps, &ts, reps, seed)?;
+            if fails == 0 {
+                println!("ALL GREEN: spec-verify PP-{stages} stage-split exactness battery");
+                return Ok(());
+            }
+            return Err("decode-batch-gate --mode ppspec FAILED".into());
+        }
+        let fails = pp_battery(&e, &model, stages, steps, &batches, reps, seed, plen)?;
+        if fails == 0 {
+            println!("ALL GREEN: batched PP-{stages} stage-split exactness battery");
+            return Ok(());
+        }
+        return Err("decode-batch-gate --mode pp FAILED".into());
+    }
 
     // Distinct prompts per lane so caches/states genuinely diverge; length >= 16
     // (PRIME_MIN_T floor) and deliberately uneven so positions differ across the batch.
@@ -89,7 +187,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seed: u32 = std::env::var("MEMRA_GATE_SEED").ok()
         .and_then(|v| v.parse().ok()).unwrap_or(0);
     let prompts: Vec<Vec<u32>> = (0..b_n.max(2))
-        .map(|i| (0..20 + i as u32 * 5).map(|j| 55 + seed * 13 + i as u32 * 97 + j * 31).collect())
+        .map(|i| (0..plen + i as u32 * 5).map(|j| 55 + seed * 13 + i as u32 * 97 + j * 31).collect())
         .collect();
     let ctx = 512 + steps + 64;
 
@@ -121,8 +219,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let p0: Vec<u32> = (0..20).map(|j| 55 + (seed + gs) * 13 + j * 31).collect();
         let mut c_ref = Cache::new(&e, &model.cfg, ctx)?;
         let mut c_bat = Cache::new(&e, &model.cfg, ctx)?;
-        let _ = model.prime_cache(&e, &p0, &mut c_ref)?;
-        let _ = model.prime_cache(&e, &p0, &mut c_bat)?;
+        let _ = model.prime_cache(&e, &p0, &mut c_ref, 0)?;
+        let _ = model.prime_cache(&e, &p0, &mut c_bat, 0)?;
         let mut t_ref = *p0.last().unwrap();
         let mut t_bat = t_ref;
         let mut diverged: Option<usize> = None;
@@ -201,7 +299,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut ref_logits: Vec<Vec<Vec<f32>>> = Vec::new();
     for p in prompts.iter().take(b_n) {
         let mut c = Cache::new(&e, &model.cfg, ctx)?;
-        let _ = model.prime_cache(&e, p, &mut c)?;
+        let _ = model.prime_cache(&e, p, &mut c, 0)?;
         let mut t = *p.last().unwrap();
         let mut out = Vec::with_capacity(steps);
         let mut ls = Vec::with_capacity(steps);
@@ -223,7 +321,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut caches: Vec<Cache> = Vec::new();
     for p in prompts.iter().take(b_n) {
         let mut c = Cache::new(&e, &model.cfg, ctx)?;
-        let _ = model.prime_cache(&e, p, &mut c)?;
+        let _ = model.prime_cache(&e, p, &mut c, 0)?;
         caches.push(c);
     }
     let mut toks: Vec<u32> = prompts.iter().take(b_n).map(|p| *p.last().unwrap()).collect();
@@ -276,7 +374,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut caches: Vec<Cache> = Vec::new();
         for p in prompts.iter().take(b_n) {
             let mut c = Cache::new(&e, &model.cfg, ctx)?;
-            let _ = model.prime_cache(&e, p, &mut c)?;
+            let _ = model.prime_cache(&e, p, &mut c, 0)?;
             caches.push(c);
         }
         let mut toks: Vec<u32> = prompts.iter().take(b_n).map(|p| *p.last().unwrap()).collect();
@@ -301,7 +399,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut iso: Vec<Vec<u32>> = Vec::with_capacity(b_n);
         for bi in 0..b_n {
             let mut c = Cache::new(&e, &model.cfg, ctx)?;
-            let _ = model.prime_cache(&e, &prompts[bi], &mut c)?;
+            let _ = model.prime_cache(&e, &prompts[bi], &mut c, 0)?;
             let mut t = *prompts[bi].last().unwrap();
             let mut out = Vec::with_capacity(n_s);
             for s in 0..n_s {
@@ -318,7 +416,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut caches: Vec<Cache> = Vec::new();
             for p in prompts.iter().take(b_n) {
                 let mut c = Cache::new(&e, &model.cfg, ctx)?;
-                let _ = model.prime_cache(&e, p, &mut c)?;
+                let _ = model.prime_cache(&e, p, &mut c, 0)?;
                 caches.push(c);
             }
             let mut toks: Vec<u32> =
@@ -353,10 +451,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut caches_l: Vec<Cache> = Vec::new();
             for p in prompts.iter().take(b_n) {
                 let mut c = Cache::new(&e, &model.cfg, ctx)?;
-                let _ = model.prime_cache(&e, p, &mut c)?;
+                let _ = model.prime_cache(&e, p, &mut c, 0)?;
                 caches_f.push(c);
                 let mut c = Cache::new(&e, &model.cfg, ctx)?;
-                let _ = model.prime_cache(&e, p, &mut c)?;
+                let _ = model.prime_cache(&e, p, &mut c, 0)?;
                 caches_l.push(c);
             }
             let mut toks: Vec<u32> = prompts.iter().take(b_n).map(|p| *p.last().unwrap()).collect();
@@ -416,4 +514,519 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         Err("decode-batch-gate FAILED".into())
     }
+}
+
+/// Per-arm bit ledger (the ppn-gate `ArmCheck` pattern, widened to per-row): a batched tick
+/// returns B logit rows, so a mismatch is located by (step, row, index) — the row index is
+/// what tells a stage-split bug (every row wrong at one step) apart from a per-row cache
+/// bug (one row wrong from its own step onward).
+struct BitCheck {
+    name: String,
+    bad: usize,
+    first: Option<(usize, usize, usize, f32, f32)>, // (step, row, idx, ref, got)
+    compared: usize,
+}
+
+impl BitCheck {
+    fn new(name: String) -> Self {
+        BitCheck { name, bad: 0, first: None, compared: 0 }
+    }
+    fn check(&mut self, step: usize, row: usize, got: &[f32], r: &[f32]) {
+        assert_eq!(got.len(), r.len(), "row length mismatch (ref {} vs got {})", r.len(), got.len());
+        self.compared += got.len();
+        let diffs =
+            got.iter().zip(r.iter()).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+        if diffs > 0 {
+            self.bad += 1;
+            let (idx, (a, b)) = got.iter().zip(r.iter()).enumerate()
+                .find(|(_, (a, b))| a.to_bits() != b.to_bits())
+                .map(|(i, (a, b))| (i, (*b, *a)))
+                .unwrap();
+            if self.first.is_none() {
+                self.first = Some((step, row, idx, a, b));
+            }
+            if self.bad <= 5 {
+                println!("[{}] MISMATCH step {step} row {row}: {diffs}/{} logits differ, \
+                          first @[{idx}] ref={a:?} pp={b:?}", self.name, r.len());
+            }
+        }
+    }
+    /// Returns 1 on failure (the caller's fail counter increments), 0 on pass.
+    fn verdict(&self) -> usize {
+        if self.bad == 0 {
+            println!("pp gate PASS [{}]: {} f32 logits BIT-IDENTICAL (0 differing bits)",
+                     self.name, self.compared);
+            0
+        } else {
+            let (s, row, i, a, b) = self.first.unwrap();
+            println!("pp gate FAIL [{}]: {} rows mismatched of {} f32 compared (first @ step \
+                      {s} row {row} idx {i}: ref={a:?} pp={b:?})",
+                     self.name, self.bad, self.compared);
+            1
+        }
+    }
+}
+
+/// THE BATCHED STAGE-SPLIT EXACTNESS GATE (`--mode pp`, pp2-batch 2026-08-06).
+///
+/// `decode_step_batch_ppn` runs each stage's layer range on its own engine/stream with a
+/// `[B, n_embd]` boundary copy between them. That copy is exact (dtod / cudaMemcpyPeerAsync,
+/// no conversion) and every stage runs the SAME kernels on the SAME bytes in the same order,
+/// so PP-N adds ZERO deviation: the split MUST be BIT-IDENTICAL to the unsplit batched body,
+/// per row, per step. The batched analogue of the eager arm's bar (48 steps x 248,320 f32
+/// logits, zero differing bits — research/pp2-hardening-20260806).
+///
+/// METHOD (ppn-gate's, widened to B rows): the door opens BEFORE LOAD so the weights are
+/// genuinely sharded, then the door is CLOSED for the reference walk. That reference is the
+/// unsplit batched body over the SAME sharded placement — it peer-reads the remote stages'
+/// weights, which is slow (13.9-28x) but BYTE-EXACT, which is precisely why the placement
+/// needed a refusal rather than a gate. The recorded inputs come from the reference's own
+/// greedy stream, so a mismatch can never desync the comparison.
+///
+/// THREE ARMS, and the middle one is the localizer:
+///   1. `split`      — door ON, ppN caches, the stage split. Repeated `reps` times: the
+///                     shared-Engine scratch race this design avoids was a 35% FLAKE
+///                     (2026-08-02), so ONE green replay is not evidence of absence.
+///   2. `unsplit@ppncache` — door ON, ppN caches (identical placement to arm 1), but
+///                     MEMRA_BATCH_PP=0 forces the UNSPLIT walk, with
+///                     MEMRA_PP_ALLOW_UNSPLIT_BATCH=1 to pass the fail-closed guard. This
+///                     holds cache placement constant and varies ONLY the walk, so an arm-1
+///                     failure with arm 2 green localizes to the stage split, and both
+///                     failing localizes to stage-owned cache allocation.
+///   3. `epilogue`   — the last-stage epilogue: device-sampled greedy rows must equal the
+///                     host argmax of their own returned row, and a lean tick must park
+///                     logits bit-identically to the full tick's host row. New jurisdiction
+///                     for this lane, because under the split that epilogue (mask ->
+///                     sampler -> `cache.last_logits_dev`) runs on the LAST stage's engine
+///                     and device, not the primary's.
+///
+/// The B=1 FAST PATH IS PINNED OFF for the whole battery: with the door shut its condition
+/// is satisfied, so the reference at B=1 would be the m=1 FUSED trunk instead of the batched
+/// body — an accepted cross-config FP-composition gap (gate1's jurisdiction) that would show
+/// up here as a fake stage-split failure. Pinned through the explicit seam.
+#[allow(clippy::too_many_arguments)]
+fn pp_battery(
+    e: &Engine,
+    model: &HybridModel,
+    stages: usize,
+    steps: usize,
+    batches: &[usize],
+    reps: usize,
+    seed: u32,
+    plen: u32,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let n_layers = model.layers.len();
+    let fence = memra_engine::pp::pp_cuts(n_layers).unwrap_or_else(|| {
+        panic!("pp mode: door failed to open (n_layers={n_layers}, stages={stages})")
+    });
+    assert_eq!(fence.len() - 1, stages, "fence {fence:?} != stages {stages}");
+    let devices = std::env::var("MEMRA_PP_DEVICES").unwrap_or_default();
+    let knobs = format!(
+        "stages={stages} fence={fence:?} devices={} splits={} shard={} streams={}",
+        if devices.is_empty() { "default(primary)".into() } else { devices.clone() },
+        std::env::var("MEMRA_PP_SPLITS").unwrap_or_else(|_| "default(even)".into()),
+        if memra_engine::pp::pp_shard_off() { "OFF(all-primary)" } else { "per-stage" },
+        if memra_engine::pp::pp2_streams_off() { "OFF(same-stream)" } else { "per-stage" },
+    );
+    println!("pp mode: batched stage-split exactness battery over {n_layers} layers; {knobs}");
+    println!("pp mode: batches={batches:?} steps={steps} reps={reps} (split arm)");
+    // See the fn doc: the reference must be the BATCHED body at every B, including B=1.
+    let b1_live = HybridModel::b1_fast_on();
+    HybridModel::set_b1_fast(false);
+    println!("pp mode: B=1 fast path pinned OFF (live default = {})",
+             if b1_live { "ON" } else { "OFF" });
+
+    // widest row's prompt is plen + 5*(maxB-1); the historic 512+steps+64 floor stands.
+    let max_b = *batches.iter().max().unwrap_or(&1);
+    let ctx = (plen as usize + 5 * max_b) + 512 + steps + 64;
+    let mut fails = 0usize;
+
+    for &b in batches {
+        // Uneven prompt lengths => uneven cache.pos across rows, which is the real serving
+        // shape (per-row t_kv, so the split's per-stage pointer tables and the t_kv_max
+        // padding path are both exercised rather than a degenerate all-equal-pos batch).
+        // `plen` base (default 20): SWA archs pass a length past their window so the
+        // per-session view-offset arm actually fires (see the --plen doc at parse).
+        let prompts: Vec<Vec<u32>> = (0..b)
+            .map(|i| (0..plen + i as u32 * 5)
+                 .map(|j| 55 + seed * 13 + i as u32 * 97 + j * 31).collect())
+            .collect();
+
+        // ---- REFERENCE: door OFF, unsplit batched body, primary-allocated caches ----
+        // Sharded weights stay where the loader put them; peer reads are byte-exact.
+        unsafe { std::env::remove_var("MEMRA_PP_STAGES"); }
+        let mut inputs: Vec<Vec<u32>> = Vec::with_capacity(steps);
+        let mut ref_logits: Vec<Vec<Vec<f32>>> = Vec::with_capacity(steps);
+        {
+            let mut caches: Vec<Cache> = Vec::with_capacity(b);
+            for p in prompts.iter() {
+                let mut c = Cache::new(e, &model.cfg, ctx)?;
+                let _ = model.prime_cache(e, p, &mut c, 0)?;
+                caches.push(c);
+            }
+            let mut toks: Vec<u32> = prompts.iter().map(|p| *p.last().unwrap()).collect();
+            for _ in 0..steps {
+                inputs.push(toks.clone());
+                let mut refs: Vec<&mut Cache> = caches.iter_mut().collect();
+                let rows = model.decode_step_batch(e, &toks, &mut refs)?;
+                for (bi, l) in rows.iter().enumerate() {
+                    toks[bi] = argmax(l) as u32;
+                }
+                ref_logits.push(rows);
+            }
+        }
+        let n_vocab = ref_logits[0][0].len();
+        println!("-- B={b}: reference recorded ({steps} steps x {b} rows x {n_vocab} f32, \
+                  door OFF over the sharded placement)");
+
+        // ---- ARM 1: THE SPLIT (door ON, ppN caches), repeated for the flake class ----
+        unsafe { std::env::set_var("MEMRA_PP_STAGES", stages.to_string()); }
+        for rep in 0..reps.max(1) {
+            let mut chk = BitCheck::new(format!("split B={b} rep{rep}"));
+            let mut caches: Vec<Cache> = Vec::with_capacity(b);
+            for p in prompts.iter() {
+                let mut c = memra_engine::pp::new_cache(e, &model.cfg, ctx)?;
+                let _ = model.prime_cache(e, p, &mut c, 0)?;
+                caches.push(c);
+            }
+            for (s, toks) in inputs.iter().enumerate() {
+                let mut refs: Vec<&mut Cache> = caches.iter_mut().collect();
+                let rows = model.decode_step_batch(e, toks, &mut refs)?;
+                for (bi, l) in rows.iter().enumerate() {
+                    chk.check(s, bi, l, &ref_logits[s][bi]);
+                }
+            }
+            fails += chk.verdict();
+        }
+
+        // ---- ARM 2: UNSPLIT WALK over the SAME ppN cache placement (the localizer) ----
+        {
+            let mut chk = BitCheck::new(format!("unsplit@ppncache B={b}"));
+            let mut caches: Vec<Cache> = Vec::with_capacity(b);
+            for p in prompts.iter() {
+                let mut c = memra_engine::pp::new_cache(e, &model.cfg, ctx)?;
+                let _ = model.prime_cache(e, p, &mut c, 0)?;
+                caches.push(c);
+            }
+            // MEMRA_BATCH_PP=0 selects the unsplit body; the ALLOW override is required
+            // because that body is exactly what `refuse_unsplit_if_remote` fails closed on
+            // under a sharded cross-device placement. Both are restored right after.
+            unsafe {
+                std::env::set_var("MEMRA_BATCH_PP", "0");
+                std::env::set_var("MEMRA_PP_ALLOW_UNSPLIT_BATCH", "1");
+            }
+            let r = (|| -> Result<(), Box<dyn std::error::Error>> {
+                for (s, toks) in inputs.iter().enumerate() {
+                    let mut refs: Vec<&mut Cache> = caches.iter_mut().collect();
+                    let rows = model.decode_step_batch(e, toks, &mut refs)?;
+                    for (bi, l) in rows.iter().enumerate() {
+                        chk.check(s, bi, l, &ref_logits[s][bi]);
+                    }
+                }
+                Ok(())
+            })();
+            unsafe {
+                std::env::remove_var("MEMRA_BATCH_PP");
+                std::env::remove_var("MEMRA_PP_ALLOW_UNSPLIT_BATCH");
+            }
+            r?;
+            fails += chk.verdict();
+        }
+    }
+
+    // ---- ARM 4: B=1 PER-STAGE FAST PATH vs the EAGER stage-split (decode_step_h_ppn) ----
+    // Its own reference, because its bar is a DIFFERENT one. Arms 1-2 pin b1_fast OFF so B=1
+    // compares batched-vs-batched; that is what makes them a clean stage-split test, but it
+    // means they never execute the path a solo serving session actually takes once the door is
+    // open. The B=1 stage-fast path routes each stage's range through `decode_layers_eager` —
+    // the SAME per-stage call `decode_step_h_ppn` makes on the same fence with the same
+    // engines/streams/slots — so the bar here is BIT-IDENTITY TO THE EAGER SPLIT ARM, not to
+    // the batched body (against which it carries the accepted m=1 fusion FP gap by design; see
+    // decode_batch.rs `b1_stage_fast`). Both arms run over pp::new_cache placements, and both
+    // have the door open, so the only difference is which public entry point is called.
+    // WHY THIS ARM EARNS ITS KEEP: it is the only gate that would catch the stage-fast branch
+    // wiring the wrong fence range, reusing stage 0's engine for a later range, or advancing
+    // pos twice — mistakes that leave arms 1-3 fully green because they never run it.
+    {
+        let mut chk = BitCheck::new("b1-stagefast vs eager-ppn B=1".to_string());
+        let prompt: Vec<u32> = (0..24u32).map(|j| 55 + seed * 13 + j * 31).collect();
+        let n_s = steps.min(16);
+        // b1_fast ON is the whole point of the arm (arms 1-2 left it OFF).
+        HybridModel::set_b1_fast(true);
+        let mut c_eager = memra_engine::pp::new_cache(e, &model.cfg, ctx)?;
+        let _ = model.prime_cache(e, &prompt, &mut c_eager, 0)?;
+        let mut c_batch = memra_engine::pp::new_cache(e, &model.cfg, ctx)?;
+        let _ = model.prime_cache(e, &prompt, &mut c_batch, 0)?;
+        let mut tok = *prompt.last().unwrap();
+        for s in 0..n_s {
+            let (ref_row, _) = model.decode_step_h(e, tok, &mut c_eager)?;
+            let got = {
+                let mut refs: Vec<&mut Cache> = vec![&mut c_batch];
+                model.decode_step_batch(e, &[tok], &mut refs)?
+            };
+            chk.check(s, 0, &got[0], &ref_row);
+            // Advance on the REFERENCE's argmax so both arms stay on one token stream; a
+            // divergence shows up as differing bits, not as two arms exploring different text.
+            tok = argmax(&ref_row) as u32;
+            assert_eq!(c_eager.pos, c_batch.pos,
+                       "b1-stagefast pos {} != eager pos {} at step {s} — one arm advanced \
+                        the cache differently", c_batch.pos, c_eager.pos);
+        }
+        fails += chk.verdict();
+        // Re-pin OFF: arm 3 (below) compares batched-vs-batched sampled/lean rows and must not
+        // have one of its two caches on the m=1 fusion side of the accepted FP gap.
+        HybridModel::set_b1_fast(false);
+    }
+
+    // ---- ARM 3: the LAST-STAGE epilogue (device sampling + lean park) ----
+    // Runs at the widest requested B, on the split path, with MIXED metas so the partial-D2H
+    // path is exercised: even rows device-sampled greedy, odd rows host rows.
+    {
+        let b = *batches.iter().max().unwrap();
+        let prompts: Vec<Vec<u32>> = (0..b)
+            .map(|i| (0..plen + i as u32 * 5)
+                 .map(|j| 55 + seed * 13 + i as u32 * 97 + j * 31).collect())
+            .collect();
+        let n_s = steps.min(8);
+        let mut ep_fail = 0usize;
+        let mut caches_f: Vec<Cache> = Vec::with_capacity(b);
+        let mut caches_l: Vec<Cache> = Vec::with_capacity(b);
+        for p in prompts.iter() {
+            let mut c = memra_engine::pp::new_cache(e, &model.cfg, ctx)?;
+            let _ = model.prime_cache(e, p, &mut c, 0)?;
+            caches_f.push(c);
+            let mut c = memra_engine::pp::new_cache(e, &model.cfg, ctx)?;
+            let _ = model.prime_cache(e, p, &mut c, 0)?;
+            caches_l.push(c);
+        }
+        let mut toks: Vec<u32> = prompts.iter().map(|p| *p.last().unwrap()).collect();
+        for _ in 0..n_s {
+            let samp: Vec<Option<(f32, u64, u32)>> = (0..b)
+                .map(|bi| if bi % 2 == 0 { Some((0.0, 0, 0)) } else { None })
+                .collect();
+            let (rows_f, next_f) = {
+                let mut refs: Vec<&mut Cache> = caches_f.iter_mut().collect();
+                model.decode_step_batch_sampled_lean(e, &toks, &mut refs, &samp, false)?
+            };
+            let (rows_l, next_l) = {
+                let mut refs: Vec<&mut Cache> = caches_l.iter_mut().collect();
+                model.decode_step_batch_sampled_lean(e, &toks, &mut refs, &samp, true)?
+            };
+            for bi in 0..b {
+                if samp[bi].is_some() {
+                    let host_am = argmax(&rows_f[bi]) as u32;
+                    let dev = next_f[bi].expect("split greedy row missing device token");
+                    if dev != host_am {
+                        println!("pp gate epilogue row {bi}: device argmax {dev} != host \
+                                  argmax {host_am} FAIL");
+                        ep_fail += 1;
+                    }
+                    if next_l[bi] != next_f[bi] {
+                        println!("pp gate epilogue row {bi}: lean token {:?} != full token \
+                                  {:?} FAIL", next_l[bi], next_f[bi]);
+                        ep_fail += 1;
+                    }
+                    if !rows_l[bi].is_empty() {
+                        println!("pp gate epilogue row {bi}: lean sampled row NOT empty FAIL");
+                        ep_fail += 1;
+                    }
+                    // Parked on the LAST STAGE's device under the split — the D2H reads it
+                    // through UVA from the primary context, which is the same thing the
+                    // server's retire path does.
+                    let parked = e.dtoh(caches_l[bi].last_logits_dev.as_ref()
+                                        .expect("lean row missing device park"))?;
+                    let r = &rows_f[bi];
+                    if !(parked.len() == r.len()
+                         && parked.iter().zip(r.iter()).all(|(a, b)| a.to_bits() == b.to_bits())) {
+                        println!("pp gate epilogue row {bi}: parked device logits != full \
+                                  host row FAIL");
+                        ep_fail += 1;
+                    }
+                    toks[bi] = host_am;
+                } else {
+                    let (r, l) = (&rows_f[bi], &rows_l[bi]);
+                    if !(r.len() == l.len()
+                         && r.iter().zip(l.iter()).all(|(a, b)| a.to_bits() == b.to_bits())) {
+                        println!("pp gate epilogue row {bi}: unsampled row lean != full FAIL");
+                        ep_fail += 1;
+                    }
+                    toks[bi] = argmax(r) as u32;
+                }
+            }
+            if ep_fail > 8 { break; }
+        }
+        println!("pp gate {} [epilogue B={b}]: last-stage device sampling + lean park",
+                 if ep_fail == 0 { "PASS" } else { "FAIL" });
+        fails += usize::from(ep_fail > 0);
+    }
+
+    // Restore the live default (arms 1-3 pinned it OFF, arm 4 flipped it): this process may
+    // run further gates, and a leaked pin would silently re-tier them.
+    HybridModel::set_b1_fast(b1_live);
+    println!("pp mode verdict: {fails} failing arm(s); {knobs}");
+    Ok(fails)
+}
+
+/// THE SPEC-VERIFY STAGE-SPLIT EXACTNESS GATE (`--mode ppspec`, pp2-spec 2026-08-06).
+///
+/// `decode_step_t_core_ppn` runs each stage's layer range of the T=K+1 VERIFY forward on its own
+/// engine/stream with a `[T, n_embd]` boundary copy between them. Same argument as the batched
+/// twin: every stage runs the SAME kernels (`verify_layers`, the one range-scoped body the
+/// unsplit trunk also calls) on the SAME bytes in the same order, and the boundary is a straight
+/// f32 copy — so the split MUST be BIT-IDENTICAL to the unsplit verify, per logit COLUMN, per
+/// round. This is the gate that licenses lifting `refuse_unsplit_if_remote` on the spec path.
+///
+/// WHY IT IS NOT COVERED BY `--mode pp`: the verify forward is a different numeric config from
+/// batched decode. It runs T columns through the GDN recurrence SEQUENTIALLY, its own
+/// `t >= 3 || (t == 2 && spec_m2())` batched-linear window, and FA at m=T — and it allocates
+/// more per-stage Engine scratch than any decode path (the FA partial pool at m=T plus the
+/// per-layer retains). The scratch-race class this design prevents therefore has MORE surface
+/// here, not less, which is why the split arm repeats (`reps`).
+///
+/// WHAT IS CHECKED, per round:
+///   - ALL T logit columns, bit-by-bit (`T * n_vocab` f32 per round) — not just the last. A
+///     stage-split bug that only perturbs interior columns would still change the accept walk,
+///     because greedy accept argmaxes every column.
+///   - the `h_seed` hidden ([n_embd], the LAST column pre/post-norm per MEMRA_SPEC_HPOST) — the
+///     drafter is re-seeded from it every round, so a wrong h_seed silently degrades acceptance
+///     without ever changing a verify logit.
+///   - `cache.pos` parity against the reference at every round (asserted): the verify step
+///     advances position by T, and a stage that advanced it twice would otherwise show up only
+///     as a slow drift in a long run.
+///
+/// TWO ARMS (the epilogue/b1-fast arms have no analogue here — verify has no device-sampling
+/// epilogue and no m=1 fusion tier):
+///   1. `split` — door ON, ppN caches, the stage split. Repeated `reps` times for the flake
+///                class.
+///   2. `unsplit@ppncache` — door ON, ppN caches (identical placement to arm 1), MEMRA_SPEC_PP=0
+///                to force the unsplit trunk walk, MEMRA_PP_ALLOW_UNSPLIT_BATCH=1 to pass the
+///                fail-closed guard. Holds cache placement constant and varies ONLY the walk,
+///                so arm1-FAIL/arm2-PASS localizes to the stage split and both-FAIL localizes
+///                to stage-owned cache allocation.
+///
+/// BOTH PLACEMENT ORDERS (`MEMRA_PP_DEVICES=0,1` and `1,0`) are two INVOCATIONS of this binary,
+/// not two arms: the primary device follows `MEMRA_PP_DEVICES[0]` and the door opens before load,
+/// so the order is a load-time property. The lane runner drives both.
+fn ppspec_battery(
+    e: &Engine,
+    model: &HybridModel,
+    stages: usize,
+    rounds: usize,
+    ts: &[usize],
+    reps: usize,
+    seed: u32,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let n_layers = model.layers.len();
+    let fence = memra_engine::pp::pp_cuts(n_layers).unwrap_or_else(|| {
+        panic!("ppspec mode: door failed to open (n_layers={n_layers}, stages={stages})")
+    });
+    assert_eq!(fence.len() - 1, stages, "fence {fence:?} != stages {stages}");
+    let devices = std::env::var("MEMRA_PP_DEVICES").unwrap_or_default();
+    let knobs = format!(
+        "stages={stages} fence={fence:?} devices={} splits={} shard={} streams={}",
+        if devices.is_empty() { "default(primary)".into() } else { devices.clone() },
+        std::env::var("MEMRA_PP_SPLITS").unwrap_or_else(|_| "default(even)".into()),
+        if memra_engine::pp::pp_shard_off() { "OFF(all-primary)" } else { "per-stage" },
+        if memra_engine::pp::pp2_streams_off() { "OFF(same-stream)" } else { "per-stage" },
+    );
+    println!("ppspec mode: verify stage-split exactness battery over {n_layers} layers; {knobs}");
+    println!("ppspec mode: T={ts:?} rounds={rounds} reps={reps} (split arm)");
+
+    let mut fails = 0usize;
+    for &t in ts {
+        assert!(t >= 1, "verify width T must be >= 1");
+        let prompt: Vec<u32> = (0..24u32).map(|j| 55 + seed * 13 + j * 31).collect();
+        let ctx = 512 + rounds * t + 64;
+
+        // ---- REFERENCE: door OFF, unsplit verify trunk, primary-allocated cache ----
+        // Sharded weights stay where the loader put them; peer reads are byte-exact.
+        unsafe { std::env::remove_var("MEMRA_PP_STAGES"); }
+        let mut inputs: Vec<(usize, Vec<u32>)> = Vec::with_capacity(rounds);
+        let mut ref_logits: Vec<Vec<f32>> = Vec::with_capacity(rounds);
+        let mut ref_seed: Vec<Vec<f32>> = Vec::with_capacity(rounds);
+        let mut ref_pos: Vec<usize> = Vec::with_capacity(rounds);
+        {
+            let mut c = Cache::new(e, &model.cfg, ctx)?;
+            let _ = model.prime_cache(e, &prompt, &mut c, 0)?;
+            // Round 0's chunk = the prompt's last token repeated forward through the reference's
+            // own argmax columns; every later chunk is derived from the PREVIOUS round's logits,
+            // so the token stream is the reference's and the arms replay it exactly (a mismatch
+            // can never desync the comparison into comparing different text).
+            let mut chunk: Vec<u32> = vec![*prompt.last().unwrap(); t];
+            for _ in 0..rounds {
+                let pos0 = c.pos;
+                inputs.push((pos0, chunk.clone()));
+                let (l, hs) = model.decode_step_t_h(e, &chunk, pos0, &mut c)?;
+                let n_vocab = l.len() / t;
+                // next chunk: column j's argmax (deterministic, and every column participates,
+                // so a column-specific perturbation would change the replayed stream too).
+                chunk = (0..t)
+                    .map(|j| argmax(&l[j * n_vocab..(j + 1) * n_vocab]) as u32)
+                    .collect();
+                ref_logits.push(l);
+                ref_seed.push(e.dtoh(&hs)?);
+                ref_pos.push(c.pos);
+            }
+        }
+        let n_vocab = ref_logits[0].len() / t;
+        println!("-- T={t}: reference recorded ({rounds} rounds x {t} cols x {n_vocab} f32 \
+                  + h_seed, door OFF over the sharded placement)");
+
+        // ---- ARM 1: THE SPLIT (door ON, ppN cache), repeated for the flake class ----
+        unsafe { std::env::set_var("MEMRA_PP_STAGES", stages.to_string()); }
+        for rep in 0..reps.max(1) {
+            let mut chk = BitCheck::new(format!("verify-split T={t} rep{rep}"));
+            let mut hchk = BitCheck::new(format!("verify-split h_seed T={t} rep{rep}"));
+            let mut c = memra_engine::pp::new_cache(e, &model.cfg, ctx)?;
+            let _ = model.prime_cache(e, &prompt, &mut c, 0)?;
+            for (r, (pos0, chunk)) in inputs.iter().enumerate() {
+                assert_eq!(c.pos, *pos0,
+                           "verify-split pos {} != reference pos {pos0} at round {r} — one arm \
+                            advanced the cache differently", c.pos);
+                let (l, hs) = model.decode_step_t_h(e, chunk, *pos0, &mut c)?;
+                for j in 0..t {
+                    chk.check(r, j, &l[j * n_vocab..(j + 1) * n_vocab],
+                              &ref_logits[r][j * n_vocab..(j + 1) * n_vocab]);
+                }
+                hchk.check(r, 0, &e.dtoh(&hs)?, &ref_seed[r]);
+                assert_eq!(c.pos, ref_pos[r], "verify-split advanced pos to {} vs reference {} \
+                                               at round {r}", c.pos, ref_pos[r]);
+            }
+            fails += chk.verdict();
+            fails += hchk.verdict();
+        }
+
+        // ---- ARM 2: UNSPLIT WALK over the SAME ppN cache placement (the localizer) ----
+        {
+            let mut chk = BitCheck::new(format!("verify-unsplit@ppncache T={t}"));
+            let mut c = memra_engine::pp::new_cache(e, &model.cfg, ctx)?;
+            let _ = model.prime_cache(e, &prompt, &mut c, 0)?;
+            // MEMRA_SPEC_PP=0 selects the unsplit trunk; the ALLOW override is required because
+            // that trunk is exactly what `refuse_unsplit_if_remote` fails closed on under a
+            // sharded cross-device placement. Both are restored right after.
+            unsafe {
+                std::env::set_var("MEMRA_SPEC_PP", "0");
+                std::env::set_var("MEMRA_PP_ALLOW_UNSPLIT_BATCH", "1");
+            }
+            let r = (|| -> Result<(), Box<dyn std::error::Error>> {
+                for (r, (pos0, chunk)) in inputs.iter().enumerate() {
+                    let (l, _) = model.decode_step_t_h(e, chunk, *pos0, &mut c)?;
+                    for j in 0..t {
+                        chk.check(r, j, &l[j * n_vocab..(j + 1) * n_vocab],
+                                  &ref_logits[r][j * n_vocab..(j + 1) * n_vocab]);
+                    }
+                }
+                Ok(())
+            })();
+            unsafe {
+                std::env::remove_var("MEMRA_SPEC_PP");
+                std::env::remove_var("MEMRA_PP_ALLOW_UNSPLIT_BATCH");
+            }
+            r?;
+            fails += chk.verdict();
+        }
+    }
+
+    println!("ppspec mode verdict: {fails} failing arm(s); {knobs}");
+    Ok(fails)
 }

@@ -1,0 +1,41 @@
+Q1 INSTRUMENT RE-CENSUS — cu/mmq_q8_0_f32acc.cu after the MMA-form equalization
+source: cuobjdump --dump-sass on target/release/build/memra-engine-*/out/mmq_q8_0_f32acc.o (sm_120a)
+date:   2026-08-06   lane: lane/rp-on-st
+why:    the 2026-08-05 census (research/fp8v3-gate-20260805/q1-sass-census.txt) proved the two arms
+        differ only in MMA CLASS -- and it was right about that. What it did not check is that the
+        two classes ISSUE AT DIFFERENT RATES on sm_120a: IMMA.16832.S8.S8 = 16.06 cyc/warp-MMA,
+        QMMA.16832.F32.E4M3.E4M3 (plain kind::f8f6f4) = 32.02 cyc. So "exactly one thing moved" was
+        true at the source level and false at the cost level: the accumulator and the issue interval
+        moved together. This census records both F32 spellings side by side.
+
+DEFAULT ARM (block_scale @ ue8m0 identity scale 0x7F7F7F7F)
+function                                          instr  IMMA  QMMA  I2FP   LDS   LDG  LDL  STL
+_Z13mul_mat_q_accILi128ELb0ELb0EEvPKcPKiPfiiiiii   3184   128     0   512   232   104    0    0
+_Z13mul_mat_q_accILi128ELb0ELb1EEvPKcPKiPfiiiiii   2688     0   128     0   232   104    0    0
+_Z13mul_mat_q_accILi128ELb1ELb0EEvPKcPKiPfiiiiii   3312   128     0   512   232   104    0    0
+_Z13mul_mat_q_accILi128ELb1ELb1EEvPKcPKiPfiiiiii   2832     0   128     0   232   104    3    3
+MMA forms present: ['IMMA.16832.S8.S8', 'QMMA.SF.16832.F32.E4M3.E4M3.E8']
+
+PUBLISHED ARM (ACCPROBE_F32_PLAIN=1 -> -DMEMRA_ACCPROBE_PLAIN_MMA, plain kind::f8f6f4)
+function                                          instr  IMMA  QMMA  I2FP   LDS   LDG  LDL  STL
+_Z13mul_mat_q_accILi128ELb0ELb0EEvPKcPKiPfiiiiii   3184   128     0   512   232   104    0    0
+_Z13mul_mat_q_accILi128ELb0ELb1EEvPKcPKiPfiiiiii   2696     0   128     0   232   104    0    0
+_Z13mul_mat_q_accILi128ELb1ELb0EEvPKcPKiPfiiiiii   3312   128     0   512   232   104    0    0
+_Z13mul_mat_q_accILi128ELb1ELb1EEvPKcPKiPfiiiiii   2832     0   128     0   232   104    7    7
+MMA forms present: ['IMMA.16832.S8.S8', 'QMMA.16832.F32.E4M3.E4M3']
+
+READ:
+  * The S32 instantiations (Lb*ELb0E) are BYTE-FOR-BYTE the same work in both builds: 3184 / 3312
+    instr, 128 IMMA, 512 I2FP, LDS 232, LDG 104. The S32 arm is the fixed reference across the
+    A/B, which is why accprobe-form-ab.sh uses its time as a clock-drift control (measured drift
+    -0.83% .. +0.33% across all 24 shape cells).
+  * The only difference between the two F32 builds is the QMMA MNEMONIC:
+        QMMA.SF.16832.F32.E4M3.E4M3.E8   (block_scale, .SF = scale factor, .E8 = ue8m0)
+        QMMA.16832.F32.E4M3.E4M3         (plain kind::f8f6f4)
+    plus 8 instructions of scale-operand setup in the m=large instantiation (2688 vs 2696) --
+    i.e. 0.3% of the instruction stream. MMA COUNT is 128 in both, LDS/LDG identical, so the
+    2x measured speedup is NOT instruction count and NOT memory traffic. It is issue rate.
+  * The old census's honesty note "the bias runs against the result -- S32 executes MORE
+    instructions and still wins ~20%" survives as a fact and INVERTS as a conclusion: with the
+    issue interval equalized, S32 executes more instructions and now LOSES 5-9%. The extra 512
+    I2FP converts it pays are what it loses by.

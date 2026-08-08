@@ -975,6 +975,7 @@ impl Model {
         } else {
             GpuTensor::load_from_source(e, src, "token_embd.weight")?
         };
+        let mut resident = crate::hybrid::ResidentPlan::unsharded(e, src, &cfg);
 
         let mut layers = Vec::with_capacity(cfg.n_layer as usize);
         for il in 0..cfg.n_layer {
@@ -990,7 +991,7 @@ impl Model {
                     ffn_down: GpuTensor::load_from_source(e, src, &p("ffn_down.weight"))?,
                 }
             } else {
-                crate::hybrid::load_ffn(e, src, &cfg, il, None)?
+                crate::hybrid::load_ffn(e, src, &cfg, il, None, &mut resident)?
             };
             layers.push(Layer {
                 attn_norm: GpuTensor::load_from_source(e, src, &p("attn_norm.weight"))?,
@@ -1551,8 +1552,9 @@ impl HostExps {
             "{name} stride mismatch: stride={expert_stride} out_f={out_f} row_bytes={row_bytes}"
         );
 
-        // Absolute file offset of this tensor's data (start of expert 0); each expert is the next
-        // `expert_stride` bytes. The `Mmap` arm slices `ctx.file_map` at these offsets.
+        // Byte offset of this tensor's data (start of expert 0) WITHIN ITS OWN SHARD's file; each
+        // expert is the next `expert_stride` bytes. The `Mmap` arm slices `ctx.file_maps[t.shard]`
+        // at these offsets — a split model's offsets are per-shard, not global.
         let (file_start, _file_end) = g.tensor_file_range(t);
 
         // Per-expert tier decision under the shared running budget. `bytes` keeps a 0-byte sentinel
@@ -1561,7 +1563,7 @@ impl HostExps {
         for ex in 0..n_expert {
             let blk = &raw[ex * expert_stride..(ex + 1) * expert_stride];
             let file_off = file_start + ex * expert_stride;
-            tiers.push(crate::spill::place_expert(ctx, e, blk, file_off)?);
+            tiers.push(crate::spill::place_expert(ctx, e, blk, file_off, t.shard)?);
         }
         Ok(HostExps {
             bytes: HostBuf::Paged(Vec::new()), // unused when `tiers` is Some

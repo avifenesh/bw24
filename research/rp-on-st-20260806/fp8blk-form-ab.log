@@ -1,0 +1,20 @@
+# binaries: blksc=41b7f746298939942a9d7d39e5e8bcfb plain=9bf74de37225f211432875e0ebf1f067
+== pair 1  gpu 368 MiB, 55, 1852 MHz, 0 %
+B-p1 rc=0 | pp-only MEDIAN: 512 tok in 0.3476s = 1472.8 tok/s (pp512, 3 reps) | reps 1472.8 1472.8 1473.1 | disp 1040
+P-p1 rc=0 | pp-only MEDIAN: 512 tok in 0.3703s = 1382.6 tok/s (pp512, 3 reps) | reps 1382.6 1382.7 1382.5 | disp 1040
+== pair 2  gpu 368 MiB, 68, 1815 MHz, 71 %
+P-p2 rc=0 | pp-only MEDIAN: 512 tok in 0.3704s = 1382.3 tok/s (pp512, 3 reps) | reps 1382.3 1382.6 1382.2 | disp 1040
+B-p2 rc=0 | pp-only MEDIAN: 512 tok in 0.3477s = 1472.6 tok/s (pp512, 3 reps) | reps 1472.5 1472.9 1472.6 | disp 1040
+== pair 3  gpu 368 MiB, 62, 1845 MHz, 0 %
+B-p3 rc=0 | pp-only MEDIAN: 512 tok in 0.3476s = 1473.0 tok/s (pp512, 3 reps) | reps 1473.2 1471.8 1473.0 | disp 1040
+P-p3 rc=0 | pp-only MEDIAN: 512 tok in 0.3705s = 1382.0 tok/s (pp512, 3 reps) | reps 1383.1 1382.0 1381.9 | disp 1040
+== pair 4  gpu 368 MiB, 62, 1822 MHz, 0 %
+P-p4 rc=0 | pp-only MEDIAN: 512 tok in 0.3703s = 1382.5 tok/s (pp512, 3 reps) | reps 1382.1 1382.5 1383.0 | disp 1040
+B-p4 rc=0 | pp-only MEDIAN: 512 tok in 0.3477s = 1472.4 tok/s (pp512, 3 reps) | reps 1473.4 1472.3 1472.4 | disp 1040
+== pair 5  gpu 368 MiB, 69, 1807 MHz, 100 %
+B-p5 rc=0 | pp-only MEDIAN: 512 tok in 0.3476s = 1472.9 tok/s (pp512, 3 reps) | reps 1472.8 1472.9 1473.0 | disp 1040
+P-p5 rc=0 | pp-only MEDIAN: 512 tok in 0.3703s = 1382.8 tok/s (pp512, 3 reps) | reps 1383.3 1382.3 1382.8 | disp 1040
+== pair 6  gpu 368 MiB, 60, 1845 MHz, 29 %
+P-p6 rc=0 | pp-only MEDIAN: 512 tok in 0.3704s = 1382.3 tok/s (pp512, 3 reps) | reps 1383.1 1382.3 1382.0 | disp 1040
+B-p6 rc=0 | pp-only MEDIAN: 512 tok in 0.3475s = 1473.2 tok/s (pp512, 3 reps) | reps 1473.2 1473.2 1472.4 | disp 1040
+final gpu 368 MiB, 68, 1807 MHz, 70 %

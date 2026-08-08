@@ -1,0 +1,4 @@
+[q4rp] split-plane IN-PLACE swap: 420 dense trunk tensors
+spec K=6 n_new=64 prompt=19 toks
+[gemma-spec] rounds=15 drafted=74 accepted=52                    accept-rate=0.703 tok/round=4.33
+plain: 41.76 tok/s | spec: 116.20 tok/s (2.78x) | stream agreement 64/64
