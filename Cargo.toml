@@ -6,7 +6,7 @@ members = ["crates/memra-probe", "crates/memra-gguf", "crates/memra-runtime", "c
 # inherits via `<field>.workspace = true`. The version is the release tag — bump it as
 # part of cutting vX.Y.Z (publish.yml refuses a tag/version mismatch).
 [workspace.package]
-version = "0.71.0"
+version = "0.72.0"
 license = "MIT"
 repository = "https://github.com/avifenesh/memra"
 rust-version = "1.85"
@@ -15,11 +15,11 @@ rust-version = "1.85"
 # strips the path on publish, and the memra crates evolve in lockstep — mixed versions
 # across the workspace are never a supported configuration.
 [workspace.dependencies]
-memra-gguf = { path = "crates/memra-gguf", version = "=0.71.0" }
-memra-sampling = { path = "crates/memra-sampling", version = "=0.71.0" }
-memra-validate = { path = "crates/memra-validate", version = "=0.71.0" }
-memra-kv = { path = "crates/memra-kv", version = "=0.71.0" }
-memra-lanes = { path = "crates/memra-lanes", version = "=0.71.0" }
-memra-tokenizer = { path = "crates/memra-tokenizer", version = "=0.71.0" }
-memra-runtime = { path = "crates/memra-runtime", version = "=0.71.0" }
-memra-engine = { path = "crates/memra-engine", version = "=0.71.0" }
+memra-gguf = { path = "crates/memra-gguf", version = "=0.72.0" }
+memra-sampling = { path = "crates/memra-sampling", version = "=0.72.0" }
+memra-validate = { path = "crates/memra-validate", version = "=0.72.0" }
+memra-kv = { path = "crates/memra-kv", version = "=0.72.0" }
+memra-lanes = { path = "crates/memra-lanes", version = "=0.72.0" }
+memra-tokenizer = { path = "crates/memra-tokenizer", version = "=0.72.0" }
+memra-runtime = { path = "crates/memra-runtime", version = "=0.72.0" }
+memra-engine = { path = "crates/memra-engine", version = "=0.72.0" }
