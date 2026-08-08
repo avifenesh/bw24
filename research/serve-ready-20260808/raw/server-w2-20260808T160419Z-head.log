@@ -1,0 +1,200 @@
+[server] starting; models config = [("step35", "/home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf", Some("/home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf"))]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (device=1, MEMRA_FAST=true)
+[spec-gate] policy placement=pp2-cross-device LOW=0 HIGH=1 source=placement-default spec-admission=off
+[worker] loading model "step35" <- /home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.72GB (expert budget 94.80GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+[mtp-draft] step35 MTP geometry blk.45: n_head=96 n_head_kv=8 n_rot=128 rope_base=10000 swa=true window=512
+[mtp-draft] external draft head: blk.45, source=nextn.shared_head_head.weight, head_vocab=128896 (full)
+[worker] step35: regime draft attached (/home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf)
+[worker]   loaded "step35": 45 layers, eos=128007
+[worker] step35: template caps tools=true think=true think_switch=false chat_ok=true effort_levels=true gemma_think=false ctx=262144 tok="deepseek-v3" instruct=Some("chatml")
+[worker] step35: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["step35"]
+[server] listening on http://127.0.0.1:18097
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] observed session VRAM cost for "step35": 336MB (admission gate = 2x)
+[prefix-cache] insert (seed): 2413 tokens, 201.5MB (resident 201.5MB / 268MB, model step35, ns "replay-calibrated-tenant-02")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2446 of 2495 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2529 of 2580 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2615 of 2667 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 1288 tokens, 107.6MB (resident 309.1MB / 268MB, model step35, ns "replay-calibrated-tenant-02")
+[prefix-cache] evict (LRU): 2413 tokens, 201.5MB (model step35, ns "replay-calibrated-tenant-02")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1305 of 1354 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1372 of 1423 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1442 of 1494 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (lcp-split): 1245 tokens, 104.0MB (resident 211.6MB / 268MB, model step35, ns "replay-calibrated-tenant-02")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1305 of 1354 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1372 of 1423 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1442 of 1494 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 1819 tokens, 151.9MB (resident 363.5MB / 268MB, model step35, ns "replay-calibrated-tenant-04")
+[prefix-cache] evict (LRU): 1288 tokens, 107.6MB (model step35, ns "replay-calibrated-tenant-02")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1843 of 1892 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1993 of 2045 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 2125 tokens, 177.5MB (resident 433.4MB / 268MB, model step35, ns "replay-calibrated-tenant-01")
+[prefix-cache] evict (LRU): 1245 tokens, 104.0MB (model step35, ns "replay-calibrated-tenant-02")
+[prefix-cache] evict (LRU): 1819 tokens, 151.9MB (model step35, ns "replay-calibrated-tenant-04")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2153 of 2202 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2231 of 2282 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 2753 tokens, 229.9MB (resident 407.4MB / 268MB, model step35, ns "replay-calibrated-tenant-02")
+[prefix-cache] evict (LRU): 2125 tokens, 177.5MB (model step35, ns "replay-calibrated-tenant-01")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2790 of 2846 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2884 of 2933 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 1559 tokens, 130.2MB (resident 360.1MB / 268MB, model step35, ns "replay-calibrated-tenant-03")
+[prefix-cache] evict (LRU): 2753 tokens, 229.9MB (model step35, ns "replay-calibrated-tenant-02")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1514 of 1565 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1585 of 1641 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1662 of 1711 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1733 of 1784 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 1028 tokens, 85.9MB (resident 216.1MB / 268MB, model step35, ns "replay-calibrated-tenant-01")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1041 of 1090 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1104 of 1155 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1170 of 1222 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (lcp-split): 1516 tokens, 126.6MB (resident 342.7MB / 268MB, model step35, ns "replay-calibrated-tenant-03")
+[prefix-cache] evict (LRU): 1559 tokens, 130.2MB (model step35, ns "replay-calibrated-tenant-03")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1579 of 1628 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1649 of 1700 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2394 of 2445 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2477 of 2533 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 1564 tokens, 130.6MB (resident 343.1MB / 268MB, model step35, ns "replay-calibrated-tenant-02")
+[prefix-cache] evict (LRU): 1028 tokens, 85.9MB (model step35, ns "replay-calibrated-tenant-01")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 3023 tokens, 252.5MB (resident 509.7MB / 268MB, model step35, ns "replay-calibrated-tenant-02")
+[prefix-cache] evict (LRU): 1516 tokens, 126.6MB (model step35, ns "replay-calibrated-tenant-03")
+[prefix-cache] evict (LRU): 1564 tokens, 130.6MB (model step35, ns "replay-calibrated-tenant-02")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 3063 of 3115 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 3156 of 3207 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 3249 of 3305 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 1819 tokens, 151.9MB (resident 404.4MB / 268MB, model step35, ns "replay-calibrated-tenant-04")
+[prefix-cache] evict (LRU): 3023 tokens, 252.5MB (model step35, ns "replay-calibrated-tenant-02")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1843 of 1892 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1917 of 1968 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1994 of 2046 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 1771 tokens, 147.9MB (resident 299.8MB / 268MB, model step35, ns "replay-calibrated-tenant-03")
+[prefix-cache] evict (LRU): 1819 tokens, 151.9MB (model step35, ns "replay-calibrated-tenant-04")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1794 of 1845 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2566 of 2615 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 2699 tokens, 225.4MB (resident 373.3MB / 268MB, model step35, ns "replay-calibrated-tenant-01")
+[prefix-cache] evict (LRU): 1771 tokens, 147.9MB (model step35, ns "replay-calibrated-tenant-03")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 1288 tokens, 107.6MB (resident 333.0MB / 268MB, model step35, ns "replay-calibrated-tenant-01")
+[prefix-cache] evict (LRU): 2699 tokens, 225.4MB (model step35, ns "replay-calibrated-tenant-01")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1305 of 1361 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1379 of 1428 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 2413 tokens, 201.5MB (resident 309.1MB / 268MB, model step35, ns "replay-calibrated-tenant-02")
+[prefix-cache] evict (LRU): 1288 tokens, 107.6MB (model step35, ns "replay-calibrated-tenant-01")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2446 of 2495 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2529 of 2580 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2615 of 2667 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2072 of 2123 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2151 of 2207 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 2284 tokens, 190.8MB (resident 392.3MB / 268MB, model step35, ns "replay-calibrated-tenant-04")
+[prefix-cache] evict (LRU): 2413 tokens, 201.5MB (model step35, ns "replay-calibrated-tenant-02")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1949 of 1998 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2024 of 2075 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2102 of 2154 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 2957 tokens, 247.0MB (resident 437.7MB / 268MB, model step35, ns "replay-calibrated-tenant-01")
+[prefix-cache] evict (LRU): 2284 tokens, 190.8MB (model step35, ns "replay-calibrated-tenant-04")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2996 of 3045 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 1497 tokens, 125.0MB (resident 372.0MB / 268MB, model step35, ns "replay-calibrated-tenant-01")
+[prefix-cache] evict (LRU): 2957 tokens, 247.0MB (model step35, ns "replay-calibrated-tenant-01")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1517 of 1569 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2182 of 2233 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2262 of 2318 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2348 of 2397 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2428 of 2479 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2703 of 2754 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2791 of 2847 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2885 of 2934 prompt tokens resumed (model step35)
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 3011 tokens, 251.5MB (resident 376.5MB / 268MB, model step35, ns "replay-calibrated-tenant-02")
+[prefix-cache] evict (LRU): 1497 tokens, 125.0MB (model step35, ns "replay-calibrated-tenant-01")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 1718 tokens, 143.5MB (resident 395.0MB / 268MB, model step35, ns "replay-calibrated-tenant-01")
+[prefix-cache] evict (LRU): 3011 tokens, 251.5MB (model step35, ns "replay-calibrated-tenant-02")
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue

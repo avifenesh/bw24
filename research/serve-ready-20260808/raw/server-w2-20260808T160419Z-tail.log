@@ -1,0 +1,100 @@
+[prefix-cache] evict (LRU): 1855 tokens, 154.9MB (model step35, ns "replay-calibrated-tenant-02")
+[meter] admit id=cmpl-ba8bdfd95687bf7011c5a8c82ea7f7ee tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 3136 of 3228 prompt tokens from cache (model step35)
+[meter] admit id=cmpl-7dd1c1c1d5a73be593e3353d0c77485d tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 3136 of 3320 prompt tokens from cache (model step35)
+[meter] admit id=cmpl-80e6bd8549aeed2bb617ec7d0efcc9c6 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 2009 tokens, 167.8MB (resident 429.7MB / 268MB, model step35, ns "replay-calibrated-tenant-02")
+[prefix-cache] evict (LRU): 3136 tokens, 261.9MB (model step35, ns "replay-calibrated-tenant-01")
+[meter] admit id=cmpl-d1f09ea2b25b60629f952cd6ef0fb606 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2035 of 2084 prompt tokens resumed (model step35)
+[meter] admit id=cmpl-cf92871c8cb8ba7dd4a5261f59b75d88 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 2009 of 2161 prompt tokens from cache (model step35)
+[meter] admit id=cmpl-7f5d0cb7ee034a00c428dbb94fb97fc3 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 2009 of 2240 prompt tokens from cache (model step35)
+[meter] admit id=cmpl-13a0a1c914f43562e6c5100b63394223 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 2365 tokens, 197.5MB (resident 365.3MB / 268MB, model step35, ns "replay-calibrated-tenant-04")
+[prefix-cache] evict (LRU): 2009 tokens, 167.8MB (model step35, ns "replay-calibrated-tenant-02")
+[meter] admit id=cmpl-db6c7272ee39bcb2e4a5831f8b59602e tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2396 of 2448 prompt tokens resumed (model step35)
+[meter] admit id=cmpl-3c8adebc392f66bbecf709da187ee239 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 2365 of 2531 prompt tokens from cache (model step35)
+[meter] admit id=cmpl-4afd9a7fc9a743a6a72b1cb6c0726586 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 1028 tokens, 85.9MB (resident 283.4MB / 268MB, model step35, ns "replay-calibrated-tenant-01")
+[prefix-cache] evict (LRU): 2365 tokens, 197.5MB (model step35, ns "replay-calibrated-tenant-04")
+[meter] admit id=cmpl-37f8ec1dfaafa7358726b4ea54f7fb26 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1041 of 1090 prompt tokens resumed (model step35)
+[meter] admit id=cmpl-1dd35abae0e486eeac176928750419da tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1104 of 1155 prompt tokens resumed (model step35)
+[meter] admit id=cmpl-7a0bc1031e6f7318769c8ff82fd3cc0b tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 2125 tokens, 177.5MB (resident 263.3MB / 268MB, model step35, ns "replay-calibrated-tenant-01")
+[meter] admit id=cmpl-bc9cad831c54e59a9a91554d56d38b61 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2153 of 2202 prompt tokens resumed (model step35)
+[meter] admit id=cmpl-979e2cf660345726c42ae80df9824bc6 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] skip seed insert: entry 283.6MB > budget 268MB
+[meter] admit id=cmpl-64845236f90a410c2e7cec22907dd416 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 3441 of 3492 prompt tokens resumed (model step35)
+[meter] admit id=cmpl-c6fee93b737a94c0f6d524e5489cea22 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2564 of 2620 prompt tokens resumed (model step35)
+[meter] admit id=cmpl-7e03a5f4604e8df361fa5637ac251bb0 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2655 of 2704 prompt tokens resumed (model step35)
+[meter] admit id=cmpl-4af16ae4150de392668fc4bcda3faf97 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2740 of 2791 prompt tokens resumed (model step35)
+[meter] admit id=cmpl-6713e76d9ffc8c50584df3570a2cc8cc tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 3538 of 3590 prompt tokens resumed (model step35)
+[meter] admit id=cmpl-0a7755f0e53a5eeb36f6b52fdf6c5def tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 3637 of 3688 prompt tokens resumed (model step35)
+[meter] admit id=cmpl-e43153df984c884a1d5262121afff2f0 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] skip seed insert: entry 316.6MB > budget 268MB
+[meter] admit id=cmpl-a68c674d54d8c4c251fd2a4b99f90403 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 1170 of 1222 prompt tokens resumed (model step35)
+[meter] admit id=cmpl-f13e0fdd1baf4db7daa2fdee82d984b1 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 1028 of 1288 prompt tokens from cache (model step35)
+[meter] admit id=cmpl-05ae7b80917de0bfc9009dc6ae058379 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 2319 tokens, 193.7MB (resident 457.0MB / 268MB, model step35, ns "replay-calibrated-tenant-02")
+[prefix-cache] evict (LRU): 2125 tokens, 177.5MB (model step35, ns "replay-calibrated-tenant-01")
+[prefix-cache] evict (LRU): 1028 tokens, 85.9MB (model step35, ns "replay-calibrated-tenant-01")
+[meter] admit id=cmpl-29efc606ebe09ceb153103e726ef9e44 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 2319 of 2404 prompt tokens from cache (model step35)
+[meter] admit id=cmpl-3871a28c0a5aa5d5c6c17ed0a26cacc5 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2772 of 2821 prompt tokens resumed (model step35)
+[meter] admit id=cmpl-29b7b5757f4ad624b549d169602e6fc3 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 2908 tokens, 242.9MB (resident 436.6MB / 268MB, model step35, ns "replay-calibrated-tenant-03")
+[prefix-cache] evict (LRU): 2319 tokens, 193.7MB (model step35, ns "replay-calibrated-tenant-02")
+[meter] admit id=cmpl-7f7211cc6b00ef6dee12d43211a5935d tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[worker] kv-reuse: 2945 of 2997 prompt tokens resumed (model step35)
+[meter] admit id=cmpl-8aca03b2bdac9006c5302614377ad002 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] insert (seed): 3092 tokens, 258.2MB (resident 501.1MB / 268MB, model step35, ns "replay-calibrated-tenant-02")
+[prefix-cache] evict (LRU): 2908 tokens, 242.9MB (model step35, ns "replay-calibrated-tenant-03")
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

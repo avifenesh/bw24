@@ -1,0 +1,91 @@
+=== serve-ready receipt GATES 20260808T162046Z
+commit=ed1550f8 (lane/serve-ready-receipt base = restructure/public-split tip, local)
+binary sha256=365daa4cef842e397fc79f82bf1d4783647dde47edb03fe33c80ba1bebc774cd
+lock acquired 2026-08-08T16:20:46Z
+0, 33, 0 MiB
+1, 33, 0 MiB
+
+########## G1: serve-smoke FULL, PP-2, step35 trunk+drafter ##########
+== serve-smoke: plain serving ==
+  ok: /models lists the model
+  ok: chat non-stream (text + usage + finish_reason)
+  ok: chat stream (SSE chunks + [DONE])
+  ok: /v1/completions
+  ok: greedy determinism (2 runs identical)
+  ok: 3 concurrent chats
+  ok: long generation (>=100 tok)
+== serve-smoke: cache-metering exactness ==
+  ok: A-req1 cached_tokens == 0
+  ok: A-req1 prompt_tokens == 272
+  ok: A-req2 cached_tokens == 0
+  ok: A-req2 prompt_tokens == 272
+  ok: A-req3 cached_tokens == 256
+  ok: A-req3 prompt_tokens == 272
+  ok: A-req4 cached_tokens == 256
+  ok: A-req4 prompt_tokens == 272
+  ok: A-req5 cached_tokens == 256
+  ok: A-req5 prompt_tokens == 272
+  ok: B-req1 cached_tokens == 0 (cross-salt blindness)
+  ok: prompt_tokens_in == 1632
+  ok: cached_tokens_in == 768
+  ok: computed_tokens_in == prompt - cached
+  ok: cache_hit_token_ratio matches arithmetic
+  ok: prefix_cache_hits == N-2
+  ok: prefix_cache_misses == 3
+  ok: prefix_cache_inserts == 3 (A seed + A split + B seed)
+  ok: prefix_cache_hit_tokens == 768
+  ok: lcp_histogram: 6 probes total
+  ok: lcp_histogram: 2 cold probes in bucket [0]
+  ok: lcp_histogram: 4 probes in K's bucket (edge 256)
+  ok: tick-seg [64,512) window carries the shared-prefix probes
+  ok: tenants[meter-A] split exact
+  ok: tenants[meter-B] split exact (0 cached)
+  ok: economics revenue_multiplier == 1.8889 (factor 1.0)
+cache-meter-gate: 0 failed
+  ok: cache-metering accounting exact (per-request + /metrics + economics)
+== serve-smoke: spec serving (draft attached) ==
+  ok: spec == plain greedy text (serving exactness)
+== serve-smoke: sampled truncation matrix (spec server) ==
+  (immune baseline: untruncated t0.8 seed=7, bangs=0)
+  ok: trunc top_k=40 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc top_p=0.95 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc min_p=0.05 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc llama-default k40+p0.95+m0.05 (reproducible, bangs=0 <= baseline 0)
+== serve-smoke: session-affinity resume exactness ==
+  ok: affinity resume is deterministic across servers (4 rewritten turns)
+  ok: replay arm resumed too (3 rewind(s))
+  ok: affinity fired (3 rewind(s) on a rewritten history)
+  ok: no failed rewinds
+== serve-smoke: gemma4 arm SKIP (no model at /data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf)
+serve-smoke: 0 failed
+serve-smoke exit=0
+0, 0 MiB
+1, 0 MiB
+
+########## G2: run-gen argmax spot-check, PP-2, 64 tokens ##########
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 trunk layers; optional MTP skipped)
+prompt text: "Write a short paragraph explaining how a CPU pipeline improves instruction throughput, and mention one hazard."
+prompt tokens: [0, 21750, 260, 3107, 15363, 26131, 1192, 260, 25454, 28499, 28232, 12740, 62027, 14, 305, 6731, 834, 23616, 16]
+prefill argmax=6776  decode argmax=6776  logit maxdiff=8.228e-1  MATCH
+batched-prime argmax=6776  tokenwise argmax=6776  logit maxdiff=7.178e-1  MATCH
+prefill 19 tok in 0.4934s = 38.5 tok/s (pp19)
+generated 64 tokens in 3.394s = 18.85 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.154s) [stop: MaxNew]
+tokens: [6776, 666, 7805, 11490, 2143, 35, 25454, 28499, 21994, 270, 16846, 294, 411, 12740, 1055, 3586, 13656, 343, 70698, 14, 64285, 14, 22218, 14, 6464, 14, 5085, 43360, 3555, 797, 6001, 834, 12740, 344, 295, 270, 22218, 6632, 14, 270, 2894, 588, 366, 91249, 14, 305, 270, 834, 1561, 396, 588, 366, 114400, 14, 832, 3586, 12846, 477, 295, 14349, 19649, 16, 1162, 48058]
+MoE cache: 15356 slots | cumulative hits=26253 misses=5211 (hit-rate=83.4%) | Stage-1 baseline = 2678 MB/decode-token (every block, every layer, every token)
+MoE cache STEADY-STATE (32 tokens after warmup): hit-rate=0.0% | 0.0 MB/decode-token (vs 2678 MB/token Stage-1 => infx less PCIe)
+OUTPUT TEXT: "  \n\n**Answer:**  \nA CPU pipeline breaks the execution of an instruction into several stages (fetch, decode, execute, memory, write‑back). While one instruction is in the execute stage, the next can be decoded, and the one after that can be fetched, so several instructions are in flight simultaneously. This overlapping"
+--- generated text ---
+  
+
+**Answer:**  
+A CPU pipeline breaks the execution of an instruction into several stages (fetch, decode, execute, memory, write‑back). While one instruction is in the execute stage, the next can be decoded, and the one after that can be fetched, so several instructions are in flight simultaneously. This overlapping
+run-gen exit=0
+0, 0 MiB
+1, 0 MiB
+lock released 2026-08-08T16:25:20Z
+=== gates rc=0
+=== done 2026-08-08T16:25:20Z

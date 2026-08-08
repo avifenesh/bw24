@@ -1,0 +1,100 @@
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-77beb48f975ca2b279200d5b3d3bc502 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-7615f9ebf7d651b3b0be95ec0928b751 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-dae2623480b42d66fb93f4fb6b32eece tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 0 active (+1) > LOW=0 — spec would queue
+[meter] admit id=chatcmpl-2273ec923b1efb8da3bbca7dbc7cf080 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-c842266654d3fd011328f00a6fcb5915 tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-12f6947a76808f9b594574f36f2e948d tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-c286dcd63cead923efeb23e134c570f9 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-ab59ce38d6ff8561d8f7418281140e95 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 1 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 2 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 3 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 4 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 5 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 6 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 7 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-c3424182c580ba93fd076573efce36b0 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 7 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-73736ea7c90bdbaab6834865dd357eef tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-ac01f59ec6e2601743d788a2845ee1ff tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-661cbfa5d15b2049353c8ceb09ceceaa tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-5c250f3d92bc2e4cebeb1a40dbd0c0be tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-5617aa57abc081751394fb26332e4448 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-49b6c3857257a9fb8e8d3e7066a547be tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-b586d21b9242ae2453a57d80c2580905 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 1 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 2 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 3 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 4 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 5 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 6 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 7 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-3fbc9062a88e54385ce0c997b65fbb06 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 7 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-a27d02aede31db7323af4cec42b5bb40 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-a4868b2a0a4f24e3c4c6618998b56c9c tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-47ed59b7c7fac9ff550a0284aaa73dd6 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-fae87015f7bfcfb9fc2e773601e96ba9 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-3f818ac52a9ef75b1393cdb111c7729d tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-449b2f0e0a25927085a2d1a45c889e00 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-3ded2c5329b7d4fd9a5dafb5ea803880 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 1 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 2 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 3 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 4 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 5 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 6 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 7 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-5798b7484930f04ba01c1795e2f31468 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 7 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-545a5c2c13bd5e6ff6570167f457d245 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-e82c94a249af2a0c9b0fc275c048ba5a tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-e4dc8e8252950357bcc7c42e1808c3c6 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-0e85815d790e7963475d0957c56ff611 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-0dc3834acf7cce06c2e54dc20da3caff tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-6a7886c19cb162fdcebacda04aa57988 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-ea1483b9308f2f346d750020d36332f2 tenant=default lane=interactive model="step35"
+[spec-gate] admit batched: 1 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 2 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 3 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 4 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 5 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 6 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[spec-gate] admit batched: 7 active (+1) > LOW=0 — spec would queue
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
