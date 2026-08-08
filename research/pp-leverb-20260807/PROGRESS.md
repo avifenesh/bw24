@@ -300,7 +300,7 @@ range + tx; middle rx/range/tx; last rx + range + epilogue), with `fence_stages_
 entry (#87), per-stage `pos_d`, `publish_to` at exit, and the `PRIME_SPLIT_CHUNKS` liveness
 bump. `ppprime` now builds `pp::new_cache` caches (the wrong-card-KV harness class).
 
-### Battery (`raw/inc3-battery-20260808T023006Z.log`, one flock hold)
+### Battery (`raw/inc3-battery-20260808T022651Z.log`, one flock hold)
 
 | gate | verdict |
 |---|---|
