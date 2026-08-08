@@ -101,3 +101,16 @@ Behavior-neutral groundwork:
 The serial walker still supplies `base = cache.pos`, so this increment does not change
 launch order or arithmetic. The explicit base is required before stage 0 of N+1 can be
 issued while stage 1 of N still owns the current host position.
+
+## Increment 2 — double-buffer transport primitives
+
+`PpNRt` now exposes:
+
+- `prepare_overlap_slots`: grow both boundary slots and perform the required RX-stream
+  first-use synchronization before either stage is queued;
+- `tx_pipelined`: force boundary-local atomic A/B alternation independently of the
+  decode-side `MEMRA_PP_OVERLAP` flag.
+
+Prewarming is load-bearing for a two-chunk prompt. Without it, slot B's first lazy
+allocation synchronizes the RX stream after stage 1 of chunk N is queued, draining that
+work before stage 0 of N+1 can publish and making the apparent pipeline serial.

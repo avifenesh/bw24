@@ -707,6 +707,29 @@ impl PpNRt {
         memra_runtime::push_stream_override(self.stages[s].stream.clone())
     }
 
+    /// Allocate/grow BOTH slots for a boundary before pipelined issue starts. `tx()` can
+    /// grow a slot lazily, but first-use ordering requires synchronizing the RX stream
+    /// after that allocation. If slot 1 first grows after stage 1 of chunk N has already
+    /// been queued, that sync drains chunk N and erases the only overlap in a two-chunk
+    /// prime. Prewarming both slots pays the same one-time sync before either stage starts.
+    pub fn prepare_overlap_slots(&self, b: usize, n: usize)
+                                 -> Result<(), Box<dyn std::error::Error>> {
+        let bd = &self.boundaries[b];
+        let s_rx = &self.stages[b + 1].stream;
+        let mut grew = false;
+        for sl in &bd.slots {
+            let mut guard = sl.buf.lock().unwrap();
+            if guard.as_ref().map(|bf| bf.len() < n).unwrap_or(true) {
+                *guard = Some(s_rx.alloc_zeros::<f32>(n)?);
+                grew = true;
+            }
+        }
+        if grew {
+            s_rx.synchronize()?;
+        }
+        Ok(())
+    }
+
     /// Boundary TX at boundary `b` (call within the stage-`b` scope; `x` = the
     /// materialized [n] residual): wait for the slot's previous RX (write-after-read
     /// guard), copy `x` into the slot's persistent buffer via the boundary's transport on
@@ -729,6 +752,23 @@ impl PpNRt {
         } else {
             0
         };
+        self.tx_slot(b, x, n, slot_idx)
+    }
+
+    /// Pipelined boundary TX: always alternate the shared double-buffer slots, independent
+    /// of the decode-side `MEMRA_PP_OVERLAP` experiment flag. The boundary-local atomic
+    /// keeps concurrent callers on one slot sequence rather than each restarting at A.
+    pub fn tx_pipelined(&self, b: usize, x: &CudaSlice<f32>, n: usize)
+                        -> Result<usize, Box<dyn std::error::Error>> {
+        assert_eq!(x.len(), n, "pp tx: residual length mismatch");
+        let slot_idx = self.boundaries[b].step.fetch_add(1, Ordering::Relaxed) % 2;
+        self.tx_slot(b, x, n, slot_idx)
+    }
+
+    fn tx_slot(&self, b: usize, x: &CudaSlice<f32>, n: usize, slot_idx: usize)
+               -> Result<usize, Box<dyn std::error::Error>> {
+        debug_assert!(slot_idx < 2);
+        let bd = &self.boundaries[b];
         let sl = &bd.slots[slot_idx];
         let s_tx = &self.stages[b].stream;
         s_tx.wait(&sl.ev_rx)?;
