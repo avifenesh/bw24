@@ -82,12 +82,19 @@ RC=1
   echo "lock acquired $(date -u +%FT%TZ)"
   nvidia-smi --query-gpu=index,memory.used --format=csv,noheader
 
-  # NAKED serve config (what a listing operator runs): batching default ON, PP-2,
-  # spec OFF per #87 (spec over PP-2 is quarantined). The canary re-pins B=1 chunks.
+  # Serve config: batching default ON, PP-2, spec OFF per #87 (spec over PP-2 is
+  # quarantined). MEMRA_SERVE_B1FAST=0 pins the c=1 REFERENCE onto the batched walk at
+  # B=1 — the same pin decode-batch-gate's gate2 applies, and for the same reason: with
+  # b1-fast live, c=1 rides the m=1 FUSION chain (the eager side of the accepted
+  # decode-config FP gap) while c>1 rides the batched walk, so a near-tie greedy flip
+  # would fail this gate for a class that is NOT batched-geometry breakage. Within-config,
+  # byte-identity is the honest bar (per-row bit-identity is gate2's, engine-level).
+  # The b1-fast path's own text fidelity is run-gen/serve-smoke jurisdiction.
+  # The canary re-pins B=1 chunks.
   CANARY_ENV=()
   [ "$CANARY" = 1 ] && CANARY_ENV=(MEMRA_STEP35_BATCH=0)
   env "${CANARY_ENV[@]}" \
-    MEMRA_MODELS="$MODELS_SPEC" MEMRA_SERVE_SPEC=0 \
+    MEMRA_MODELS="$MODELS_SPEC" MEMRA_SERVE_SPEC=0 MEMRA_SERVE_B1FAST=0 \
     MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1 MEMRA_ADDR=127.0.0.1:$PORT \
     "$BIN" > "$SLOG" 2>&1 &
   SRV=$!
