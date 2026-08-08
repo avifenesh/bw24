@@ -43,16 +43,20 @@ Add one scheduler stage immediately before fresh-prompt batch formation:
    but exact token equality decides membership.
 4. Prime that common prefix once into the leader's normal stage-owned cache, snapshot
    it, restore the snapshot into each sibling's already-allocated cache, and leave all
-   group members queued only on their request-specific suffixes. The existing
-   `prime_cache_batch()` path then batches those suffixes.
+   group members queued only on their request-specific suffixes. The common prime is
+   capped by the existing interactive prefill budget and consumes that request's chunk
+   for the tick; the suffixes continue on the normal carried-prefill path next tick.
+   Step35's dedicated PP batch core remains fresh-only and therefore does not batch
+   those carried suffixes.
 5. Convert each sibling's provisional admission miss into a cache hit. Per-request
    `cached_tokens`, global/tenant cached-token totals, hit/miss counters, hit-token mass,
    and the LCP histogram must all describe the final served path, not the provisional
    admission observation.
 
-This also covers prefixes longer than `MEMRA_PRIME_BATCH_MAX_T`: the one shared prefix
-prime happens before the full-prompt batching cap is applied, while the shorter suffixes
-remain eligible for the merged batch path.
+Prefixes longer than one interactive chunk are deduplicated one budget-capped prefix at
+this stage; the remaining carried tail continues through the existing chunked prime
+path. This preserves the scheduler's TTFT/QoS budget instead of introducing an
+uncapped pre-prime.
 
 ### Pinning design
 
@@ -123,3 +127,34 @@ disconnect, error, or OOM-park exit path can partially move the session.
 Device-free checks (`DOCS_RS=1 cargo test -p memra-server prefix_cache_`) are green:
 8 prefix-cache tests, including the new two-reference eviction test and the
 emergency-flush pin test.
+
+## Increment 4 — scheduler fanout and exact accounting
+
+The interactive scheduler now runs a prefix-fanout stage immediately before fresh
+prime-batch formation. Eligible sessions are cold prefix-cache misses with empty
+session state, no spec/graph/LCP-split path, and at least 64 queued tokens. A pure
+grouping function partitions them by exact `(model, cache_ns)` before comparing token
+ids, then computes the full group LCP and caps it at the current interactive prefill
+budget. An unmatched cold miss remains held only for the existing
+`MEMRA_PRIME_BATCH_HOLD_MS` window, so an unrelated cross-salt arrival cannot launch it
+before matching siblings reach the worker; a true singleton resumes normally when the
+same 4 ms default window expires.
+
+For each group the worker primes one leader prefix, snapshots its stage-owned
+KV/recurrent state, deep-copies that snapshot into each sibling, and leaves only the
+request-specific suffix queued. The shared entry is inserted with one lease per
+successful participant; every ordinary completion, disconnect, error, or OOM-park
+releases its lease through the existing centralized retire sweep.
+
+Sibling admission probes are rewritten from provisional misses to final-path hits:
+the original miss and LCP bucket are removed, hit count/token mass and the served
+prefix bucket are added, and per-response, global, and tenant cached-token counters
+receive exactly the shared prefix length. The leader remains the one computed miss.
+
+`MEMRA_PREFIX_DEDUP=0` restores independent cold primes for the before/after receipt.
+Host checks are green:
+
+- `DOCS_RS=1 cargo check -p memra-server`;
+- `prefix_fanout_` tests: exact same-key grouping, cross-model/tenant/salt isolation,
+  prefill-budget cap, and one-for-one miss-to-hit histogram rewriting;
+- tenant metering test: post-admission cached credit changes only the cached column.
