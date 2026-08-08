@@ -1,6 +1,6 @@
 # pipeprime — chunk-pipelined PP-2 prime
 
-Branch: `lane/cx-pipeline-prime`  
+Branch: `lane/cx-pipeline-prime`
 Base: `2fc86b14` (Lever B walker + step35 batched decode merged)
 
 ## Mission
