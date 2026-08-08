@@ -146,3 +146,23 @@ may advance `PRIME_PIPE_OVERLAPS`, by at least `chunk_count - 1`.
 The `ppsplitc` canary now forces only the pipeline arm back to the serial split. Split
 liveness remains valid, so the canary can pass only when the overlap assertion itself
 detects the missing schedule.
+
+## Increment 5 — first box2 exactness receipt
+
+Box2 (`13.59.112.147`, 2x RTX PRO 6000 Blackwell), release build at `97dec983`,
+CUDA 13.2. One GPU-lock hold, Step-3.7 IQ4_XS, T=4883:
+
+| chunk | serial vs unsplit | pipeline vs serial | split liveness | overlap liveness |
+|---|---|---|---|---|
+| 4096 | all compared bits equal | all compared bits equal | ref/serial/pipe = 0/2/2 | ref/serial/pipe = 0/0/1, need 1 |
+| 513 | all compared bits equal | all compared bits equal | ref/serial/pipe = 0/10/10 | ref/serial/pipe = 0/0/9, need 9 |
+
+Compared surfaces are last-row logits, h_seed, full `[T,n_embd]` hidden stack, and eight
+teacher-forced continuation-logit vectors over the primed KV. Verdict:
+**UNSPLIT/SERIAL/PIPE BIT-IDENTICAL + LIVE**.
+
+Receipts:
+
+- `raw/build-box2-97dec983.log`
+- `raw/ppsplit-naked-raw-20260808T070244Z.log`
+- `raw/ppsplit-naked-summary-20260808T070244Z.log`
