@@ -178,3 +178,28 @@ Canary receipts:
 
 - `raw/ppsplit-canary-raw-20260808T070722Z.log`
 - `raw/ppsplit-canary-summary-20260808T070722Z.log`
+
+## Increment 6 — chunk/tick composition receipts
+
+Box2, release build at `97dec983`, one GPU-lock hold:
+
+| Gate | Pipeline verdict | Canary verdict |
+|---|---|---|
+| `chunkinv35` | PASS: chunks 4096/513/512/256/64 bit-identical through 24 continuation steps | PASS: legacy SWA seam diverged at rows 513/512 |
+| `tickinv35` | PASS: budgets 0/1024/513/512/256/64 and split calls 64/256/512 bit-identical through 24 continuation steps | PASS: legacy call-local seam diverged in every nonzero/split arm |
+
+The default pipeline therefore composes with both internal chunking and caller-side prefill
+ticks. The canaries prove that the comparison surfaces still detect the two historical
+chunk/tick dependence classes.
+
+Receipts:
+
+- `raw/pipeprime-invariance-summary-20260808T071227Z.log`
+- `raw/pipeprime-chunkinv35-raw-20260808T071227Z.log`
+- `raw/pipeprime-chunkinv35-summary-20260808T071227Z.log`
+- `raw/pipeprime-chunkinv35c-raw-20260808T071227Z.log`
+- `raw/pipeprime-chunkinv35c-summary-20260808T071227Z.log`
+- `raw/tickinv35-raw-20260808T071227Z.log`
+- `raw/pipeprime-tickinv35-summary-20260808T071227Z.log`
+- `raw/tickinv35c-raw-20260808T071227Z.log`
+- `raw/pipeprime-tickinv35c-summary-20260808T071227Z.log`
