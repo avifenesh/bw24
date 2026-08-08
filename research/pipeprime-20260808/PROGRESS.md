@@ -252,3 +252,40 @@ Receipts:
 - `raw/pp512-raw-20260808T073806Z.log`
 - `raw/pp2048-raw-20260808T073806Z.log`
 - `raw/pp4096-raw-20260808T073806Z.log`
+
+## Increment 8 — concurrent stage-owned host walkers
+
+The corrected scheduler:
+
+- moves stage-0 and stage-1 KV/recurrent layer state into two owned cache shells for the
+  duration of the prime, then restores the parent cache;
+- uses per-device prime-slab mutexes rather than one model-wide lock;
+- binds each scoped host thread to its stage CUDA context;
+- runs stage 1(N) and stage 0(N+1) on those two host threads;
+- advances `PRIME_PIPE_OVERLAPS` only on an active-walker transition from one stage to
+  two, not from high-level call order.
+
+The three-arm gate remained bit-identical over logits, h_seed, full hidden stacks, and
+eight continuation-logit vectors. Active-walker overlap counts were exactly 1 at chunk
+4096 and 9 at chunk 513.
+
+Two-microchunk N=5 diagnostic, alternating order, one GPU-lock hold:
+
+| shape | serial | concurrent PIPE | ratio |
+|---|---:|---:|---:|
+| pp512, T=461, chunk=256 | 245.7 tok/s | 307.2 tok/s | 1.250x |
+| pp2048, T=1833, chunk=1024 | 263.0 tok/s | 326.4 tok/s | 1.241x |
+| pp4096, T=4096, chunk=2048 | 265.5 tok/s | 339.5 tok/s | 1.279x |
+
+This is the expected two-microbatch fill/drain regime: ideal two-stage speedup is capped
+at 4/3 before fixed overhead. It proves real concurrency and clears the small-prompt stop
+bar, but it is not the final geometry; the next sweep increases microbatch count.
+
+Receipts:
+
+- `raw/ppsplit-concurrent-raw-20260808T075309Z.log`
+- `raw/ppsplit-concurrent-summary-20260808T075309Z.log`
+- `raw/perf-summary-20260808T075717Z.log`
+- `raw/pp512-raw-20260808T075717Z.log`
+- `raw/pp2048-raw-20260808T075717Z.log`
+- `raw/pp4096-raw-20260808T075717Z.log`
