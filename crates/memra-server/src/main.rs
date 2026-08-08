@@ -401,18 +401,25 @@ struct InflightGuard {
 }
 
 impl InflightGuard {
-    /// Returns the guard + the (lane, tenant) in-flight counts INCLUDING this request.
-    fn acquire(counts: InflightCounts, lane: lanes::Lane, tenants: TenantGauge,
-               tenant: &str) -> (Self, usize, usize) {
+    /// Atomically enforce a binding tenant cap, then return the guard + the (lane, tenant)
+    /// in-flight counts INCLUDING this request. The tenant mutex closes the two-arrivals-at-
+    /// once race: at cap, exactly one request wins and the other returns the existing count.
+    fn try_acquire(counts: InflightCounts, lane: lanes::Lane, tenants: TenantGauge,
+                   tenant: &str, tenant_cap: Option<usize>)
+        -> Result<(Self, usize, usize), usize>
+    {
         let idx = lane.idx();
-        let n = counts[idx].fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         let nt = {
             let mut m = tenants.lock().unwrap();
             let e = m.entry(tenant.to_string()).or_insert(0);
+            if tenant_cap.is_some_and(|cap| *e >= cap) {
+                return Err(*e);
+            }
             *e += 1;
             *e
         };
-        (InflightGuard { counts, idx, tenants, tenant: tenant.to_string() }, n, nt)
+        let n = counts[idx].fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        Ok((InflightGuard { counts, idx, tenants, tenant: tenant.to_string() }, n, nt))
     }
 }
 
@@ -546,6 +553,32 @@ impl RateLimit {
             }
         }
         resp
+    }
+}
+
+/// Take the HTTP-layer request slot or reject a tenant whose configured override is already
+/// full. Global interactive capacity still queues as before; this gate exists only when the
+/// key's override is narrower than the lane cap.
+fn acquire_request_slot(st: &AppState, lane: lanes::Lane, tenant: &auth::TenantCtx,
+                        env: &Envelope) -> Result<(InflightGuard, RateLimit), Response> {
+    let global = lane_cap(lane);
+    let tenant_cap = tenant.rate_limit.filter(|&cap| cap < global);
+    match InflightGuard::try_acquire(
+        st.inflight.clone(), lane, st.tenant_inflight.clone(), &tenant.tenant, tenant_cap,
+    ) {
+        Ok((guard, n_inflight, n_tenant)) => {
+            let rl = RateLimit::at_admit(lane, n_inflight, &st.metrics, tenant, n_tenant);
+            Ok((guard, rl))
+        }
+        Err(n_tenant) => {
+            let n_inflight =
+                st.inflight[lane.idx()].load(std::sync::atomic::Ordering::SeqCst);
+            let rl = RateLimit::at_admit(
+                lane, n_inflight, &st.metrics, tenant, n_tenant);
+            let error = worker::EngineError::rate_limit(
+                "api key concurrent request limit reached; retry");
+            Err(rl.attach(with_request_id(&env.id, engine_error_response(&error))))
+        }
     }
 }
 
@@ -2460,9 +2493,10 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
     }
     // RATE-LIMIT SNAPSHOT (gap-scan F12): take the in-flight slot at submission time;
     // the guard rides the response (stream included) and frees the slot at completion.
-    let (guard, n_inflight, n_tenant) = InflightGuard::acquire(
-        st.inflight.clone(), lane, st.tenant_inflight.clone(), &tenant.tenant);
-    let rl = RateLimit::at_admit(lane, n_inflight, &st.metrics, &tenant, n_tenant);
+    let (guard, rl) = match acquire_request_slot(&st, lane, &tenant, &env) {
+        Ok(slot) => slot,
+        Err(resp) => return resp,
+    };
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     let model = req.model.clone();
     let stream = req.stream;
@@ -2547,9 +2581,10 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
     }
     // RATE-LIMIT SNAPSHOT (gap-scan F12): slot taken at submission (post-validation —
     // a 400 never held a slot); freed when the response completes (guard).
-    let (guard, n_inflight, n_tenant) = InflightGuard::acquire(
-        st.inflight.clone(), lane, st.tenant_inflight.clone(), &tenant.tenant);
-    let rl = RateLimit::at_admit(lane, n_inflight, &st.metrics, &tenant, n_tenant);
+    let (guard, rl) = match acquire_request_slot(&st, lane, &tenant, &env) {
+        Ok(slot) => slot,
+        Err(resp) => return resp,
+    };
     meter_admit(&env, &tenant, &model, lane);
     let stop_strings = plan.request.stop_strings.clone();
     // Admission yield (lane/admission-latency): gauge up before send — see completions.
@@ -3991,16 +4026,19 @@ mod tests {
     fn inflight_guard_counts_up_and_frees_on_drop() {
         let counts: InflightCounts = Arc::new(Default::default());
         let tenants: TenantGauge = Arc::new(Default::default());
-        let (g1, n1, t1) = InflightGuard::acquire(
-            counts.clone(), lanes::Lane::Interactive, tenants.clone(), "acme");
-        let (g2, n2, t2) = InflightGuard::acquire(
-            counts.clone(), lanes::Lane::Interactive, tenants.clone(), "acme");
+        let (g1, n1, t1) = InflightGuard::try_acquire(
+            counts.clone(), lanes::Lane::Interactive, tenants.clone(), "acme", None)
+            .unwrap();
+        let (g2, n2, t2) = InflightGuard::try_acquire(
+            counts.clone(), lanes::Lane::Interactive, tenants.clone(), "acme", None)
+            .unwrap();
         assert_eq!((n1, n2), (1, 2));
         // tenant gauge counts per tenant, across lanes.
         assert_eq!((t1, t2), (1, 2));
         // lanes are independent gauges; a different tenant starts at 1.
-        let (gj, nj, tj) = InflightGuard::acquire(
-            counts.clone(), lanes::Lane::Judge, tenants.clone(), "blue");
+        let (gj, nj, tj) = InflightGuard::try_acquire(
+            counts.clone(), lanes::Lane::Judge, tenants.clone(), "blue", None)
+            .unwrap();
         assert_eq!((nj, tj), (1, 1));
         drop(g1);
         drop(gj);
@@ -4012,6 +4050,88 @@ mod tests {
         drop(g2);
         assert_eq!(counts[0].load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(tenants.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn tenant_concurrency_cap_is_atomic_across_arrivals() {
+        let counts: InflightCounts = Arc::new(Default::default());
+        let tenants: TenantGauge = Arc::new(Default::default());
+        let start = Arc::new(std::sync::Barrier::new(3));
+        let attempted = Arc::new(std::sync::Barrier::new(3));
+        let mut joins = Vec::new();
+        for _ in 0..2 {
+            let counts = counts.clone();
+            let tenants = tenants.clone();
+            let start = start.clone();
+            let attempted = attempted.clone();
+            joins.push(std::thread::spawn(move || {
+                start.wait();
+                let result = InflightGuard::try_acquire(
+                    counts, lanes::Lane::Interactive, tenants, "preview_001", Some(1));
+                let won = result.is_ok();
+                attempted.wait(); // winner holds its guard until both arrivals attempted.
+                drop(result);
+                won
+            }));
+        }
+        start.wait();
+        attempted.wait();
+        let wins = joins.into_iter()
+            .map(|join| join.join().unwrap())
+            .filter(|won| *won)
+            .count();
+        assert_eq!(wins, 1, "exactly one simultaneous request may pass cap=1");
+        assert_eq!(counts[0].load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(tenants.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn tenant_concurrency_cap_rejects_before_worker_admission() {
+        let st = fake_worker_state();
+        let tenant = auth::TenantCtx {
+            tenant: "preview_001".into(),
+            lane_class: auth::LaneClass::Interactive,
+            rate_limit: Some(1),
+        };
+        let first_env = Envelope::new(true);
+        let (guard, first_rl) = match acquire_request_slot(
+            &st, lanes::Lane::Interactive, &tenant, &first_env)
+        {
+            Ok(slot) => slot,
+            Err(_) => panic!("the first request must acquire the tenant slot"),
+        };
+        assert_eq!((first_rl.limit, first_rl.remaining), (1, 0));
+
+        let second_env = Envelope::new(true);
+        let response = match acquire_request_slot(
+            &st, lanes::Lane::Interactive, &tenant, &second_env)
+        {
+            Err(response) => response,
+            Ok(_) => panic!("the second request must be rejected at the tenant cap"),
+        };
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()["retry-after"], "2");
+        assert_eq!(response.headers()["retry-after-ms"], "2000");
+        assert_eq!(response.headers()["x-ratelimit-limit"], "1");
+        assert_eq!(response.headers()["x-ratelimit-remaining"], "0");
+        assert_eq!(response.headers()["x-request-id"], second_env.id);
+        assert_eq!(st.inflight[0].load(std::sync::atomic::Ordering::SeqCst), 1,
+                   "rejected request must not consume a lane slot");
+        assert_eq!(
+            st.tenant_inflight.lock().unwrap().get("preview_001").copied(), Some(1),
+            "rejected request must not increment the tenant gauge");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(payload["error"]["type"], "rate_limit_error");
+        assert_eq!(payload["error"]["code"], "rate_limit_exceeded");
+        assert!(payload["error"]["message"].as_str().unwrap()
+            .contains("concurrent request limit"));
+
+        drop(guard);
+        let _ = InflightGuard::try_acquire(
+            st.inflight.clone(), lanes::Lane::Interactive,
+            st.tenant_inflight.clone(), "preview_001", Some(1))
+            .expect("slot must reopen after the in-flight request completes");
     }
 
     #[test]

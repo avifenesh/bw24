@@ -981,8 +981,12 @@ running server picks the revocation up on the next poll. `--keys` defaults to
   claim the protected class, by omission or by header.
 - **Rate limits:** per-key `rate_limit` is a concurrency-slot override; the effective
   cap is **min(override, global lane cap)** — the global cap stays authoritative, an
-  override can only narrow. The `X-RateLimit-*` trio reports the binding cap, with
-  `Remaining` counting the tighter of the tenant and lane gauges.
+  override can only narrow. A request that arrives while its tenant already holds every
+  configured slot is rejected before worker admission with `429 rate_limit_exceeded`;
+  two simultaneous arrivals cannot both pass the cap. The `X-RateLimit-*` trio reports
+  the binding cap, with `Remaining` counting the tighter of the tenant and lane gauges.
+  Multiple keys under one tenant intentionally share that tenant's gauge; issue distinct
+  tenants when recipients need independent caps.
 - **Metering seam:** every admitted request logs one flat
   `[meter] admit id=<x-request-id> tenant=<t> lane=<l> model=<m>` line — the public-repo
   half; the private fork's metering layer joins these against the worker-truth usage
