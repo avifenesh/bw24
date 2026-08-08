@@ -1,0 +1,3 @@
+build start 2026-08-08T13:40:09Z commit=77040bf69eb6e31921feb62e1bd7baf34d4ea04c
+bash: line 1: cargo: command not found
+build end 2026-08-08T13:40:09Z rc=127

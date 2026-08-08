@@ -15,11 +15,15 @@
 # refuse_unsplit_if_remote — its unsplit walk is a 22% amortized tax, not the decode 28x
 # cliff, and it is precisely this gate's REFERENCE arm (MEMRA_PRIME_PP=0).
 #
-# LIVENESS TEETH: the serial and pipeline arms must advance PRIME_SPLIT_CHUNKS; only the
-# pipeline arm may advance PRIME_PIPE_OVERLAPS, by at least chunks-1. --canary passes
-# --force-serial-pipe: the pipeline arm remains a real stage split but takes
-# MEMRA_PRIME_PIPE=0. Bits still agree, split liveness still passes, and ONLY the overlap
-# assertion must turn RED. This directly proves the pipeline counter has teeth.
+# SCHEDULE CONTRACT: the unsplit and serial arms use the fixed rollback schedule; the
+# pipeline arm uses the dynamic naked-auto schedule. Their returned tensors and primed-cache
+# continuation must remain bit-identical. Explicit --chunks values remain fixed in all arms.
+#
+# LIVENESS TEETH: the fixed-serial and dynamic-pipeline arms must advance
+# PRIME_SPLIT_CHUNKS; only the pipeline arm may advance PRIME_PIPE_OVERLAPS, by at least
+# chunks-1. --canary passes --force-serial-pipe: the pipeline arm remains a real stage
+# split with dynamic boundaries but takes MEMRA_PRIME_PIPE=0. Bits still agree, split
+# liveness still passes, and ONLY the overlap assertion must turn RED.
 #
 # NEEDS 2 GPUs with P2P (the PRO 6000 pair). On a single-GPU rig (the local 5090) it SKIPs:
 # a same-device "split" exercises the seam but not the placement this lever exists for; the

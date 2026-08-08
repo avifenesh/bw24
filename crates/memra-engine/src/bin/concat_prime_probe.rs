@@ -1308,23 +1308,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             assert!(reps > 0, "pppipeperf --reps must be at least 1");
             let ids = cx.tok.encode(&pa, true);
             let t = ids.len();
-            let min_t = memra_engine::hybrid_forward::PRIME_MIN_T;
             let chunk =
                 memra_engine::hybrid_forward::prime_chunk_tokens(t, cx.model.layers.len());
-            let expected = if chunk == 0 || t <= chunk {
-                1
-            } else {
-                let (mut n, mut start) = (0usize, 0usize);
-                while start < t {
-                    let mut end = (start + chunk).min(t);
-                    if t - end > 0 && t - end < min_t {
-                        end = t;
-                    }
-                    n += 1;
-                    start = end;
-                }
-                n
-            };
+            let ranges =
+                memra_engine::hybrid_forward::prime_chunk_ranges(t, cx.model.layers.len());
+            let sizes: Vec<_> = ranges.iter().map(|(start, end)| end - start).collect();
+            let expected = ranges.len();
             let expected_overlaps = expected.saturating_sub(1);
             assert!(
                 memra_engine::pp::pp_cuts(cx.model.layers.len()).is_some(),
@@ -1335,8 +1324,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "pppipeperf requires at least two internal chunks (T={t}, chunk={chunk})"
             );
             println!(
-                "pppipeperf: T={t} chunk={chunk} chunks={expected} expected_overlaps={} \
-                 reps={reps} warmup={warmup} devices={}",
+                "pppipeperf: T={t} nominal_chunk={chunk} sizes={sizes:?} chunks={expected} \
+                 expected_overlaps={} reps={reps} warmup={warmup} devices={}",
                 expected_overlaps,
                 std::env::var("MEMRA_PP_DEVICES").unwrap_or_else(|_| "unset".into()),
             );
@@ -1430,23 +1419,161 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!(
                 "pppipeperf MEDIAN: SERIAL {:.1} tok/s ({serial_med:.4}s) | \
                  PIPE {:.1} tok/s ({pipe_med:.4}s) | speedup {:.3}x | N={reps} \
-                 alternating order, chunk={chunk}, chunks={expected}",
+                 alternating order, nominal_chunk={chunk}, sizes={sizes:?}",
                 t as f64 / serial_med,
                 t as f64 / pipe_med,
                 serial_med / pipe_med,
             );
         }
 
+        // DYNAMIC MICROCHUNK THROUGHPUT (lane/cx-dynamic-microchunk, 2026-08-08).
+        // Compare fixed and dynamic chunk boundaries with the PP-2 pipeline live in both
+        // arms. One sharded load, alternating order, and liveness on every sample make this
+        // a schedule-only measurement.
+        //   ppschedperf <model> ppschedperf --prompt-a <txt|@f> [--reps 5] [--warmup 1]
+        "ppschedperf" => {
+            let pa = text_arg(&rest, "--prompt-a").expect("--prompt-a");
+            let reps: usize = arg(&rest, "--reps").and_then(|v| v.parse().ok()).unwrap_or(5);
+            let warmup: usize = arg(&rest, "--warmup").and_then(|v| v.parse().ok()).unwrap_or(1);
+            assert!(reps > 0, "ppschedperf --reps must be at least 1");
+            assert!(
+                std::env::var_os("MEMRA_PRIME_CHUNK").is_none(),
+                "ppschedperf requires naked auto geometry (unset MEMRA_PRIME_CHUNK)"
+            );
+            assert!(
+                memra_engine::pp::pp_cuts(cx.model.layers.len()).is_some(),
+                "ppschedperf requires an open PP door"
+            );
+            let ids = cx.tok.encode(&pa, true);
+            let t = ids.len();
+            let schedule = |name: &str| {
+                unsafe {
+                    std::env::set_var("MEMRA_PRIME_CHUNK_SCHED", name);
+                }
+                memra_engine::hybrid_forward::prime_chunk_ranges(t, cx.model.layers.len())
+            };
+            let fixed_ranges = schedule("fixed");
+            let dynamic_ranges = schedule("dynamic");
+            let fixed_sizes: Vec<_> =
+                fixed_ranges.iter().map(|(start, end)| end - start).collect();
+            let dynamic_sizes: Vec<_> =
+                dynamic_ranges.iter().map(|(start, end)| end - start).collect();
+            assert!(
+                fixed_ranges.len() >= 2,
+                "ppschedperf requires at least two internal chunks"
+            );
+            assert_eq!(
+                fixed_ranges.len(),
+                dynamic_ranges.len(),
+                "dynamic schedule must retain the fixed chunk count"
+            );
+            println!(
+                "ppschedperf: T={t} fixed={fixed_sizes:?} dynamic={dynamic_sizes:?} \
+                 chunks={} reps={reps} warmup={warmup} devices={}",
+                fixed_ranges.len(),
+                std::env::var("MEMRA_PP_DEVICES").unwrap_or_else(|_| "unset".into()),
+            );
+
+            let run_arm = |name: &str|
+                           -> Result<(f64, usize, usize), Box<dyn std::error::Error>> {
+                unsafe {
+                    std::env::remove_var("MEMRA_PRIME_CHUNK");
+                    std::env::remove_var("MEMRA_PRIME_PP");
+                    std::env::remove_var("MEMRA_PRIME_PIPE");
+                    std::env::set_var("MEMRA_PRIME_CHUNK_SCHED", name);
+                }
+                let split0 = memra_engine::pp::prime_split_chunks();
+                let overlap0 = memra_engine::pp::prime_pipe_overlaps();
+                let mut c = memra_engine::pp::new_cache(&cx.e, &cx.model.cfg, t + 8)?;
+                let t0 = std::time::Instant::now();
+                let _ = cx.model.prime_cache(&cx.e, &ids, &mut c, 0)?;
+                cx.e.stream().synchronize()?;
+                Ok((
+                    t0.elapsed().as_secs_f64(),
+                    memra_engine::pp::prime_split_chunks() - split0,
+                    memra_engine::pp::prime_pipe_overlaps() - overlap0,
+                ))
+            };
+            let validate = |name: &str, split: usize, overlaps: usize| {
+                let expected = if name == "fixed" {
+                    fixed_ranges.len()
+                } else {
+                    dynamic_ranges.len()
+                };
+                assert!(
+                    split >= expected && overlaps >= expected - 1,
+                    "{name} not live: split={split} overlaps={overlaps}, \
+                     need split>={expected} overlaps>={}",
+                    expected - 1
+                );
+            };
+
+            for warmup_rep in 1..=warmup {
+                for name in ["fixed", "dynamic"] {
+                    let (dt, split, overlaps) = run_arm(name)?;
+                    validate(name, split, overlaps);
+                    println!(
+                        "  warmup {warmup_rep} arm={}: {t} tok in {dt:.4}s = {:.1} tok/s \
+                         split={split} overlaps={overlaps}",
+                        name.to_ascii_uppercase(),
+                        t as f64 / dt,
+                    );
+                }
+            }
+
+            let mut fixed_times = Vec::with_capacity(reps);
+            let mut dynamic_times = Vec::with_capacity(reps);
+            for rep in 1..=reps {
+                let order = if rep % 2 == 1 {
+                    ["fixed", "dynamic"]
+                } else {
+                    ["dynamic", "fixed"]
+                };
+                for name in order {
+                    let (dt, split, overlaps) = run_arm(name)?;
+                    validate(name, split, overlaps);
+                    println!(
+                        "  rep {rep} arm={}: {t} tok in {dt:.4}s = {:.1} tok/s \
+                         split={split} overlaps={overlaps}",
+                        name.to_ascii_uppercase(),
+                        t as f64 / dt,
+                    );
+                    if name == "fixed" {
+                        fixed_times.push(dt);
+                    } else {
+                        dynamic_times.push(dt);
+                    }
+                }
+            }
+            unsafe {
+                std::env::remove_var("MEMRA_PRIME_CHUNK_SCHED");
+                std::env::remove_var("MEMRA_PRIME_PP");
+                std::env::remove_var("MEMRA_PRIME_PIPE");
+            }
+            fixed_times.sort_by(f64::total_cmp);
+            dynamic_times.sort_by(f64::total_cmp);
+            let fixed_med = fixed_times[fixed_times.len() / 2];
+            let dynamic_med = dynamic_times[dynamic_times.len() / 2];
+            println!(
+                "ppschedperf MEDIAN: FIXED {:.1} tok/s ({fixed_med:.4}s) | \
+                 DYNAMIC {:.1} tok/s ({dynamic_med:.4}s) | speedup {:.3}x | N={reps} \
+                 alternating order, fixed={fixed_sizes:?}, dynamic={dynamic_sizes:?}",
+                t as f64 / fixed_med,
+                t as f64 / dynamic_med,
+                fixed_med / dynamic_med,
+            );
+        }
+
         // PRIME PP SCHEDULE BIT-IDENTITY (lane/pp-leverb + lane/cx-pipeline-prime,
-        // 2026-08-08). Three arms in ONE process
-        // over the SAME sharded load (the door must be open BEFORE the probe starts — the
+        // lane/cx-dynamic-microchunk, 2026-08-08). Three arms in ONE process over the
+        // SAME sharded load (the door must be open BEFORE the probe starts — the
         // gate script exports MEMRA_PP_STAGES/MEMRA_PP_DEVICES; a door-off load of a >VRAM
         // SKU doesn't fit one card, so the reference is the door-open UNSPLIT walk, which
         // prime deliberately keeps callable — its 22% amortized tax is this gate's reference
         // arm, not a refusal case):
-        //   arm REF:    MEMRA_PRIME_PP=0 — whole-trunk prime on the primary engine;
-        //   arm SERIAL: split walker with MEMRA_PRIME_PIPE=0;
-        //   arm PIPE:   split walker with the chunk pipeline live.
+        //   arm REF:    FIXED schedule + MEMRA_PRIME_PP=0 whole-trunk prime;
+        //   arm SERIAL: FIXED schedule + split walker with MEMRA_PRIME_PIPE=0;
+        //   arm PIPE:   DYNAMIC schedule + chunk pipeline live.
         // Compared bit-for-bit: last-row logits, h_seed, the full [T, n_embd] hidden stack,
         // and `--steps` TEACHER-FORCED decode steps replaying the reference greedy stream —
         // the decode steps read the KV the prime WROTE, so a schedule that lands stage-1
@@ -1507,10 +1634,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 unsafe {
                     match arm {
                         PrimeArm::Ref => {
+                            std::env::set_var("MEMRA_PRIME_CHUNK_SCHED", "fixed");
                             std::env::set_var("MEMRA_PRIME_PP", "0");
                             std::env::set_var("MEMRA_PRIME_PIPE", "0");
                         }
                         PrimeArm::Serial => {
+                            std::env::set_var("MEMRA_PRIME_CHUNK_SCHED", "fixed");
                             if force_unsplit {
                                 std::env::set_var("MEMRA_PRIME_PP", "0");
                             } else {
@@ -1519,6 +1648,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             std::env::set_var("MEMRA_PRIME_PIPE", "0");
                         }
                         PrimeArm::Pipe => {
+                            std::env::set_var("MEMRA_PRIME_CHUNK_SCHED", "dynamic");
                             if force_unsplit {
                                 std::env::set_var("MEMRA_PRIME_PP", "0");
                             } else {
@@ -1568,6 +1698,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         std::env::remove_var("MEMRA_PRIME_CHUNK");
                         std::env::remove_var("MEMRA_PRIME_PP");
                         std::env::remove_var("MEMRA_PRIME_PIPE");
+                        std::env::set_var("MEMRA_PRIME_CHUNK_SCHED", "dynamic");
                     }
                     memra_engine::hybrid_forward::prime_chunk_tokens(
                         t,
@@ -1577,26 +1708,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     unsafe { std::env::set_var("MEMRA_PRIME_CHUNK", cv) };
                     cv.parse().unwrap_or(0)
                 };
+                unsafe {
+                    std::env::set_var("MEMRA_PRIME_CHUNK_SCHED", "fixed");
+                }
+                let fixed_ranges =
+                    memra_engine::hybrid_forward::prime_chunk_ranges(
+                        t,
+                        cx.model.layers.len(),
+                    );
+                unsafe {
+                    std::env::set_var("MEMRA_PRIME_CHUNK_SCHED", "dynamic");
+                }
+                let dynamic_ranges =
+                    memra_engine::hybrid_forward::prime_chunk_ranges(
+                        t,
+                        cx.model.layers.len(),
+                    );
+                let fixed_sizes: Vec<_> = fixed_ranges
+                    .iter()
+                    .map(|(start, end)| end - start)
+                    .collect();
+                let dynamic_sizes: Vec<_> = dynamic_ranges
+                    .iter()
+                    .map(|(start, end)| end - start)
+                    .collect();
                 let chunk_label = if cv == "auto" {
-                    format!("auto({chunk})")
+                    format!(
+                        "auto({chunk}) fixed={fixed_sizes:?} dynamic={dynamic_sizes:?}"
+                    )
                 } else {
-                    cv.to_string()
+                    format!("{cv} sizes={fixed_sizes:?}")
                 };
-                // expected chunk count = prime_cache's own loop (incl. the PRIME_MIN_T tail
-                // merge), so the liveness bar tracks the real segmentation at every --chunks.
-                let expected = if chunk == 0 || t <= chunk {
-                    1
-                } else {
-                    let (mut n, mut start) = (0usize, 0usize);
-                    while start < t {
-                        let mut end = (start + chunk).min(t);
-                        if t - end > 0 && t - end < min_t { end = t; }
-                        n += 1;
-                        start = end;
-                    }
-                    n
-                };
-                let expected_overlaps = expected.saturating_sub(1);
+                let fixed_expected = fixed_ranges.len();
+                let dynamic_expected = dynamic_ranges.len();
+                let expected_overlaps = dynamic_expected.saturating_sub(1);
                 let reference = run_arm(PrimeArm::Ref, None)?;
                 let serial = run_arm(PrimeArm::Serial, Some(&reference.inputs))?;
                 let pipe = run_arm(PrimeArm::Pipe, Some(&reference.inputs))?;
@@ -1627,10 +1772,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let pipe_exact = pipe_diff.0 + pipe_diff.1 + pipe_diff.2 + pipe_diff.3 == 0;
                 let serial_live = reference.split_chunks == 0
                     && reference.pipe_overlaps == 0
-                    && serial.split_chunks >= expected
+                    && serial.split_chunks >= fixed_expected
                     && serial.pipe_overlaps == 0;
-                let pipe_live = expected >= 2
-                    && pipe.split_chunks >= expected
+                let pipe_live = dynamic_expected >= 2
+                    && pipe.split_chunks >= dynamic_expected
                     && pipe.pipe_overlaps >= expected_overlaps;
                 let mut soak_exact_failures = usize::from(!pipe_exact);
                 let mut soak_live_failures = usize::from(!pipe_live);
@@ -1649,14 +1794,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                     let sample_exact =
                         sample_diff.0 + sample_diff.1 + sample_diff.2 + sample_diff.3 == 0;
-                    let sample_live = sample.split_chunks >= expected
+                    let sample_live = sample.split_chunks >= dynamic_expected
                         && sample.pipe_overlaps >= expected_overlaps;
                     soak_exact_failures += usize::from(!sample_exact);
                     soak_live_failures += usize::from(!sample_live);
                     if !sample_exact || !sample_live {
                         println!(
                             "    soak {}/{}: diff L/H/S/D={}/{}/{}/{} split={} overlaps={} \
-                             need split>={expected} overlaps>={expected_overlaps}",
+                             need split>={dynamic_expected} overlaps>={expected_overlaps}",
                             i + 1,
                             soak,
                             sample_diff.0,
@@ -1688,7 +1833,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!(
                     "  chunk {chunk_label} | serial-vs-ref diff L/H/S/D={}/{}/{}/{} | \
                      pipe-vs-serial diff L/H/S/D={}/{}/{}/{} | split_chunks R/S/P={}/{}/{} \
-                     need S,P>={expected} | pipe_overlaps R/S/P={}/{}/{} need P>={} | \
+                     need S>={fixed_expected} P>={dynamic_expected} | \
+                     pipe_overlaps R/S/P={}/{}/{} need P>={} | \
                      soak pipe_primes={} exact_failures={} live_failures={} | {status}",
                     serial_diff.0,
                     serial_diff.1,
@@ -1719,6 +1865,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             unsafe {
                 std::env::remove_var("MEMRA_PRIME_CHUNK");
+                std::env::remove_var("MEMRA_PRIME_CHUNK_SCHED");
                 std::env::remove_var("MEMRA_PRIME_PP");
                 std::env::remove_var("MEMRA_PRIME_PIPE");
             }

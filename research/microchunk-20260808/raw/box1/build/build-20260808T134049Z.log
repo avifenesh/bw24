@@ -1,0 +1,17 @@
+build start 2026-08-08T13:40:49Z commit=77040bf69eb6e31921feb62e1bd7baf34d4ea04c cargo=/home/ubuntu/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo rustc=/home/ubuntu/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc
+   Compiling libc v0.2.186
+   Compiling cudarc v0.19.8
+   Compiling cfg-if v1.0.4
+   Compiling memra-engine v0.72.0 (/home/ubuntu/memra-cx-microchunk/crates/memra-engine)
+   Compiling memra-sampling v0.72.0 (/home/ubuntu/memra-cx-microchunk/crates/memra-sampling)
+   Compiling memra-validate v0.72.0 (/home/ubuntu/memra-cx-microchunk/crates/memra-validate)
+   Compiling libloading v0.9.0
+   Compiling memmap2 v0.9.11
+   Compiling memra-gguf v0.72.0 (/home/ubuntu/memra-cx-microchunk/crates/memra-gguf)
+   Compiling memra-tokenizer v0.72.0 (/home/ubuntu/memra-cx-microchunk/crates/memra-tokenizer)
+   Compiling memra-kv v0.72.0 (/home/ubuntu/memra-cx-microchunk/crates/memra-kv)
+   Compiling memra-runtime v0.72.0 (/home/ubuntu/memra-cx-microchunk/crates/memra-runtime)
+warning: memra-engine@0.72.0: nvcc auto-detected CUDA 13.2 at /usr/local/cuda-13.2/bin/nvcc (newest of 4; also saw 13.0 @ /usr/local/cuda-13.0/bin/nvcc, 12.9 @ /usr/local/cuda-12.9/bin/nvcc, 12.8 @ /usr/local/cuda-12.8/bin/nvcc)
+warning: memra-engine@0.72.0: MEMRA_CUDA_ARCH auto-detected 120a (compute_cap 12.0); set MEMRA_CUDA_ARCH to override
+    Finished `release` profile [optimized] target(s) in 3m 45s
+build end 2026-08-08T13:44:34Z rc=0
