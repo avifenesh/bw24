@@ -45,3 +45,53 @@ correctness win (multi-tenant device follow): surgical repair, not revert.
 ## Log
 
 - 2026-08-08: lane start. Plan committed before any code reading (write-first).
+- 2026-08-08: STATIC DIAGNOSIS (code + existing receipts, pre-box):
+
+### The mechanism
+
+1. `crates/memra-engine/src/hybrid.rs:1213` — `e_head = layer_engine(e, n_trunk,
+   n_trunk-1)`: the lm head (`output` + `output_norm`) uploads through the LAST
+   stage's engine, i.e. lives on the last stage's device under a sharded PP placement.
+2. `crates/memra-engine/src/spec.rs` `mtp_head_forward_dev` op 12:
+   `let head = mtp.shared_head_head.as_ref().unwrap_or(&self.output)` — qwen35-family
+   drafters (q9 embedded MTP included) ship no own head, so EVERY draft token's head
+   matmul reads the TRUNK lm head (the biggest tensor in the model). Op 11's fallback
+   `shared_head_norm.unwrap_or(&self.output_norm)` reads last-stage bytes too.
+3. The draft chain (and its graph capture) runs on the PRIMARY engine. Therefore:
+   spec serving is fast iff primary device == LAST-stage device (head co-located);
+   primary == stage-0 device puts a full lm-head peer read on every draft token.
+
+### Why every existing receipt fits
+
+| receipt | topology (primary vs head) | speed |
+|---|---|---|
+| lane binary serve, dev10 (`Engine::new(0)`, placement 1,0) | primary=0 == last stage | 112.5 FAST |
+| lane-era note, dev01 (primary=0 == stage 0, head on dev1) | mismatch | ~20x SLOW (pp2spec PROGRESS "known non-blockers") |
+| HEAD serve (5f27c55c: primary=PP_DEVICES[0] = stage 0 ALWAYS), dev10 AND dev01 | mismatch always | 17.5 both — the battery's "placement-independent" |
+| run-spec engine E1, dev10 (`Engine::new(0)`) | primary=0 == last stage | 164.7 FAST |
+| spec-OFF serve (no draft chain; head matmul runs ON the last stage via `el.matmul_decode_exact`) | insensitive | 223.2 == lane 223.3 |
+| door-shut single card | no PP | 547.3 unchanged |
+
+The merge flipped serving on dev10 from the validated fast topology (primary on the
+head stage) to the slow one (primary on stage 0) — and made the slow topology universal.
+
+### Fix shape (surgical, keeps the correctness win)
+
+`worker_device()` follows the LAST device in MEMRA_PP_DEVICES (the head stage's
+device), not the first. This:
+- restores EXACTLY the device topology the 212/212 crash battery + 112.5 receipts
+  validated on dev10 (primary=dev0, stage0 own-engine dev1, stage1 own-engine dev0);
+- keeps 5f27c55c's win — the worker primary is a placement device, never an
+  unrelated device 0 (the multi-tenant device-follow), invalid strings still refuse
+  at boot, boot line still logs the device;
+- should ALSO fix the old dev01 ~20x (primary lands on dev1 = head stage there).
+Engine gate binaries (ppn-gate, decode-batch-*) keep primary=PP_DEVICES[0] — they
+deliberately test the shared-engine stage-0 case and are not the serving surface.
+
+### Box plan (box2 first)
+
+- Repro at HEAD: q9 (embedded MTP) spec+PP-2 dev10 c=1 -> expect collapse class.
+- Experiment: patched worker (primary=last) -> expect 112-class return, N=3.
+- Controls: spec-off PP-2 unchanged; door-shut single-card unchanged; dev01 spec
+  (expect fast NOW — differentiates fix from a plain revert); run-spec 8/8;
+  #87 quick crash gate c=4 x50 clean.
