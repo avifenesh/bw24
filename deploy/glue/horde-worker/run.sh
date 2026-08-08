@@ -114,7 +114,12 @@ fi
 if [[ "$mode" == "check" ]]; then
     verify_install
     "$CONFIGURE" --validate
-    "$CONFIGURE" --check "$CONFIG_PATH"
+    if [[ -f "$CONFIG_PATH" ]]; then
+        "$CONFIGURE" --check "$CONFIG_PATH"
+    else
+        printf 'INFO: rendered config is absent; the service will create %s at first start\n' \
+            "$CONFIG_PATH"
+    fi
     printf 'CHECK PASS: installation and config are valid; no network connection was attempted\n'
     exit 0
 fi

@@ -83,7 +83,7 @@ Inspect the registered worker after its first poll:
 ```bash
 curl --fail --silent --show-error \
   "https://aihorde.net/api/v2/workers/name/memra-research-preview-runpod" |
-  jq '{id,name,online,maintenance,requests_fulfilled,kudos_rewards,models}'
+  jq '{id,name,online,maintenance_mode,requests_fulfilled,kudos_rewards,models}'
 ```
 
 The offline dry run renders and validates the complete config but permits
