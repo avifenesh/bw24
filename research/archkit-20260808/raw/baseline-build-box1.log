@@ -1,0 +1,15 @@
+   Compiling libc v0.2.186
+   Compiling cudarc v0.19.8
+   Compiling cfg-if v1.0.4
+   Compiling memra-engine v0.72.0 (/home/ubuntu/archkit/crates/memra-engine)
+   Compiling memra-validate v0.72.0 (/home/ubuntu/archkit/crates/memra-validate)
+   Compiling memra-sampling v0.72.0 (/home/ubuntu/archkit/crates/memra-sampling)
+   Compiling libloading v0.9.0
+   Compiling memmap2 v0.9.11
+   Compiling memra-gguf v0.72.0 (/home/ubuntu/archkit/crates/memra-gguf)
+   Compiling memra-tokenizer v0.72.0 (/home/ubuntu/archkit/crates/memra-tokenizer)
+   Compiling memra-runtime v0.72.0 (/home/ubuntu/archkit/crates/memra-runtime)
+   Compiling memra-kv v0.72.0 (/home/ubuntu/archkit/crates/memra-kv)
+warning: memra-engine@0.72.0: nvcc auto-detected CUDA 13.2 at /usr/local/cuda-13.2/bin/nvcc (newest of 4; also saw 13.0 @ /usr/local/cuda-13.0/bin/nvcc, 12.9 @ /usr/local/cuda-12.9/bin/nvcc, 12.8 @ /usr/local/cuda-12.8/bin/nvcc)
+warning: memra-engine@0.72.0: MEMRA_CUDA_ARCH auto-detected 120a (compute_cap 12.0); set MEMRA_CUDA_ARCH to override
+    Finished `release` profile [optimized] target(s) in 3m 25s
