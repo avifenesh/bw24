@@ -12,7 +12,9 @@ permission-safe convenience wrapper.
   optional `rate_limit`.
 - `rate_limit` means **concurrent in-flight requests**, not requests/minute or
   tokens/minute. The effective cap is the lower of this per-key value and the
-  global lane cap.
+  global lane cap. A request that arrives while its tenant holds every configured
+  slot gets an OpenAI-shaped `429 rate_limit_exceeded` before worker admission,
+  with `Retry-After` and zero `x-ratelimit-remaining`.
 - `interactive` keys use the protected interactive lane by default. `batch`
   keys default to harvest and cannot claim `x-lane: interactive`.
 - The server polls the keyring mtime and applies a valid change within two
@@ -20,7 +22,7 @@ permission-safe convenience wrapper.
 - Revoked keys return 403. Missing or unknown keys return 401.
 - A tenant is also a cache and metering boundary. Give each directly issued
   preview user a distinct tenant rather than issuing many people keys under one
-  shared tenant.
+  shared tenant. Keys under the same tenant share its in-flight gauge.
 
 The RunPod provisioner creates the ring as `root:memra 0640`: root mutates it,
 and the unprivileged `memra-server` process can read it. `keyctl.sh` preserves
