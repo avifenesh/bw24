@@ -93,3 +93,18 @@ than importing either engine's block manager.
 | PC-ISO / API-key isolation arms | green |
 | run-gen | argmax MATCH |
 | N=8 receipt | simultaneous same-prefix TTFT distribution before/after, raw client/server logs and thermal/GPU state on box1 |
+
+## Increment 2 — simultaneous cache-meter gate registered
+
+`tools/cache-meter-gate.py` now launches the five same-salt requests and one
+cross-salt control behind one client barrier instead of teaching the prefix cache
+sequentially. The required accounting is now:
+
+- namespace A: one request reports `cached_tokens=0`, four report exactly K;
+- namespace B: the same K-token prefix remains `cached_tokens=0`;
+- aggregate: hits/misses/inserts = 4/2/2, hit-token mass = 4K, two cold LCP
+  samples, four K-depth samples, and exact global/tenant prompt-vs-cached totals.
+
+At the branch base this is a registered RED by construction: all six requests complete
+their cache probes before any prefix entry exists, so all six compute their prefixes.
+The existing serve-smoke arm invokes this gate with N=5, K=256.
