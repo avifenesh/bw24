@@ -1,0 +1,323 @@
+=== leverb inc2 battery 20260808T010302Z commit=ec6bfad0 (rsync)
+lock acquired 2026-08-08T01:03:02Z
+0, 26, 180 MHz, 0 MiB
+1, 26, 180 MHz, 0 MiB
+
+########## G0+G3: run-gen argmax over PP-2, naked (slab arm live) + logits dump ##########
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 trunk layers; optional MTP skipped)
+prompt text: "Write a short paragraph explaining how a CPU pipeline improves instruction throughput, and mention one hazard."
+prompt tokens: [0, 21750, 260, 3107, 15363, 26131, 1192, 260, 25454, 28499, 28232, 12740, 62027, 14, 305, 6731, 834, 23616, 16]
+prefill argmax=6776  decode argmax=6776  logit maxdiff=8.228e-1  MATCH
+batched-prime argmax=6776  tokenwise argmax=6776  logit maxdiff=7.178e-1  MATCH
+prefill 19 tok in 0.4921s = 38.6 tok/s (pp19)
+generated 64 tokens in 3.416s = 18.74 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.493s) [stop: MaxNew]
+tokens: [6776, 666, 7805, 11490, 2143, 35, 25454, 28499, 21994, 270, 16846, 294, 411, 12740, 1055, 3586, 13656, 343, 70698, 14, 64285, 14, 22218, 14, 6464, 14, 5085, 43360, 3555, 797, 6001, 834, 12740, 344, 295, 270, 22218, 6632, 14, 270, 2894, 588, 366, 91249, 14, 305, 270, 834, 1561, 396, 588, 366, 114400, 14, 832, 3586, 12846, 477, 295, 14349, 19649, 16, 1162, 48058]
+MoE cache: 15356 slots | cumulative hits=47109 misses=5331 (hit-rate=89.8%) | Stage-1 baseline = 2678 MB/decode-token (every block, every layer, every token)
+MoE cache STEADY-STATE (32 tokens after warmup): hit-rate=0.0% | 0.0 MB/decode-token (vs 2678 MB/token Stage-1 => infx less PCIe)
+OUTPUT TEXT: "  \n\n**Answer:**  \nA CPU pipeline breaks the execution of an instruction into several stages (fetch, decode, execute, memory, write‑back). While one instruction is in the execute stage, the next can be decoded, and the one after that can be fetched, so several instructions are in flight simultaneously. This overlapping"
+--- generated text ---
+  
+
+**Answer:**  
+A CPU pipeline breaks the execution of an instruction into several stages (fetch, decode, execute, memory, write‑back). While one instruction is in the execute stage, the next can be decoded, and the one after that can be fetched, so several instructions are in flight simultaneously. This overlapping
+G3 exit=0
+
+########## G3b: run-gen MEMRA_MOE_SLAB=0 + logits dump, then the slab-vs-SLRU bit cmp ##########
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 trunk layers; optional MTP skipped)
+prompt text: "Write a short paragraph explaining how a CPU pipeline improves instruction throughput, and mention one hazard."
+prompt tokens: [0, 21750, 260, 3107, 15363, 26131, 1192, 260, 25454, 28499, 28232, 12740, 62027, 14, 305, 6731, 834, 23616, 16]
+prefill argmax=6776  decode argmax=6776  logit maxdiff=8.228e-1  MATCH
+batched-prime argmax=6776  tokenwise argmax=6776  logit maxdiff=7.178e-1  MATCH
+prefill 19 tok in 0.4910s = 38.7 tok/s (pp19)
+generated 64 tokens in 3.969s = 16.12 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.490s) [stop: MaxNew]
+tokens: [6776, 666, 7805, 11490, 2143, 35, 25454, 28499, 21994, 270, 16846, 294, 411, 12740, 1055, 3586, 13656, 343, 70698, 14, 64285, 14, 22218, 14, 6464, 14, 5085, 43360, 3555, 797, 6001, 834, 12740, 344, 295, 270, 22218, 6632, 14, 270, 2894, 588, 366, 91249, 14, 305, 270, 834, 1561, 396, 588, 366, 114400, 14, 832, 3586, 12846, 477, 295, 14349, 19649, 16, 1162, 48058]
+MoE cache: 15356 slots | cumulative hits=120627 misses=12981 (hit-rate=90.3%) | Stage-1 baseline = 2678 MB/decode-token (every block, every layer, every token)
+MoE cache STEADY-STATE (32 tokens after warmup): hit-rate=96.0% | 48.1 MB/decode-token (vs 2678 MB/token Stage-1 => 55.7x less PCIe)
+OUTPUT TEXT: "  \n\n**Answer:**  \nA CPU pipeline breaks the execution of an instruction into several stages (fetch, decode, execute, memory, write‑back). While one instruction is in the execute stage, the next can be decoded, and the one after that can be fetched, so several instructions are in flight simultaneously. This overlapping"
+--- generated text ---
+  
+
+**Answer:**  
+A CPU pipeline breaks the execution of an instruction into several stages (fetch, decode, execute, memory, write‑back). While one instruction is in the execute stage, the next can be decoded, and the one after that can be fetched, so several instructions are in flight simultaneously. This overlapping
+G3b exit=0
+cmp: /tmp/leverb-logits-slab.bin: No such file or directory
+G3cmp: *** slab-vs-SLRU LOGITS DIFFER — the provenance-only claim is FALSE, stop
+
+########## G1: kernel-check model-backed FULL ##########
+fa_decode_v4_deep vs v4 (eager) t_kv=6144: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6144: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6144 bucket=6272: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (eager) t_kv=6200: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6200: bitdiff=0 OK
+fa_decode_v4_deep vs v4 (dc) t_kv=6200 bucket=6328: bitdiff=0 OK
+fa_prefill_view_ws vs inline-dequant T=64 Tkv=192: bitdiff=0 OK
+fa_prefill_view_ws vs inline-dequant T=100 Tkv=100: bitdiff=0 OK
+fa_prefill_view_ws vs inline-dequant T=37 Tkv=297: bitdiff=0 OK
+sdpa_naive_w_quantized_view(window=0) vs unwindowed T=64 Tkv=192: bitdiff=0 OK
+sdpa_naive_w_quantized_view(window>=Tkv) vs unwindowed T=64 Tkv=192: bitdiff=0 OK
+sdpa_naive_w_quantized_view window=32 vs CPU windowed oracle T=64 Tkv=192: rel=4.84e-7 OK
+sdpa_naive_w_quantized_view window=32 differs from unwindowed T=64 Tkv=192: changed=65536/65536 OK
+fa_prefill_view_ws_w_hd128 window=32 vs CPU windowed oracle T=64 Tkv=192: rel=9.15e-3 OK
+fa_prefill_view_ws_w_hd128 window=32 vs f32 floor T=64 Tkv=192: rel=9.15e-3 OK
+fa_prefill_view_ws_w_hd128 window=32 differs from unwindowed FA T=64 Tkv=192: changed=65536/65536 OK
+fa_prefill_view_ws_w_hd128 window=32 db vs single-buffer T=64 Tkv=192: bitdiff=0 OK
+sdpa_naive_w_quantized_view(window=0) vs unwindowed T=100 Tkv=100: bitdiff=0 OK
+sdpa_naive_w_quantized_view(window>=Tkv) vs unwindowed T=100 Tkv=100: bitdiff=0 OK
+sdpa_naive_w_quantized_view window=48 vs CPU windowed oracle T=100 Tkv=100: rel=1.12e-7 OK
+sdpa_naive_w_quantized_view window=48 differs from unwindowed T=100 Tkv=100: changed=53248/102400 OK
+fa_prefill_view_ws_w_hd128 window=48 vs CPU windowed oracle T=100 Tkv=100: rel=2.45e-3 OK
+fa_prefill_view_ws_w_hd128 window=48 vs f32 floor T=100 Tkv=100: rel=2.45e-3 OK
+fa_prefill_view_ws_w_hd128 window=48 differs from unwindowed FA T=100 Tkv=100: changed=53248/102400 OK
+fa_prefill_view_ws_w_hd128 window=48 db vs single-buffer T=100 Tkv=100: bitdiff=0 OK
+sdpa_naive_w_quantized_view(window=0) vs unwindowed T=37 Tkv=297: bitdiff=0 OK
+sdpa_naive_w_quantized_view(window>=Tkv) vs unwindowed T=37 Tkv=297: bitdiff=0 OK
+sdpa_naive_w_quantized_view window=64 vs CPU windowed oracle T=37 Tkv=297: rel=8.53e-7 OK
+sdpa_naive_w_quantized_view window=64 differs from unwindowed T=37 Tkv=297: changed=37888/37888 OK
+fa_prefill_view_ws_w_hd128 window=64 vs CPU windowed oracle T=37 Tkv=297: rel=9.36e-3 OK
+fa_prefill_view_ws_w_hd128 window=64 vs f32 floor T=37 Tkv=297: rel=9.36e-3 OK
+fa_prefill_view_ws_w_hd128 window=64 differs from unwindowed FA T=37 Tkv=297: changed=37888/37888 OK
+fa_prefill_view_ws_w_hd128 window=64 db vs single-buffer T=37 Tkv=297: bitdiff=0 OK
+fa_prefill_view_ws_w_hd128(window=0) vs fa_prefill_view_ws T=64 Tkv=192: bitdiff=0 OK
+kvq q8_0 K round-trip: rel=3.99e-3 OK
+kvq q5_1 V round-trip: rel=1.35e-2 OK
+kvq q5_1 5th-bit boundary: maxerr=3.78e-4 (d~5.00e-2) OK
+kv append rows-vs-loop bit-identity (T=7, t0=3): k_mismatch=0 v_mismatch=0 OK
+moe_router idx-match (incl. tie 17/200): OK
+moe_router weight rel=2.23e-7 (max 3 ULP, host-exp vs device-expf): OK
+KC-SKIP [d2-cache-bit-identity] Qwen3.6-35B-A3B-UD-IQ4_XS.gguf: absent on this box (3 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+KC-SKIP [fast-router-batch] Qwen3.6-35B-A3B-UD-IQ4_XS.gguf: absent on this box (4 candidates tried) — set MEMRA_KC_MODELS_DIR=<dir containing it> to run this section
+moe async-prefetch ordering + protected victim: OK
+fp8-blk-gpu Q8_0 bit-parity [256x512] bytes=139264 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [136x160] bytes=23120 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [8x32] bytes=272 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [5x128] bytes=680 bad=0 OK
+fp8-blk-gpu Q8_0 bit-parity [6x160] bytes=1020 bad=0 OK
+attn_head_gate [hd128 nh64 T1] maxdiff=1.19e-7 f16_mismatch=0 per_head_varies=6856/8192 OK
+attn_head_gate [hd128 nh64 T7] maxdiff=1.19e-7 f16_mismatch=0 per_head_varies=49025/57344 OK
+attn_head_gate [hd128 nh96 T1] maxdiff=1.19e-7 f16_mismatch=0 per_head_varies=10413/12288 OK
+attn_head_gate [hd128 nh96 T7] maxdiff=2.38e-7 f16_mismatch=0 per_head_varies=73647/86016 OK
+attn_head_gate dst16=None skip: f32_mismatch=0 OK
+swiglu_clamped [limit=7 gs=1 us=1] maxdiff=1.91e-6 clamped=3700/4096 OK
+swiglu_clamped [limit=7 gs=0.75 us=1.25] maxdiff=3.81e-6 clamped=3914/4096 OK
+swiglu_clamped [limit=16 gs=1 us=1] maxdiff=3.81e-6 clamped=3700/4096 OK
+swiglu_clamped [limit=16 gs=0.75 us=1.25] maxdiff=7.63e-6 clamped=3914/4096 OK
+swiglu_clamped != swigluoai by mechanism: up=-1_oai_zero=true up=-0.99_two_orders=true gate>limit_clamp_order=true up=0_no_linear=true OK
+
+ALL GREEN: kernels match CPU reference.
+G1 exit=0
+
+########## G2: chunkinv35 naked (slab arm live — invariance must hold) ##########
+chunk-invariance-gate: label=step35-swa assert=invariant seam=MEMRA_STEP35_SWA_TKV legacy-seam=off got=invariant canary=0 chunks=4096,513,512,256,64 model=Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+        513 | EXACT |            -1 | 0.000e0 | - | identical
+        512 | EXACT |            -1 | 0.000e0 | - | identical
+        256 | EXACT |            -1 | 0.000e0 | - | identical
+         64 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+chunk-invariance-gate: PASS (raw log /tmp/chunkinv-gate-HoD2HL.log)
+G2 exit=0
+
+########## G4: ppsplit gate — REGISTERED-RED receipt (walker absent => exit 1) ##########
+    ppsplit: T=4883 steps=8 chunks=4096,513 door=OPEN devices=0,1 force_unsplit=false
+      chunk 4096 | logits diff 0/128896 | h_seed diff 0/4096 | hidden diff 0/20000768 | decode diff 0 over 8 steps | split_chunks ref=0 split=0 (need split >= 2, ref == 0) | *** SPLIT-NOT-LIVE (bit-identity vacuous)
+      chunk 513 | logits diff 0/128896 | h_seed diff 0/4096 | hidden diff 0/20000768 | decode diff 0 over 8 steps | split_chunks ref=0 split=0 (need split >= 10, ref == 0) | *** SPLIT-NOT-LIVE (bit-identity vacuous)
+    ppsplit verdict: *** RED (split prime absent, not live, or not bit-identical)
+prime-split-gate: FAIL rc=1 — split prime absent, not live, or not bit-identical (log /tmp/prime-split-gate-XMSqPQ.log)
+G4 exit=1 (RED as registered)
+
+########## G5: run-spec K=1..8 (acceptance must stay pinned: 14/17 = 82.4% K=1) ##########
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[mtp-draft] loading external MTP draft: /home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf
+[mtp-draft] step35 MTP geometry blk.45: n_head=96 n_head_kv=8 n_rot=128 rope_base=10000 swa=true window=512
+[mtp-draft] external draft head: blk.45, source=nextn.shared_head_head.weight, head_vocab=128896 (full)
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers, nextn=0)
+text prompt (110 chars) -> 19 tokens
+prompt tokens: [0, 21750, 260, 3107, 15363, 26131, 1192, 260, 25454, 28499, 28232, 12740, 62027, 14, 305, 6731, 834, 23616, 16]
+
+[generate]   31 tok in 1.359s = 22.80 tok/s (gen-only; this run's prime 0.485s)
+  tokens: [6776, 666, 7805, 11490, 2143, 35, 25454, 28499, 21994, 270, 16846, 294, 411, 12740, 1055, 3586, 13656, 343, 70698, 14, 64285, 14, 22218, 14, 6464, 14, 5085, 43360, 3555, 797, 6001, 834]
+
+[generate_spec K=1] 32 tok in 0.386s = 80.29 tok/s (3.52x vs generate; this run's prime 0.488s)
+  acceptance: 14/17 = 82.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 32 tok in 0.516s = 60.06 tok/s (2.63x vs generate; this run's prime 0.488s)
+  acceptance: 15/32 = 46.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 32 tok in 0.667s = 46.46 tok/s (2.04x vs generate; this run's prime 0.487s)
+  acceptance: 15/48 = 31.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 32 tok in 0.819s = 37.85 tok/s (1.66x vs generate; this run's prime 0.489s)
+  acceptance: 15/64 = 23.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 32 tok in 0.972s = 31.89 tok/s (1.40x vs generate; this run's prime 0.488s)
+  acceptance: 15/80 = 18.8%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 32 tok in 1.124s = 27.59 tok/s (1.21x vs generate; this run's prime 0.487s)
+  acceptance: 15/96 = 15.6%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 32 tok in 1.278s = 24.26 tok/s (1.06x vs generate; this run's prime 0.488s)
+  acceptance: 15/112 = 13.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 32 tok in 1.434s = 21.62 tok/s (0.95x vs generate; this run's prime 0.488s)
+  acceptance: 15/128 = 11.7%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+G5 exit=0
+
+########## G6: ppprime pp4096, 3 arms x N=5 rep-major interleaved ##########
+--- rep 1 arm=A naked (slabs + slab arm) ---
+0, 35, 2392 MHz, 0 MiB
+1, 33, 2325 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 28.6940s = 142.7 tok/s
+ppprime MEDIAN: 4096 tok in 28.6940s = 142.7 tok/s (budget=0 chunk=4096(default) calllocal=0)
+--- rep 1 arm=B MEMRA_MOE_SLAB=0 (dead slabs = bare train tip) ---
+0, 38, 2392 MHz, 0 MiB
+1, 32, 2325 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 29.8895s = 137.0 tok/s
+ppprime MEDIAN: 4096 tok in 29.8895s = 137.0 tok/s (budget=0 chunk=4096(default) calllocal=0)
+--- rep 1 arm=C MEMRA_MOE_RESIDENT=0 (no slabs, big SLRU = Lever-A baseline state) ---
+0, 37, 2392 MHz, 0 MiB
+1, 32, 2325 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 29.0550s = 141.0 tok/s
+ppprime MEDIAN: 4096 tok in 29.0550s = 141.0 tok/s (budget=0 chunk=4096(default) calllocal=0)
+--- rep 2 arm=A naked (slabs + slab arm) ---
+0, 37, 2392 MHz, 0 MiB
+1, 32, 2325 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 29.1210s = 140.7 tok/s
+ppprime MEDIAN: 4096 tok in 29.1210s = 140.7 tok/s (budget=0 chunk=4096(default) calllocal=0)
+--- rep 2 arm=B MEMRA_MOE_SLAB=0 (dead slabs = bare train tip) ---
+0, 37, 2392 MHz, 0 MiB
+1, 32, 2325 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 29.8583s = 137.2 tok/s
+ppprime MEDIAN: 4096 tok in 29.8583s = 137.2 tok/s (budget=0 chunk=4096(default) calllocal=0)
+--- rep 2 arm=C MEMRA_MOE_RESIDENT=0 (no slabs, big SLRU = Lever-A baseline state) ---
+0, 37, 2400 MHz, 0 MiB
+1, 32, 2325 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 28.9498s = 141.5 tok/s
+ppprime MEDIAN: 4096 tok in 28.9498s = 141.5 tok/s (budget=0 chunk=4096(default) calllocal=0)
+--- rep 3 arm=A naked (slabs + slab arm) ---
+0, 38, 2392 MHz, 0 MiB
+1, 32, 2325 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 29.1734s = 140.4 tok/s
+ppprime MEDIAN: 4096 tok in 29.1734s = 140.4 tok/s (budget=0 chunk=4096(default) calllocal=0)
+--- rep 3 arm=B MEMRA_MOE_SLAB=0 (dead slabs = bare train tip) ---
+0, 38, 2392 MHz, 0 MiB
+1, 32, 2325 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 29.9261s = 136.9 tok/s
+ppprime MEDIAN: 4096 tok in 29.9261s = 136.9 tok/s (budget=0 chunk=4096(default) calllocal=0)
+--- rep 3 arm=C MEMRA_MOE_RESIDENT=0 (no slabs, big SLRU = Lever-A baseline state) ---
+0, 37, 2392 MHz, 0 MiB
+1, 32, 2325 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 29.0304s = 141.1 tok/s
+ppprime MEDIAN: 4096 tok in 29.0304s = 141.1 tok/s (budget=0 chunk=4096(default) calllocal=0)
+--- rep 4 arm=A naked (slabs + slab arm) ---
+0, 37, 2392 MHz, 0 MiB
+1, 32, 2325 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 29.1179s = 140.7 tok/s
+ppprime MEDIAN: 4096 tok in 29.1179s = 140.7 tok/s (budget=0 chunk=4096(default) calllocal=0)
+--- rep 4 arm=B MEMRA_MOE_SLAB=0 (dead slabs = bare train tip) ---
+0, 37, 2392 MHz, 0 MiB
+1, 32, 2325 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 29.9444s = 136.8 tok/s
+ppprime MEDIAN: 4096 tok in 29.9444s = 136.8 tok/s (budget=0 chunk=4096(default) calllocal=0)
+--- rep 4 arm=C MEMRA_MOE_RESIDENT=0 (no slabs, big SLRU = Lever-A baseline state) ---
+0, 37, 2392 MHz, 0 MiB
+1, 32, 2325 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 28.9479s = 141.5 tok/s
+ppprime MEDIAN: 4096 tok in 28.9479s = 141.5 tok/s (budget=0 chunk=4096(default) calllocal=0)
+--- rep 5 arm=A naked (slabs + slab arm) ---
+0, 37, 2392 MHz, 0 MiB
+1, 32, 2325 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 29.1399s = 140.6 tok/s
+ppprime MEDIAN: 4096 tok in 29.1399s = 140.6 tok/s (budget=0 chunk=4096(default) calllocal=0)
+--- rep 5 arm=B MEMRA_MOE_SLAB=0 (dead slabs = bare train tip) ---
+0, 37, 2392 MHz, 0 MiB
+1, 32, 2325 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 29.9336s = 136.8 tok/s
+ppprime MEDIAN: 4096 tok in 29.9336s = 136.8 tok/s (budget=0 chunk=4096(default) calllocal=0)
+--- rep 5 arm=C MEMRA_MOE_RESIDENT=0 (no slabs, big SLRU = Lever-A baseline state) ---
+0, 37, 2392 MHz, 0 MiB
+1, 32, 2325 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+ppprime rep 0: 4096 tok in 29.0918s = 140.8 tok/s
+ppprime MEDIAN: 4096 tok in 29.0918s = 140.8 tok/s (budget=0 chunk=4096(default) calllocal=0)
+G6 done
+0, 37, 2400 MHz, 0 MiB
+1, 32, 2325 MHz, 0 MiB
+lock released 2026-08-08T01:29:45Z
+=== battery rc=0
+=== done 2026-08-08T01:29:45Z

@@ -2553,8 +2553,15 @@ impl HybridModel {
             (pg as u64, pu as u64, pd as u64)
         });
         // Fused-pair eligibility mirrors the gdec call sites exactly (plain-SiLU epilogue,
-        // no macros, m3 clamp excluded, q8-supported qtypes, <=8 experts).
-        let slab_fused_may_fire = slab_bases.is_some() && n_used <= 8
+        // no macros, m3 clamp excluded, q8-supported qtypes, <=8 experts) — INCLUDING
+        // `gdec_enabled()`: the pair IS the gdec kernel pair, so MEMRA_MOE_GDEC=0 must
+        // disable it here too. That seam is also the exactness localizer: with GDEC=0 both
+        // provenances run the SAME per-expert qmatvec kernels (slab base+stride vs SLRU
+        // slot) and must be BIT-IDENTICAL — the true provenance-only pair — while GDEC=1
+        // compares the fused-pair class against the SLRU's hit/miss MIX (gdec for
+        // all-resident tokens, staged loop for misses), which is a dispatch-class
+        // comparison, not a provenance one.
+        let slab_fused_may_fire = slab_bases.is_some() && n_used <= 8 && gdec_enabled()
             && !cfg.swiglu_clamped_at(il as u32) && cfg.m3.is_none()
             && no_exp_macros && moe_q8;
         // moe_out memset elision: BOTH full-row-overwrite arms (gdec + slab fused) allocate

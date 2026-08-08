@@ -193,7 +193,7 @@ Design (the ppn-gate/decode-batch-gate `--mode pp` shape, adapted to prime):
 - Prior-lane scripts to reuse: `research/pp-prefill-20260807/{anatomy-pp4096,leverA-gates*}.sh`
   (flock + tee + interleave shapes), `research/pp2-batch-20260806/run-ppbatch-*.sh`.
 
-### G. Cache/KV facts
+### G. Cache/KV facts (increment-0 reading, continued below at Increment 2)
 
 - `pp::new_cache` (pp.rs:844) → `Cache::new_ppn` (`memra-kv/src/lib.rs:202`): stage-owned
   KV allocation already lands stage-1 KV on dev1 (serve worker + gates go through it since
@@ -202,3 +202,81 @@ Design (the ppn-gate/decode-batch-gate `--mode pp` shape, adapted to prime):
 - `concat-prime-probe` builds caches with plain `Cache::new` everywhere (~28 sites) — the
   ppsplit gate must use `pp::new_cache` for its arms (the pp2-batch "wrong-card KV"
   harness-bug class, found there in the server worker + bench).
+
+---
+
+## Increment 1 — the gate, registered RED (commits `eae50c02` + the rebase `cf3bbc3a`)
+
+Rebased onto train tip `6afc4f65` (cx-503b's per-PP-device residency sizing `238beae0`
+included). Landed: `ppsplit` probe mode (split-vs-unsplit bit-identity over last-row logits +
+h_seed + the full [T,n_embd] hidden stack + teacher-forced decode steps THROUGH the primed KV,
+per chunk size), the `MEMRA_PRIME_PP` seam, the `pp::PRIME_SPLIT_CHUNKS` liveness counter,
+`tools/prime-split-gate.sh` (+canary), fast-gate rows `ppsplit`/`ppsplitc`, FLAGS.md row.
+
+**RED receipt on the box** (`raw/inc2-battery-20260808T010302Z.log` G4): both chunk arms
+report `logits diff 0 … hidden diff 0 … split_chunks ref=0 split=0 (need split >= 2/10)` →
+`*** SPLIT-NOT-LIVE (bit-identity vacuous)` → exit 1. Exactly the designed shape: the
+comparison machinery is proven able to read zero where zero is, and the verdict is RED
+because the walker doesn't exist — not because bits moved.
+
+## Increment 2 — the residency flip: slab-local MoE arm (commit `ec6bfad0`)
+
+**The finding that reshaped this increment:** `dev_exps` (fits-VRAM resident slabs) is
+consumed ONLY by `moe_ffn_pairs`/`moe_ffn_dev`/gemma4 arms — all of which DENY
+sigmoid-router archs (step35/M3/Hy3). cx-503b flipped the Step SKU to per-device RESIDENT
+(boot receipt in the battery: `PP dev0: experts 45.72GB … -> RESIDENT`, `PP dev1: 55.35GB
+… -> RESIDENT`), so the train tip uploads ~101 GB of slabs **that nothing reads** on this
+arch, while the SLRU — which sizes itself on free-VRAM-after-residents — is starved beside
+them. What landed: a slab-local arm in `moe_ffn_sequential_zq8` — gdec's exact fused kernel
+pair (`moe_gate_up_silu8_q8` + `moe_down8_fma_q8`) over `slab base + ex*stride` pointers
+(no cache lock, no residency coin-flip, no miss staging), with the clamped layers 43/44 +
+macro artifacts riding the same per-expert `qmatvec` twins from the slab. LOCALITY GATE:
+`DevExps.dev == e.ctx().ordinal()` — a remote slab is never dereferenced (m=1 peer reads =
+the 34-150x class); without the walker, stage-0 layers fire and stage-1 stays SLRU.
+Seams: `MEMRA_MOE_SLAB=0` (provenance rollback), `MEMRA_MOE_GDEC=0` disables the fused pair
+here too (and is the exactness localizer: with GDEC=0 both provenances run identical
+per-expert kernels → the true provenance-only bit pair).
+
+### Battery (box, one flock hold, `raw/inc2-battery-20260808T010302Z.log`)
+
+| gate | verdict |
+|---|---|
+| G1 kernel-check model-backed FULL | **ALL GREEN** |
+| G2 chunkinv35 naked (slab arm live) | **PASS** (INVARIANT, all 5 chunk sizes) |
+| G3 run-gen over PP-2, naked | **MATCH** (prefill=decode argmax 6776, batched-prime MATCH) |
+| G3b run-gen `MEMRA_MOE_SLAB=0` | **MATCH** (same argmax) |
+| G4 prime-split-gate | **RED as registered** (SPLIT-NOT-LIVE, see increment 1) |
+| G5 run-spec K=1..8 | **8/8 PASS**, acceptance digit-for-digit at the pin (14/17 = 82.4% K=1, flat-15 K=2..8) |
+
+G3cmp harness bug (caught in the raw log, not repeated as a finding): the battery's logits
+dump ran `run-gen` without `MEMRA_PP_ONLY`, which is the mode that actually writes
+`MEMRA_PP_LOGITS` — `cmp` failed on a MISSING file, not differing bytes. The focused
+provenance bit-cmp re-ran with `MEMRA_PP_ONLY=1` (4 arms: naked / SLAB=0 / GDEC=0 x both) —
+see `raw/inc2-bitcmp-*.log`.
+
+### Perf: pp4096, N=5 rep-major interleaved, one hold (medians of 5)
+
+| arm | pp4096 tok/s (5 reps) | median |
+|---|---|---|
+| A naked = slabs + slab arm (the default after this commit) | 142.7, 140.7, 140.4, 140.7, 140.6 | **140.7** |
+| B `MEMRA_MOE_SLAB=0` = dead slabs (**the bare train tip today**) | 137.0, 137.2, 136.9, 136.8, 136.8 | **136.9** |
+| C `MEMRA_MOE_RESIDENT=0` = no slabs, big SLRU (the Lever-A state) | 141.0, 141.5, 141.5, 141.1, 140.8 | **141.1** |
+
+Ranges are disjoint (B's max 137.2 < A's min 140.4 < C's overlap with A). Thermal regime:
+30-37C, 2325-2400 MHz, cards 0 MiB before/after.
+
+**Honest verdict:**
+1. **cx-503b's residency flip is a ~3% pp regression on the Step SKU as merged** (B vs C:
+   136.9 vs 141.1) — the slabs it uploads are dead on a sigmoid-router arch and starve the
+   SLRU. This lane's slab arm recovers it (A vs B: +2.8%).
+2. **The residency flip alone does NOT beat the Lever-A baseline** (A 140.7 vs C 141.1 —
+   parity, slightly under). Consistent with the anatomy: the 37 GB H2D staging was already
+   OVERLAPPED (0.83 s GPU-side of a 45.8 s wall), so killing it buys ~nothing at pp4096;
+   the real MoE cost is the m=1 launch-pair dispatch (28%, lever C's territory), and the
+   22% peer-read trunk tax needs the walker. The increment-0 §D projection (~160-190) was
+   too optimistic — the measured answer is parity, and the pre-registered conclusion holds
+   with more force: **increment 3 (the walker) is REQUIRED for the 400 class; the flip
+   alone gets nowhere near it.**
+3. Decode side effect (single-run, not a claim): G3 gen-only 18.74 tok/s (A) vs 16.12 (B).
+   The slab arm can only help decode (no lock, no miss on stage-0 layers); a real decode
+   receipt needs its own interleaved N=5 — deferred until after the walker.
