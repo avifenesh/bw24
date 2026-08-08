@@ -479,11 +479,14 @@ impl HybridModel {
         // (research/step35-chunkfix-20260807; see step35_attn_pre_wo's doc note).
         // `+ queued_after` closes the SECOND axis (lane/tick-seg): when serve splits the request
         // across calls, the request still ends at the same absolute position, whatever the tick
-        // budget or LCP split point. MEMRA_PRIME_CALLLOCAL=1 is the ROLLBACK SEAM to the per-call
-        // value — tick-VARIANT by construction, which is what gives the tickinv35 gate its canary
-        // teeth. Read per call, not cached (the probe flips it in-process between arms). Never on
-        // in a measured default run.
-        let seq_end = if std::env::var("MEMRA_PRIME_CALLLOCAL").as_deref() == Ok("1") {
+        // budget or LCP split point. MEMRA_PRIME_CALLLOCAL=1 is the ROLLBACK SEAM to the FULL
+        // pre-fix arithmetic: the per-call value here AND the unaligned FA view offset in
+        // step35_attn_pre_wo. Both halves are required for tickinv35's canary teeth under the FA
+        // default. Read per call, not cached (the probe flips it in-process between arms). Never
+        // on in a measured default run.
+        let legacy_calllocal =
+            std::env::var("MEMRA_PRIME_CALLLOCAL").as_deref() == Ok("1");
+        let seq_end = if legacy_calllocal {
             cache.pos + t
         } else {
             cache.pos + t + queued_after
@@ -6906,17 +6909,18 @@ impl HybridModel {
                     base_len
                 };
                 let kvl = cache.kv[il].as_ref().unwrap();
-                // The MEMRA_STEP35_SWA_TKV=1 seam restores the FULL pre-fix arithmetic:
-                // the chunk-local arm predicate (below) AND the unaligned view offset (here).
-                // Both halves are load-bearing for the canary: on the FA default the two
-                // predicate arms select kernels that agree bitwise wherever the predicate
-                // can differ (a t_kv<=win view has no maskable key, so windowed==unwindowed
-                // FA bit-for-bit), which made a predicate-only seam INERT — the gate's
-                // CANARY UNEXPECTEDLY MATCHED verdict on battery 2 caught that (the same
-                // vacuous-canary class as step37-p2 GAP 1). The unaligned offset is the
-                // live chunk-variant mechanism on the FA arm (tile grid, below), so the
-                // seam must restore it too. Read once per call, never in a measured default.
+                // Both segmentation seams restore the FULL pre-fix arithmetic: their legacy
+                // arm predicate (`t_kv` below, per-call `seq_end` in prime_cache) AND the
+                // unaligned view offset here. Both halves are load-bearing for the canaries:
+                // on the FA default the predicate arms agree bitwise wherever they can differ
+                // (a t_kv<=win view has no maskable key, so windowed==unwindowed FA bit-for-bit).
+                // That made predicate-only seams INERT under Lever A — first chunkinv35c, then
+                // tickinv35c. The raw offset restores the live segmentation-variant mechanism
+                // on the current FA path: its tile grid starts at the chunk/call boundary.
+                // Read per layer call, never in a measured default.
                 let legacy_tkv = std::env::var("MEMRA_STEP35_SWA_TKV").as_deref() == Ok("1");
+                let legacy_calllocal =
+                    std::env::var("MEMRA_PRIME_CALLLOCAL").as_deref() == Ok("1");
                 // SWA: trim the view to the oldest key any query in this chunk can reach —
                 // ALIGNED DOWN to the FA tile size (BK=32). The raw trim is chunk-DEPENDENT
                 // (off = base_len-(win-1), and base_len is a chunk boundary), and the FA
@@ -6933,7 +6937,7 @@ impl HybridModel {
                 // the floor arm's bits do not move either (gated: G2f, battery 2).
                 let off = if swa {
                     let raw = base_len.saturating_sub(win - 1);
-                    if legacy_tkv { raw } else { raw & !31usize }
+                    if legacy_tkv || legacy_calllocal { raw } else { raw & !31usize }
                 } else {
                     0
                 };
@@ -7774,4 +7778,3 @@ pub struct G4DcSlots {
     f0: CudaSlice<f32>, sn: CudaSlice<f32>,
     hn: CudaSlice<f32>, logits: CudaSlice<f32>,
 }
-
