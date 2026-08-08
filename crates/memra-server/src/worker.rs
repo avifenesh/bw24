@@ -222,6 +222,8 @@ pub struct Request {
     /// grammar spec. None = unconstrained — the request takes the exact legacy path
     /// (no factory, no matcher, no masking branch).
     pub grammar: Option<crate::constrained::GrammarSpec>,
+    /// Debug-only per-request phase timeline. None unless MEMRA_TTFT_TRACE=1.
+    pub ttft: Option<Arc<crate::ttft::Trace>>,
     /// per-request stream back to the handler. tokio mpsc so the async side can await it.
     pub tx: tokio::sync::mpsc::UnboundedSender<Event>,
 }
@@ -1432,6 +1434,7 @@ struct Session {
     /// PREFIX-CACHE SEED: park the full primed prompt at prefill-done (cold sessions only).
     seed_prefix: bool,
     tx: tokio::sync::mpsc::UnboundedSender<Event>,
+    ttft: Option<Arc<crate::ttft::Trace>>,
     t0: Instant,
 }
 
@@ -2474,6 +2477,11 @@ pub fn run(
                 }
                 let mut fired = false;
                 if cand.len() >= 2 {
+                    for &i in &cand {
+                        if let Some(trace) = active[i].ttft.as_ref() {
+                            trace.mark_prime_start();
+                        }
+                    }
                     let prompts: Vec<Vec<u32>> = cand.iter()
                         .map(|&i| active[i].prefill_queue.drain(..).collect())
                         .collect();
@@ -2497,6 +2505,9 @@ pub fn run(
                                 s.last_logits = l;
                                 for &tok in prompt { s.fed.push(tok); s.sampler.accept(tok); }
                                 s.prefill_done = true;
+                                if let Some(trace) = s.ttft.as_ref() {
+                                    trace.mark_prime_end();
+                                }
                                 // prefix-cache seed: batch-primed bytes are the concat
                                 // config — the entry stores whatever config ran (contract).
                                 maybe_prefix_seed(&engine, &mut px, s);
@@ -3018,6 +3029,7 @@ fn park_requeue(loaded: &HashMap<String, LoadedModel>, s: &Session) -> Option<Bo
         lane: s.lane,
         grammar: p.grammar.clone(),
         oom_retries: s.oom_retries,
+        ttft: s.ttft.clone(),
         tx: s.tx.clone(),
     }))
 }
@@ -3039,6 +3051,9 @@ fn admit(
     n_active: usize,
     req: Request,
 ) -> Result<Session, (tokio::sync::mpsc::UnboundedSender<Event>, EngineError)> {
+    if let Some(trace) = req.ttft.as_ref() {
+        trace.mark_tokenize_start();
+    }
     let lm = &loaded[&req.model];
     // PC-ISO: every reuse-pool probe below scans ONLY this (model, namespace) pool.
     let pool_key: PoolKey = (req.model.clone(), req.cache_ns.clone());
@@ -3095,6 +3110,9 @@ fn admit(
     if prompt.is_empty() {
         return Err((req.tx, EngineError::invalid_param(
             "empty prompt after tokenization", "prompt")));
+    }
+    if let Some(trace) = req.ttft.as_ref() {
+        trace.mark_tokenize_end(prompt.len());
     }
 
     // Context guard mirrors generate_with: prompt + generated must fit ctx_cap.
@@ -3664,6 +3682,7 @@ fn admit(
         snapshot_at,
         seed_prefix,
         tx: req.tx,
+        ttft: req.ttft,
         t0: Instant::now(),
     })
 }
@@ -3721,11 +3740,17 @@ fn prefill_tick(
     s: &mut Session,
     budget: usize,
 ) -> Result<usize, Box<dyn std::error::Error>> {
+    if let Some(trace) = s.ttft.as_ref() {
+        trace.mark_prime_start();
+    }
     let lm = &loaded[&s.model];
     let q = s.prefill_queue.len();
     if q == 0 {
         s.prefill_done = true;
         maybe_prefix_seed(engine, px, s);
+        if let Some(trace) = s.ttft.as_ref() {
+            trace.mark_prime_end();
+        }
         return Ok(0);
     }
     let mut consumed = 0usize;
@@ -3793,6 +3818,9 @@ fn prefill_tick(
     if s.prefill_queue.is_empty() {
         s.prefill_done = true;
         maybe_prefix_seed(engine, px, s);
+        if let Some(trace) = s.ttft.as_ref() {
+            trace.mark_prime_end();
+        }
     }
     Ok(consumed)
 }
@@ -3867,6 +3895,9 @@ fn advance_sample_emit(
     };
     s.sampler.accept(next);
     s.generated.push(next);
+    if let Some(trace) = s.ttft.as_ref() {
+        trace.mark_first_decode();
+    }
     if s.params.eos.contains(&next) {
         finish(s, StopReason::Eos);
         return (false, None);
@@ -3915,6 +3946,9 @@ fn advance_token_emit(
     }
     s.sampler.accept(tok);
     s.generated.push(tok);
+    if let Some(trace) = s.ttft.as_ref() {
+        trace.mark_first_decode();
+    }
     if s.params.eos.contains(&tok) {
         finish(s, StopReason::Eos);
         return (false, ());
@@ -4067,6 +4101,9 @@ fn step_session(
     // (sess.sctr/uctr), so the token stream is reproducible per (seed, session) rather than
     // byte-equal to a plain-sampled run. That is the contract, not a gap.
     if let Some(spec) = s.spec.as_mut() {
+        if let Some(trace) = s.ttft.as_ref() {
+            trace.mark_prime_start();
+        }
         // Burst size trades round-robin latency (other sessions wait a whole burst) against
         // per-burst fixed cost. The dominant cost — the per-call draft-graph recapture,
         // measured ~16ms/burst on H100 q27 — is gone since 2026-08-01: the captured graph
@@ -4138,6 +4175,10 @@ fn step_session(
                 // accounting happens post-burst) / nothing new committed this round.
                 return keep;
             }
+            if let Some(trace) = s.ttft.as_ref() {
+                trace.mark_prime_end();
+                trace.mark_first_decode();
+            }
             let mut last_id = 0u32;
             for &t in slice {
                 if eos_ids.contains(&t) {
@@ -4170,6 +4211,12 @@ fn step_session(
             None => lm.model.generate_spec_session_sampled(
                 engine, spec, &suffix, room, k, sampling, on_commit)?,
         };
+        if let Some(trace) = s.ttft.as_ref() {
+            trace.mark_prime_end();
+            if !burst.is_empty() {
+                trace.mark_first_decode();
+            }
+        }
         let telem_delta = spec.telem.delta_since(&telem_before);
         spec_telem.entry(s.model.clone()).or_default().merge(&telem_delta);
         s.spec_rounds += telem_delta.rounds;
@@ -4240,6 +4287,9 @@ fn step_session(
     // while the per-tick cap keeps round-robin latency for concurrent sessions bounded.
     // Tails below PRIME_MIN_T keep the tokenwise decode_step path (prime_cache floor).
     if !s.prefill_done {
+        if let Some(trace) = s.ttft.as_ref() {
+            trace.mark_prime_start();
+        }
         let q = s.prefill_queue.len();
         // EAGER-ONLY prime shape (lane/gemma4-serve-gaps): same law as prefill_tick —
         // gemma4 primes fresh prompts WHOLE (no chunked prime in the engine; chunk 2 used
@@ -4268,7 +4318,12 @@ fn step_session(
             s.fed.push(tok);
             s.sampler.accept(tok);
         }
-        if s.prefill_queue.is_empty() { s.prefill_done = true; }
+        if s.prefill_queue.is_empty() {
+            s.prefill_done = true;
+            if let Some(trace) = s.ttft.as_ref() {
+                trace.mark_prime_end();
+            }
+        }
         // If after this the prompt is fully primed AND budget==0, we still fall through to decode
         // (which will immediately hit MaxNew). Keep prefill and decode as distinct ticks otherwise.
         return Ok(true);
@@ -4279,7 +4334,6 @@ fn step_session(
         finish(s, StopReason::MaxNew);
         return Ok(false);
     }
-
     // CONSTRAINED rows host-sample from a grammar-masked copy (same seam as
     // advance_sample_emit — the batched path; kept in lockstep).
     let next = match (s.device_next.take(), s.constraint.as_mut()) {
@@ -4293,6 +4347,9 @@ fn step_session(
     };
     s.sampler.accept(next);
     s.generated.push(next);
+    if let Some(trace) = s.ttft.as_ref() {
+        trace.mark_first_decode();
+    }
 
     // EOS stop (before streaming the EOS token as text — we still report it in the count).
     if s.params.eos.contains(&next) {
