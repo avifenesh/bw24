@@ -87,9 +87,10 @@
 # tickinv35/tickinv35c pin the axis ONE LEVEL UP: serve splits a prompt across SEVERAL
 # prime_cache CALLS (per-tick budgets + the prefix-cache LCP split), so the request-level
 # seq_end must survive call boundaries too. research/tick-seg-20260807.
-# ppsplit/ppsplitc pin the LEVER-B prime stage split (split-vs-unsplit bit-identity + the
-# split-liveness counter; SKIPs on single-GPU rigs — the PP-2 box battery is the authority).
-# research/pp-leverb-20260807.
+# ppsplit/ppsplitc pin the LEVER-B prime stage split plus dynamic microchunk scheduling:
+# fixed unsplit/fixed serial versus dynamic pipeline bit-identity, split liveness, and
+# concurrent-walker overlap liveness. SKIPs on single-GPU rigs; the PP-2 box battery is the
+# authority. research/pp-leverb-20260807, research/microchunk-20260808.
 ^crates/memra-engine/src/(decode|decode_batch|forward|hybrid_forward|pp|prime_graph|graph_update|mla)\.rs$	synthetic	g12,q9,q35,q35slru,chunkinv,chunkinvc,chunkinv35,chunkinv35c,tickinv35,tickinv35c,gwstress,isogap,isogapc,ppsplit,ppsplitc	q35spec
 # b2geo35/b2geo35c pin the step35 BATCHED-DECODE geometry (per-layer n_head / partial rope /
 # per-session SWA views / head gate at B>1, over PP-2) + the batched-evidence teeth — the

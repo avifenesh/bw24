@@ -113,11 +113,11 @@ chunkinv35c	cmd	tools/chunk-invariance-gate.sh	--label step35-swa --prompts rese
 tickinv35	cmd	tools/tick-invariance-gate.sh	--label step35-tick --prompts research/chunk-invariance-20260805/prompt-pp6257.txt --budgets 0,1024,513,512,256,64 --splits 64,256,512 --seam MEMRA_PRIME_CALLLOCAL --steps 24	-	-
 tickinv35c	cmd	tools/tick-invariance-gate.sh	--label step35-tick --prompts research/chunk-invariance-20260805/prompt-pp6257.txt --budgets 0,1024,513,512,256,64 --splits 64,256,512 --seam MEMRA_PRIME_CALLLOCAL --steps 24 --canary	-	-
 # ppsplit/ppsplitc: PRIME PP schedule identity + liveness. Three arms share one sharded load:
-# unsplit reference, serial stage split, and chunk-pipelined stage split. Returned
-# logits/h_seed/full hidden stack plus teacher-forced continuation logits must be bit-identical;
-# PRIME_SPLIT_CHUNKS proves both split arms ran, and PRIME_PIPE_OVERLAPS proves the two
-# stage-owned host walkers were concurrently inside their layer ranges. Needs the 2-GPU
-# placement; SKIPs locally.
+# fixed unsplit reference, fixed serial stage split, and dynamic chunk-pipelined stage split.
+# Returned logits/h_seed/full hidden stack plus teacher-forced continuation logits must be
+# bit-identical; PRIME_SPLIT_CHUNKS proves both split arms ran, and PRIME_PIPE_OVERLAPS proves
+# the two stage-owned host walkers were concurrently inside their layer ranges. Needs the
+# 2-GPU placement; SKIPs locally.
 # ppsplitc forces only the pipeline arm back to the serial split, so split liveness remains
 # green and the overlap assertion alone must bite.
 ppsplit	cmd	tools/prime-split-gate.sh	--devices 0,1 --stages 2 --chunks auto,513 --steps 8	-	-

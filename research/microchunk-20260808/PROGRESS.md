@@ -144,3 +144,43 @@ Local verification:
 | exhaustive pure invariants | PASS for every T=256..8192: exact cover, same count, no chunk below 16, short fill, non-increasing post-fill sizes |
 
 Command: `cargo test -p memra-engine prime_chunk_schedule_tests --lib`.
+
+## Increment 2 - schedule-aware gates and benchmark driver
+
+The existing PP schedule gate now makes the new comparison directly:
+
+- REF: fixed ranges, unsplit whole-trunk walk;
+- SERIAL: fixed ranges, serial PP stage split;
+- PIPE: dynamic ranges, pipelined PP stage split.
+
+For the naked `auto` arm, the gate prints both realized vectors and compares logits,
+`h_seed`, the full hidden stack, and teacher-forced continuation logits bit-for-bit.
+The explicit `513` stress arm remains fixed in all three schedules, preserving the old
+pipeline regression row. Split and active-walker counters are checked against each
+arm's realized range count. The canary retains dynamic ranges but forces only PIPE
+back to `MEMRA_PRIME_PIPE=0`, so overlap liveness must fail while split liveness and
+bits remain valid.
+
+`concat-prime-probe` also has a new `ppschedperf` mode. Both arms keep the PP-2
+pipeline live; it alternates fixed/dynamic order inside one sharded model load,
+requires `chunks - 1` active-walker overlaps on every sample, and reports the realized
+vectors with N=5 medians.
+
+Standing surfaces updated:
+
+- `tools/prime-split-gate.sh`;
+- `tools/fast-gate/models.tsv` and `tools/fast-gate/map.tsv`;
+- `docs/FLAGS.md` with `MEMRA_PRIME_CHUNK_SCHED`;
+- `run-gates-box1.sh` for the full segmentation/acceptance battery;
+- `run-perf-box1.sh` for pp512/2048/4096 under one lock hold.
+
+Local verification:
+
+| Check | Result |
+|---|---|
+| `cargo check -p memra-engine --bin concat-prime-probe` | PASS |
+| both lane drivers + `prime-split-gate.sh`, `bash -n` | PASS |
+| `git diff --check` | PASS |
+
+Box1 was not free at this increment: PID 230699 (`target/release/memra-server`) held
+29,322 MiB on GPU 0 and 1,036 MiB on GPU 1. No GPU work was queued.
