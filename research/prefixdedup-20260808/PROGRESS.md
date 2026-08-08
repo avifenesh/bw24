@@ -108,3 +108,18 @@ sequentially. The required accounting is now:
 At the branch base this is a registered RED by construction: all six requests complete
 their cache probes before any prefix entry exists, so all six compute their prefixes.
 The existing serve-smoke arm invokes this gate with N=5, K=256.
+
+## Increment 3 — refcounted prefix-entry leases
+
+`PrefixEntry` now carries an in-flight pin count. The eviction index contains only
+unpinned entries: first acquire removes the entry, intermediate releases only decrement
+the count, and final release reinserts it at current recency. Normal budget eviction and
+the session-allocation emergency flush therefore preserve entries held by live requests.
+
+Every ordinary prefix-cache hit now takes a `(PoolKey, entry-id)` lease and stores it in
+the `Session`. The one centralized retire sweep releases it before any completion,
+disconnect, error, or OOM-park exit path can partially move the session.
+
+Device-free checks (`DOCS_RS=1 cargo test -p memra-server prefix_cache_`) are green:
+8 prefix-cache tests, including the new two-reference eviction test and the
+emergency-flush pin test.

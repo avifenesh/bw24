@@ -1009,6 +1009,15 @@ struct PrefixEntry {
     /// Recency-index identity (Q3, audit 2026-08-05): unique per insert (monotonic counter,
     /// assigned by `insert`), disambiguating equal `last_use` Instants in the LRU BTreeMap key.
     id: u64,
+    /// In-flight fanout/cache-hit leases. A pinned entry is absent from the evictable LRU
+    /// index until the last participating session retires.
+    pins: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PrefixPin {
+    key: PoolKey,
+    id: u64,
 }
 
 #[derive(Default)]
@@ -1026,9 +1035,11 @@ struct PrefixCache {
     /// scan broke them by HashMap-iteration order (nondeterministic across pools,
     /// insertion order within one pool); the `id` component breaks them by insertion
     /// order globally — a strict determinization, never a different policy.
-    /// Value = (pool key, index into that pool's Vec), kept exact on removal by
-    /// swap_remove + moved-entry index fixup. Every `last_use` write goes through
-    /// `touch`/`insert` so index and entries never drift.
+    /// PINNING (lane/cx-prefix-dedup): pinned entries are deliberately ABSENT from this
+    /// map. The last lease release returns the entry at current recency. Value = (pool
+    /// key, index into that pool's Vec), kept exact on removal by swap_remove +
+    /// moved-entry index fixup. Every `last_use` write goes through touch/pin/unpin/insert
+    /// so index and entries never drift.
     lru: std::collections::BTreeMap<(Instant, u64), (PoolKey, usize)>,
     next_id: u64,
     total_bytes: usize,
@@ -1103,6 +1114,14 @@ impl PrefixCache {
         self.entries.get(key).is_some_and(|pool| pool.iter().any(|e| e.toks[..] == *toks))
     }
 
+    fn key_index(&self, key: &PoolKey, toks: &[u32]) -> Option<usize> {
+        self.entries.get(key)?.iter().position(|e| e.toks[..] == *toks)
+    }
+
+    fn id_index(&self, pin: &PrefixPin) -> Option<usize> {
+        self.entries.get(&pin.key)?.iter().position(|e| e.id == pin.id)
+    }
+
     fn lru_key(e: &PrefixEntry) -> (Instant, u64) {
         (e.last_use, e.id)
     }
@@ -1110,11 +1129,59 @@ impl PrefixCache {
     /// Refresh recency for pool[i] (a lookup hit) — the ONLY legal `last_use` write after
     /// insert, so the recency index never drifts from the entries.
     fn touch(&mut self, key: &PoolKey, i: usize) {
-        if let Some(e) = self.entries.get_mut(key).and_then(|p| p.get_mut(i)) {
-            self.lru.remove(&(e.last_use, e.id));
-            e.last_use = Instant::now();
-            self.lru.insert((e.last_use, e.id), (key.clone(), i));
+        let Some((old_lru, pinned)) = self.entries.get(key).and_then(|p| p.get(i))
+            .map(|e| (Self::lru_key(e), e.pins > 0)) else { return };
+        if !pinned {
+            self.lru.remove(&old_lru);
         }
+        let e = &mut self.entries.get_mut(key).unwrap()[i];
+        e.last_use = Instant::now();
+        if e.pins == 0 {
+            self.lru.insert(Self::lru_key(e), (key.clone(), i));
+        }
+    }
+
+    /// Acquire `n` in-flight leases on one entry. The first lease removes it from the
+    /// evictable LRU; all leases share the stable (pool key, entry id) handle.
+    fn pin_n(&mut self, key: &PoolKey, i: usize, n: usize) -> Option<PrefixPin> {
+        if n == 0 {
+            return None;
+        }
+        let (old_lru, id, was_unpinned) = {
+            let e = self.entries.get(key)?.get(i)?;
+            (Self::lru_key(e), e.id, e.pins == 0)
+        };
+        if was_unpinned {
+            self.lru.remove(&old_lru);
+        }
+        let e = &mut self.entries.get_mut(key)?[i];
+        e.pins = e.pins.checked_add(n).expect("prefix pin refcount overflow");
+        e.last_use = Instant::now();
+        Some(PrefixPin { key: key.clone(), id })
+    }
+
+    fn pin(&mut self, key: &PoolKey, i: usize) -> Option<PrefixPin> {
+        self.pin_n(key, i, 1)
+    }
+
+    /// Release one session lease. The last release makes the entry evictable again and
+    /// treats the protected fanout interval as recent use.
+    fn unpin(&mut self, pin: &PrefixPin) -> bool {
+        let Some(i) = self.id_index(pin) else { return false };
+        let e = &mut self.entries.get_mut(&pin.key).unwrap()[i];
+        if e.pins == 0 {
+            return false;
+        }
+        e.pins -= 1;
+        if e.pins == 0 {
+            e.last_use = Instant::now();
+            self.lru.insert(Self::lru_key(e), (pin.key.clone(), i));
+        }
+        true
+    }
+
+    fn pinned_bytes(&self) -> usize {
+        self.entries.values().flatten().filter(|e| e.pins > 0).map(|e| e.bytes).sum()
     }
 
     /// Remove pool[i] under `key`, keeping the recency index exact: swap_remove moves the
@@ -1124,13 +1191,15 @@ impl PrefixCache {
     /// has_covering/has_key are `any`).
     fn remove_at(&mut self, key: &PoolKey, i: usize) -> Option<PrefixEntry> {
         let pool = self.entries.get_mut(key)?;
-        if i >= pool.len() {
+        if i >= pool.len() || pool[i].pins > 0 {
             return None;
         }
         let dead = pool.swap_remove(i);
         self.lru.remove(&Self::lru_key(&dead));
         if let Some(moved) = pool.get(i) {
-            self.lru.insert(Self::lru_key(moved), (key.clone(), i));
+            if moved.pins == 0 {
+                self.lru.insert(Self::lru_key(moved), (key.clone(), i));
+            }
         }
         if pool.is_empty() {
             self.entries.remove(key);
@@ -1151,16 +1220,52 @@ impl PrefixCache {
         self.insert_with_budget(key, e, why, prefix_cache_budget_bytes());
     }
 
+    /// Insert a prefix already serving `pins` in-flight sessions. Returns one stable
+    /// handle which each participating Session clones and releases once.
+    fn insert_pinned(
+        &mut self,
+        key: &PoolKey,
+        e: PrefixEntry,
+        why: &str,
+        pins: usize,
+    ) -> Option<PrefixPin> {
+        let id = self.insert_with_budget_pins(
+            key, e, why, prefix_cache_budget_bytes(), pins)?;
+        Some(PrefixPin { key: key.clone(), id })
+    }
+
     /// `insert` with the budget as a parameter (the env-independent seam the eviction
     /// unit tests drive; production always passes `prefix_cache_budget_bytes()`).
-    fn insert_with_budget(&mut self, key: &PoolKey, mut e: PrefixEntry, why: &str, budget: usize) {
+    fn insert_with_budget(&mut self, key: &PoolKey, e: PrefixEntry, why: &str, budget: usize) {
+        let _ = self.insert_with_budget_pins(key, e, why, budget, 0);
+    }
+
+    fn insert_with_budget_pins(
+        &mut self,
+        key: &PoolKey,
+        mut e: PrefixEntry,
+        why: &str,
+        budget: usize,
+        initial_pins: usize,
+    ) -> Option<u64> {
+        if let Some(i) = self.key_index(key, &e.toks) {
+            return if initial_pins > 0 {
+                self.pin_n(key, i, initial_pins).map(|pin| pin.id)
+            } else {
+                None
+            };
+        }
         if e.bytes > budget {
             eprintln!("[prefix-cache] skip {why} insert: entry {:.1}MB > budget {:.0}MB",
                       e.bytes as f64 / 1e6, budget as f64 / 1e6);
-            return;
+            return None;
         }
-        if self.has_key(key, &e.toks) {
-            return; // identical key raced in (concurrent learners) — first one wins
+        if initial_pins > 0 && e.bytes > budget.saturating_sub(self.pinned_bytes()) {
+            eprintln!("[prefix-cache] skip pinned {why} insert: entry {:.1}MB cannot fit \
+                       beside {:.1}MB already pinned (budget {:.0}MB)",
+                      e.bytes as f64 / 1e6, self.pinned_bytes() as f64 / 1e6,
+                      budget as f64 / 1e6);
+            return None;
         }
         self.total_bytes += e.bytes;
         self.inserts += 1;
@@ -1170,13 +1275,17 @@ impl PrefixCache {
                   key.0, ns_suffix(&key.1));
         e.id = self.next_id;
         self.next_id += 1;
+        e.pins = initial_pins;
+        let inserted_id = e.id;
         let lk = Self::lru_key(&e);
         let idx = {
             let pool = self.entries.entry(key.clone()).or_default();
             pool.push(e);
             pool.len() - 1
         };
-        self.lru.insert(lk, (key.clone(), idx));
+        if initial_pins == 0 {
+            self.lru.insert(lk, (key.clone(), idx));
+        }
         while self.total_bytes > budget {
             let Some((k, i)) = self.lru.values().next().cloned() else { break };
             let Some(dead) = self.remove_at(&k, i) else { break };
@@ -1185,14 +1294,20 @@ impl PrefixCache {
             eprintln!("[prefix-cache] evict (LRU): {} tokens, {:.1}MB (model {}{})",
                       dead.toks.len(), dead.bytes as f64 / 1e6, k.0, ns_suffix(&k.1));
         }
+        self.entries.get(key)
+            .and_then(|pool| pool.iter().find(|entry| entry.id == inserted_id))
+            .map(|_| inserted_id)
     }
 
-    /// Drop everything (session cache alloc failed — sessions win over the cache).
+    /// Drop every EVICTABLE entry (session cache alloc failed — sessions win over
+    /// ordinary cache residency, while in-flight fanout leases remain authoritative).
     fn evict_all(&mut self) -> usize {
-        let n = self.n_entries();
-        self.entries.clear();
-        self.lru.clear();
-        self.total_bytes = 0;
+        let mut n = 0usize;
+        while let Some((key, i)) = self.lru.values().next().cloned() {
+            let Some(dead) = self.remove_at(&key, i) else { break };
+            self.total_bytes = self.total_bytes.saturating_sub(dead.bytes);
+            n += 1;
+        }
         self.evictions += n as u64;
         n
     }
@@ -1248,6 +1363,7 @@ fn prefix_snapshot(
         bytes,
         last_use: Instant::now(),
         id: 0, // recency identity assigned by PrefixCache::insert
+        pins: 0,
     })
 }
 
@@ -1431,6 +1547,9 @@ struct Session {
     snapshot_at: Option<usize>,
     /// PREFIX-CACHE SEED: park the full primed prompt at prefill-done (cold sessions only).
     seed_prefix: bool,
+    /// Refcounted lease on the prefix entry this request resumed from (or helped create
+    /// through in-batch fanout). Released by the centralized retire sweep on every exit.
+    prefix_pin: Option<PrefixPin>,
     tx: tokio::sync::mpsc::UnboundedSender<Event>,
     t0: Instant,
 }
@@ -2811,7 +2930,10 @@ pub fn run(
         finished.sort_unstable();
         finished.dedup();
         for &i in finished.iter().rev() {
-            let s = active.remove(i);
+            let mut s = active.remove(i);
+            if let Some(pin) = s.prefix_pin.take() {
+                debug_assert!(px.unpin(&pin), "retired session held a missing prefix pin");
+            }
             let pool_key = s.pool_key(); // before the partial moves below (PC-ISO park key)
             n_completed += 1;
             // G5 fault injection (MEMRA_PANIC_AFTER, unset in every real deployment): panic
@@ -3224,6 +3346,7 @@ fn admit(
     // learning insert; cold long prompts arm the seed insert.
     let prefix_on = reuse_on && serve_batching() && prefix_cache_budget_bytes() > 0;
     let mut prefix_hit = false;
+    let mut prefix_pin = None;
     let mut snapshot_at: Option<usize> = None;
     let mut seed_prefix = false;
     if prefix_on && reused.is_none() && !spec_eligible {
@@ -3248,7 +3371,8 @@ fn admit(
             };
             match restored {
                 Ok(entry) => {
-                    px.touch(&pool_key, i); // recency-index-aware last_use refresh (Q3)
+                    prefix_pin = px.pin(&pool_key, i);
+                    debug_assert!(prefix_pin.is_some(), "lookup entry vanished before pin");
                     px.hits += 1;
                     px.hit_tokens += entry.fed.len() as u64;
                     px.record_lcp(entry.fed.len()); // histogram: served-prefix length
@@ -3663,6 +3787,7 @@ fn admit(
         n_cached,
         snapshot_at,
         seed_prefix,
+        prefix_pin,
         tx: req.tx,
         t0: Instant::now(),
     })
@@ -4752,6 +4877,7 @@ mod tests {
             bytes: 1,
             last_use: std::time::Instant::now(),
             id: 0,
+            pins: 0,
         }
     }
 
@@ -4895,6 +5021,7 @@ mod tests {
             bytes,
             last_use: next_instant(),
             id: 0,
+            pins: 0,
         }
     }
 
@@ -5016,6 +5143,52 @@ mod tests {
         px.touch(&key(""), idx);
         px.insert_with_budget(&key(""), entry_b(2, 4), "test", 8);
         assert_eq!(px_survivors(&px), vec![0, 2], "touched 0 must survive, untouched 1 evicts");
+    }
+
+    #[test]
+    fn prefix_cache_pin_refcount_blocks_eviction_until_last_release() {
+        let k = key("");
+        let mut px = PrefixCache::default();
+        px.insert_with_budget(&k, entry_b(0, 4), "test", 8);
+        px.insert_with_budget(&k, entry_b(1, 4), "test", 8);
+        let idx = px.entries[&k].iter().position(|e| e.toks[0] == 0).unwrap();
+        let pin = px.pin_n(&k, idx, 2).unwrap();
+
+        // Both leases name one stable entry. While either is live, ordinary inserts
+        // evict the oldest UNPINNED entry instead.
+        px.insert_with_budget(&k, entry_b(2, 4), "test", 8);
+        assert_eq!(px_survivors(&px), vec![0, 2]);
+        assert_eq!(px.entries[&k].iter().find(|e| e.id == pin.id).unwrap().pins, 2);
+        assert!(px.unpin(&pin));
+        px.insert_with_budget(&k, entry_b(3, 4), "test", 8);
+        assert_eq!(px_survivors(&px), vec![0, 3]);
+
+        // Last release returns the entry to LRU. It is recent at release, survives the
+        // first insert, then becomes the oldest evictable entry on the next insert.
+        assert!(px.unpin(&pin));
+        px.insert_with_budget(&k, entry_b(4, 4), "test", 8);
+        assert_eq!(px_survivors(&px), vec![0, 4]);
+        px.insert_with_budget(&k, entry_b(5, 4), "test", 8);
+        assert_eq!(px_survivors(&px), vec![4, 5]);
+        assert!(!px.unpin(&pin), "an evicted lease id must not release another entry");
+    }
+
+    #[test]
+    fn prefix_cache_emergency_flush_preserves_inflight_pins() {
+        let k = key("");
+        let mut px = PrefixCache::default();
+        px.insert_with_budget(&k, entry_b(0, 4), "test", 8);
+        px.insert_with_budget(&k, entry_b(1, 4), "test", 8);
+        let idx = px.entries[&k].iter().position(|e| e.toks[0] == 0).unwrap();
+        let pin = px.pin(&k, idx).unwrap();
+
+        assert_eq!(px.evict_all(), 1);
+        assert_eq!(px_survivors(&px), vec![0]);
+        assert_eq!(px.total_bytes, 4);
+        assert!(px.unpin(&pin));
+        assert_eq!(px.evict_all(), 1);
+        assert!(px_survivors(&px).is_empty());
+        assert_eq!(px.total_bytes, 0);
     }
 
     #[test]
