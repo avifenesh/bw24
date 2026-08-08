@@ -2670,7 +2670,7 @@ impl HybridModel {
                 let g_bytes: &[u8] = unsafe { std::slice::from_raw_parts(g_host.as_ptr() as *const u8, g_host.len() * 4) };
                 let s_bytes: &[u8] = unsafe { std::slice::from_raw_parts(s_host.as_ptr() as *const u8, s_host.len() * 4) };
                 if g_bytes == s_bytes {
-                    if il == 0 { println!("moe-gate il={il} t={t} BYTE-IDENTICAL (first layer only printed)"); }
+                    println!("moe-gate il={il} t={t} BYTE-IDENTICAL");
                 } else {
                     let diffs = g_host.iter().zip(s_host.iter()).enumerate()
                         .filter(|(_, (a, b))| a != b).count();
