@@ -1,0 +1,36 @@
+[Unit]
+Description=memra Poe research-preview bot
+Documentation=https://creator.poe.com/docs/server-bots/quick-start
+Wants=network-online.target
+After=network-online.target memra-server.service
+
+[Service]
+Type=simple
+User=memra-poe
+Group=memra-poe
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=/etc/memra/poe-bot.env
+WorkingDirectory=/opt/memra/deploy/glue/poe-bot
+ExecStart=/opt/memra/deploy/glue/poe-bot/run.sh
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+UMask=0077
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=true
+LockPersonality=true
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target
