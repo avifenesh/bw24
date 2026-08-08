@@ -10,6 +10,8 @@ PROMPT4K=${PROMPT4K:-"$REPO/research/step-sku-20260807/prompt-pp4096.txt"}
 RAW=${RAW:-"/tmp/ttft-20260808"}
 LABEL=${LABEL:-baseline}
 PORT=${PORT:-18096}
+GROUPED=${GROUPED:-default}
+PREFILL_TICK=${PREFILL_TICK:-default}
 BASE="http://127.0.0.1:$PORT"
 RUN_DIR="$RAW/$LABEL"
 SERVER_LOG="$RUN_DIR/server.log"
@@ -37,6 +39,27 @@ thermal() {
 }
 
 boot_server() {
+    local control_env=()
+    case "$GROUPED" in
+        default) ;;
+        0|1) control_env+=("MEMRA_MOE_GROUPED=$GROUPED") ;;
+        *)
+            echo "GROUPED must be default, 0, or 1 (got $GROUPED)"
+            return 2
+            ;;
+    esac
+    case "$PREFILL_TICK" in
+        default) ;;
+        *[!0-9]*|"")
+            echo "PREFILL_TICK must be default or a positive integer (got $PREFILL_TICK)"
+            return 2
+            ;;
+        0)
+            echo "PREFILL_TICK must be greater than zero"
+            return 2
+            ;;
+        *) control_env+=("MEMRA_PREFILL_TICK=$PREFILL_TICK") ;;
+    esac
     env \
         -u MEMRA_MOE_GROUPED \
         -u MEMRA_PRIME_PIPE \
@@ -44,6 +67,7 @@ boot_server() {
         -u MEMRA_PREFILL_TICK \
         -u MEMRA_SERVE_BATCH \
         -u MEMRA_PRIME_BATCH_HOLD_MS \
+        "${control_env[@]}" \
         MEMRA_MODELS="step35=${MODEL}+${DRAFT}" \
         MEMRA_SERVE_SPEC=0 \
         MEMRA_PP_STAGES=2 \
@@ -105,7 +129,7 @@ echo "model=$MODEL bytes=$(stat -c %s "$MODEL")"
 echo "draft=$DRAFT bytes=$(stat -c %s "$DRAFT")"
 echo "prompt4k=$PROMPT4K bytes=$(stat -c %s "$PROMPT4K") sha256=$(sha256sum "$PROMPT4K" | awk '{print $1}')"
 echo "protocol=sequential cold namespaces, 1 warmup then N=8 short and N=5 4k"
-echo "serve=naked scheduler/prefill geometry, grouped default, PP-2 0,1, spec off"
+echo "serve=grouped=$GROUPED prefill_tick=$PREFILL_TICK PP-2 0,1 spec=off"
 
 (
     flock -w 14400 9 || {
