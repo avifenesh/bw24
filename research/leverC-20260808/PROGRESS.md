@@ -186,3 +186,35 @@ contains zero `MISMATCH` rows.
 The grouped dispatch now stays entirely inside the Step35-legal family: routing and weights come
 from the m-invariant host sigmoid oracle; the rows and pair-batched kernels consume those fixed
 routes and never invoke the softmax device router.
+
+## Increment 5 - full Box2 correctness battery green
+
+The committed gate driver ran from the dedicated Box2 worktree at `b341c109` under one exclusive
+GPU lock. That commit adds evidence only; the release binaries are source-identical to the
+`adfa5a5e` implementation. The target was two NVIDIA RTX PRO 6000 Blackwell Server Edition GPUs
+with PP stages pinned to devices `0,1`.
+
+| Gate | Verdict |
+|---|---|
+| grouped-vs-sequential model oracle | PASS: 210 `BYTE-IDENTICAL` layer comparisons, zero `MISMATCH`; live `resident-q8-rows` and `resident-q8-clamped-pairs` dispatch |
+| model-backed `kernel-check` | `ALL GREEN` |
+| `ppsplit` | PASS: unsplit, serial split, and pipelined split bit-identical with split/overlap liveness |
+| `ppsplit` canary | PASS: serial-pipeline seam broke overlap liveness as required |
+| `chunkinv35` | PASS: invariant for chunks `4096,513,512,256,64` |
+| `chunkinv35` canary | PASS: legacy seam produced a variant result as required |
+| `tickinv35` | PASS: invariant for budgets `0,1024,513,512,256,64` and splits `64,256,512` |
+| `tickinv35` canary | PASS: legacy seam produced a variant result as required |
+| `run-gen`, PP-2, 64 generated tokens | PASS: prefill/decode argmax `6776` MATCH; batched-prime/tokenwise argmax `6776` MATCH |
+| `run-spec`, PP-2, K=1..8 | 8/8 self-consistency PASS |
+| complete battery | exit 0 |
+
+Pinned speculative acceptance was K1 `14/17` (82.4%), K2 `15/32` (46.9%), K3 `15/48`
+(31.2%), K4 `15/64` (23.4%), K5 `15/80` (18.8%), K6 `15/96` (15.6%), K7 `15/112`
+(13.4%), and K8 `15/128` (11.7%).
+
+The battery ran serially under `/tmp/memra-gpu.lock`, with no competing compute process present at
+the recorded boundaries. Across 44 before/after snapshots, GPU temperature ranged from 33 to
+44 C and observed SM clocks ranged from 180 to 2422 MHz, including idle boundary samples.
+
+Raw logs and their checksum manifest are retained in
+`research/leverC-20260808/raw/gates-b341c109/`.

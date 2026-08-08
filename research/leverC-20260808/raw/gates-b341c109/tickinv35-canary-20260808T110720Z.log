@@ -1,0 +1,11 @@
+tick-invariance-gate: label=step35-tick assert=invariant seam=MEMRA_PRIME_CALLLOCAL legacy-seam=on got=variant canary=1 budgets=0,1024,513,512,256,64 splits=64,256,512 model=Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+       1024 |     5 | DIFFER |           512 | 1.275e0 | - | step 22
+        513 |    10 | DIFFER |           513 | 1.491e0 | - | step 3
+        512 |    10 | DIFFER |           512 | 1.275e0 | - | step 22
+        256 |    20 | DIFFER |           512 | 1.275e0 | - | step 22
+         64 |    77 | DIFFER |           512 | 1.275e0 | - | step 22
+       sp64 |     2 | DIFFER |           611 | 1.267e0 | - | step 6
+      sp256 |     2 | DIFFER |           611 | 1.283e0 | - | identical
+      sp512 |     2 | DIFFER |           512 | 1.509e0 | - | step 6
+    tickinv verdict: *** TICK-DEPENDENT: prefill logits move with the per-tick prefill budget (MEMRA_PREFILL_TICK / _JUDGE / _HARVEST) ***
+tick-invariance-gate: PASS (canary broke the assertion as required — gate has teeth; log /tmp/tickinv-gate-u00s05.log)
