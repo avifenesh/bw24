@@ -27,6 +27,17 @@ snapshot() {
     --format=csv,noheader || true
 }
 
+require_idle() {
+  local apps
+  apps=$(nvidia-smi --query-compute-apps=pid,process_name,used_gpu_memory \
+    --format=csv,noheader 2>/dev/null || true)
+  if [[ -n "$apps" ]]; then
+    echo "GPU NOT IDLE AFTER LOCK ACQUISITION"
+    printf '%s\n' "$apps"
+    return 76
+  fi
+}
+
 main() {
   echo "=== dynamic microchunk perf $TS commit=$(git rev-parse HEAD)"
   echo "model=$MODEL"
@@ -43,6 +54,7 @@ main() {
     }
     echo "lock acquired $(date -u +%FT%TZ)"
     snapshot
+    require_idle || exit $?
     local cell shape log cell_rc
     for cell in \
       "pp512:$P512" \
