@@ -1,0 +1,67 @@
+[server] starting; models config = [("step35", "/home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf", Some("/home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf"))]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (device=1, MEMRA_FAST=true)
+[spec-gate] policy placement=pp2-cross-device LOW=0 HIGH=1 source=placement-default spec-admission=off
+[worker] loading model "step35" <- /home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.72GB (expert budget 94.80GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+[mtp-draft] step35 MTP geometry blk.45: n_head=96 n_head_kv=8 n_rot=128 rope_base=10000 swa=true window=512
+[mtp-draft] external draft head: blk.45, source=nextn.shared_head_head.weight, head_vocab=128896 (full)
+[worker] step35: regime draft attached (/home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf)
+[worker]   loaded "step35": 45 layers, eos=128007
+[worker] step35: template caps tools=true think=true think_switch=false chat_ok=true effort_levels=true gemma_think=false ctx=262144 tok="deepseek-v3" instruct=Some("chatml")
+[worker] step35: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["step35"]
+[server] listening on http://127.0.0.1:18096
+[meter] admit id=chatcmpl-f40af1c4e12baf217418df26a67f4738 tenant=default lane=interactive model="step35"
+[worker] observed session VRAM cost for "step35": 336MB (admission gate = 2x)
+[prefix-cache] insert (seed): 228 tokens, 19.0MB (resident 19.0MB / 268MB, model step35, ns "solo-prefill-after-short-warmup-0-1786195190380753472")
+[ttft] id=chatcmpl-f40af1c4e12baf217418df26a67f4738 model="step35" path="/v1/chat/completions" prompt_tokens=228 outcome=first_sse_byte request_parse_ms=0.041 admission_ms=0.030 queue_wait_ms=0.039 tokenize_ms=0.704 prime_wait_ms=5.682 prime_ms=617.998 decode_wait_ms=0.146 sse_handoff_ms=0.055 request_parse_end_ms=0.041 admission_end_ms=0.071 tokenize_start_ms=0.110 tokenize_end_ms=0.814 prime_start_ms=6.496 prime_end_ms=624.494 first_decode_ms=624.640 first_sse_byte_ms=624.695 total_ms=624.695
+[meter] admit id=chatcmpl-b5ed8057e85f9197183c089b50670a6d tenant=default lane=interactive model="step35"
+[prefix-cache] insert (seed): 228 tokens, 19.0MB (resident 38.1MB / 268MB, model step35, ns "solo-prefill-after-short-measured-0-1786195191111909411")
+[ttft] id=chatcmpl-b5ed8057e85f9197183c089b50670a6d model="step35" path="/v1/chat/completions" prompt_tokens=228 outcome=first_sse_byte request_parse_ms=0.030 admission_ms=0.016 queue_wait_ms=0.041 tokenize_ms=0.681 prime_wait_ms=5.689 prime_ms=581.954 decode_wait_ms=0.135 sse_handoff_ms=0.038 request_parse_end_ms=0.030 admission_end_ms=0.046 tokenize_start_ms=0.087 tokenize_end_ms=0.768 prime_start_ms=6.457 prime_end_ms=588.411 first_decode_ms=588.546 first_sse_byte_ms=588.584 total_ms=588.584
+[meter] admit id=chatcmpl-9c634780e6700ea67afff358ef4babf7 tenant=default lane=interactive model="step35"
+[prefix-cache] insert (seed): 228 tokens, 19.0MB (resident 57.1MB / 268MB, model step35, ns "solo-prefill-after-short-measured-1-1786195191792453727")
+[ttft] id=chatcmpl-9c634780e6700ea67afff358ef4babf7 model="step35" path="/v1/chat/completions" prompt_tokens=228 outcome=first_sse_byte request_parse_ms=0.021 admission_ms=0.016 queue_wait_ms=0.045 tokenize_ms=0.727 prime_wait_ms=5.698 prime_ms=581.572 decode_wait_ms=0.134 sse_handoff_ms=0.028 request_parse_end_ms=0.021 admission_end_ms=0.037 tokenize_start_ms=0.082 tokenize_end_ms=0.809 prime_start_ms=6.507 prime_end_ms=588.079 first_decode_ms=588.213 first_sse_byte_ms=588.241 total_ms=588.241
+[meter] admit id=chatcmpl-288cc7377437485896e938d507563306 tenant=default lane=interactive model="step35"
+[prefix-cache] insert (seed): 228 tokens, 19.0MB (resident 76.2MB / 268MB, model step35, ns "solo-prefill-after-short-measured-2-1786195192472575871")
+[ttft] id=chatcmpl-288cc7377437485896e938d507563306 model="step35" path="/v1/chat/completions" prompt_tokens=228 outcome=first_sse_byte request_parse_ms=0.013 admission_ms=0.011 queue_wait_ms=0.092 tokenize_ms=0.723 prime_wait_ms=5.743 prime_ms=582.295 decode_wait_ms=0.147 sse_handoff_ms=0.029 request_parse_end_ms=0.013 admission_end_ms=0.024 tokenize_start_ms=0.116 tokenize_end_ms=0.839 prime_start_ms=6.582 prime_end_ms=588.877 first_decode_ms=589.024 first_sse_byte_ms=589.053 total_ms=589.053
+[meter] admit id=chatcmpl-639fa44499cdd6acbd965d096a0b47fe tenant=default lane=interactive model="step35"
+[prefix-cache] insert (seed): 228 tokens, 19.0MB (resident 95.2MB / 268MB, model step35, ns "solo-prefill-after-short-measured-3-1786195193153563888")
+[ttft] id=chatcmpl-639fa44499cdd6acbd965d096a0b47fe model="step35" path="/v1/chat/completions" prompt_tokens=228 outcome=first_sse_byte request_parse_ms=0.015 admission_ms=0.011 queue_wait_ms=0.041 tokenize_ms=0.694 prime_wait_ms=5.725 prime_ms=583.107 decode_wait_ms=0.144 sse_handoff_ms=0.027 request_parse_end_ms=0.015 admission_end_ms=0.026 tokenize_start_ms=0.067 tokenize_end_ms=0.761 prime_start_ms=6.486 prime_end_ms=589.593 first_decode_ms=589.737 first_sse_byte_ms=589.764 total_ms=589.764
+[meter] admit id=chatcmpl-1f7460c4b25838cb2ba04fecc1ec2b12 tenant=default lane=interactive model="step35"
+[prefix-cache] insert (seed): 228 tokens, 19.0MB (resident 114.3MB / 268MB, model step35, ns "solo-prefill-after-short-measured-4-1786195193835201231")
+[ttft] id=chatcmpl-1f7460c4b25838cb2ba04fecc1ec2b12 model="step35" path="/v1/chat/completions" prompt_tokens=228 outcome=first_sse_byte request_parse_ms=0.009 admission_ms=0.008 queue_wait_ms=0.042 tokenize_ms=0.678 prime_wait_ms=5.829 prime_ms=582.039 decode_wait_ms=0.134 sse_handoff_ms=0.029 request_parse_end_ms=0.009 admission_end_ms=0.017 tokenize_start_ms=0.059 tokenize_end_ms=0.737 prime_start_ms=6.566 prime_end_ms=588.605 first_decode_ms=588.739 first_sse_byte_ms=588.768 total_ms=588.768
+[meter] admit id=chatcmpl-91fa88289c888bdd8312a6447fb95699 tenant=default lane=interactive model="step35"
+[prefix-cache] insert (seed): 228 tokens, 19.0MB (resident 133.3MB / 268MB, model step35, ns "solo-prefill-after-short-measured-5-1786195194515915418")
+[ttft] id=chatcmpl-91fa88289c888bdd8312a6447fb95699 model="step35" path="/v1/chat/completions" prompt_tokens=228 outcome=first_sse_byte request_parse_ms=0.012 admission_ms=0.012 queue_wait_ms=0.110 tokenize_ms=0.678 prime_wait_ms=5.821 prime_ms=582.375 decode_wait_ms=0.146 sse_handoff_ms=0.027 request_parse_end_ms=0.012 admission_end_ms=0.024 tokenize_start_ms=0.134 tokenize_end_ms=0.812 prime_start_ms=6.633 prime_end_ms=589.008 first_decode_ms=589.154 first_sse_byte_ms=589.181 total_ms=589.181
+[meter] admit id=chatcmpl-17d41bb0b0beb1379e841eb724be0608 tenant=default lane=interactive model="step35"
+[prefix-cache] insert (seed): 228 tokens, 19.0MB (resident 152.3MB / 268MB, model step35, ns "solo-prefill-after-short-measured-6-1786195195196846274")
+[ttft] id=chatcmpl-17d41bb0b0beb1379e841eb724be0608 model="step35" path="/v1/chat/completions" prompt_tokens=228 outcome=first_sse_byte request_parse_ms=0.008 admission_ms=0.008 queue_wait_ms=0.042 tokenize_ms=0.746 prime_wait_ms=5.755 prime_ms=582.830 decode_wait_ms=0.134 sse_handoff_ms=0.037 request_parse_end_ms=0.008 admission_end_ms=0.016 tokenize_start_ms=0.058 tokenize_end_ms=0.804 prime_start_ms=6.559 prime_end_ms=589.389 first_decode_ms=589.523 first_sse_byte_ms=589.560 total_ms=589.560
+[meter] admit id=chatcmpl-8c9a2309acda54f2c5d2fa7ff97c63d9 tenant=default lane=interactive model="step35"
+[prefix-cache] insert (seed): 228 tokens, 19.0MB (resident 171.4MB / 268MB, model step35, ns "solo-prefill-after-short-measured-7-1786195195878268933")
+[ttft] id=chatcmpl-8c9a2309acda54f2c5d2fa7ff97c63d9 model="step35" path="/v1/chat/completions" prompt_tokens=228 outcome=first_sse_byte request_parse_ms=0.019 admission_ms=0.023 queue_wait_ms=0.057 tokenize_ms=0.661 prime_wait_ms=5.670 prime_ms=581.775 decode_wait_ms=0.136 sse_handoff_ms=0.028 request_parse_end_ms=0.019 admission_end_ms=0.042 tokenize_start_ms=0.099 tokenize_end_ms=0.760 prime_start_ms=6.430 prime_end_ms=588.205 first_decode_ms=588.341 first_sse_byte_ms=588.369 total_ms=588.369
+[meter] admit id=chatcmpl-b019ae6f870b8ded215788bdeda575de tenant=default lane=interactive model="step35"
+[prefix-cache] skip seed insert: entry 343.0MB > budget 268MB
+[ttft] id=chatcmpl-b019ae6f870b8ded215788bdeda575de model="step35" path="/v1/chat/completions" prompt_tokens=4107 outcome=first_sse_byte request_parse_ms=0.049 admission_ms=0.009 queue_wait_ms=0.038 tokenize_ms=8.891 prime_wait_ms=1.685 prime_ms=6012.801 decode_wait_ms=0.135 sse_handoff_ms=0.036 request_parse_end_ms=0.049 admission_end_ms=0.058 tokenize_start_ms=0.096 tokenize_end_ms=8.987 prime_start_ms=10.672 prime_end_ms=6023.473 first_decode_ms=6023.608 first_sse_byte_ms=6023.644 total_ms=6023.644
+[meter] admit id=chatcmpl-5804a0f37cabc0e0a6b9955cdb6ea607 tenant=default lane=interactive model="step35"
+[prefix-cache] skip seed insert: entry 343.0MB > budget 268MB
+[ttft] id=chatcmpl-5804a0f37cabc0e0a6b9955cdb6ea607 model="step35" path="/v1/chat/completions" prompt_tokens=4107 outcome=first_sse_byte request_parse_ms=0.069 admission_ms=0.019 queue_wait_ms=0.044 tokenize_ms=8.767 prime_wait_ms=1.063 prime_ms=6001.085 decode_wait_ms=0.136 sse_handoff_ms=0.036 request_parse_end_ms=0.069 admission_end_ms=0.088 tokenize_start_ms=0.132 tokenize_end_ms=8.899 prime_start_ms=9.962 prime_end_ms=6011.047 first_decode_ms=6011.183 first_sse_byte_ms=6011.219 total_ms=6011.219
+[meter] admit id=chatcmpl-b16bc409d423a167b5c5b69116de3bf8 tenant=default lane=interactive model="step35"
+[prefix-cache] skip seed insert: entry 343.0MB > budget 268MB
+[ttft] id=chatcmpl-b16bc409d423a167b5c5b69116de3bf8 model="step35" path="/v1/chat/completions" prompt_tokens=4107 outcome=first_sse_byte request_parse_ms=0.047 admission_ms=0.013 queue_wait_ms=0.043 tokenize_ms=8.834 prime_wait_ms=1.068 prime_ms=5980.070 decode_wait_ms=0.143 sse_handoff_ms=0.043 request_parse_end_ms=0.047 admission_end_ms=0.060 tokenize_start_ms=0.103 tokenize_end_ms=8.937 prime_start_ms=10.005 prime_end_ms=5990.075 first_decode_ms=5990.218 first_sse_byte_ms=5990.261 total_ms=5990.261
+[meter] admit id=chatcmpl-9d9c70d4ab523556731f316c4e85e2c5 tenant=default lane=interactive model="step35"
+[prefix-cache] skip seed insert: entry 343.0MB > budget 268MB
+[ttft] id=chatcmpl-9d9c70d4ab523556731f316c4e85e2c5 model="step35" path="/v1/chat/completions" prompt_tokens=4107 outcome=first_sse_byte request_parse_ms=0.051 admission_ms=0.018 queue_wait_ms=0.044 tokenize_ms=8.725 prime_wait_ms=1.078 prime_ms=5981.119 decode_wait_ms=0.141 sse_handoff_ms=0.039 request_parse_end_ms=0.051 admission_end_ms=0.069 tokenize_start_ms=0.113 tokenize_end_ms=8.838 prime_start_ms=9.916 prime_end_ms=5991.035 first_decode_ms=5991.176 first_sse_byte_ms=5991.215 total_ms=5991.215
+[meter] admit id=chatcmpl-ecb2cafc7941b7daf74c1d5cb39e157c tenant=default lane=interactive model="step35"
+[prefix-cache] skip seed insert: entry 343.0MB > budget 268MB
+[ttft] id=chatcmpl-ecb2cafc7941b7daf74c1d5cb39e157c model="step35" path="/v1/chat/completions" prompt_tokens=4107 outcome=first_sse_byte request_parse_ms=0.051 admission_ms=0.024 queue_wait_ms=0.043 tokenize_ms=8.769 prime_wait_ms=1.134 prime_ms=5979.768 decode_wait_ms=0.135 sse_handoff_ms=0.033 request_parse_end_ms=0.051 admission_end_ms=0.075 tokenize_start_ms=0.118 tokenize_end_ms=8.887 prime_start_ms=10.021 prime_end_ms=5989.789 first_decode_ms=5989.924 first_sse_byte_ms=5989.957 total_ms=5989.957
+[meter] admit id=chatcmpl-6a5e971a8a1359f102d7c0ebf087f359 tenant=default lane=interactive model="step35"
+[prefix-cache] skip seed insert: entry 343.0MB > budget 268MB
+[ttft] id=chatcmpl-6a5e971a8a1359f102d7c0ebf087f359 model="step35" path="/v1/chat/completions" prompt_tokens=4107 outcome=first_sse_byte request_parse_ms=0.047 admission_ms=0.019 queue_wait_ms=0.051 tokenize_ms=8.784 prime_wait_ms=1.133 prime_ms=5990.875 decode_wait_ms=0.146 sse_handoff_ms=0.057 request_parse_end_ms=0.047 admission_end_ms=0.066 tokenize_start_ms=0.117 tokenize_end_ms=8.901 prime_start_ms=10.034 prime_end_ms=6000.909 first_decode_ms=6001.055 first_sse_byte_ms=6001.112 total_ms=6001.112
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

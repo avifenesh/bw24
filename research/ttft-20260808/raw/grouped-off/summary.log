@@ -1,0 +1,43 @@
+=== TTFT anatomy label=grouped-off ts=2026-08-08T13:09:09Z
+commit=0fef5ff544d9daf0e4c270607b90883631f3e824
+binary=/home/ubuntu/cx-ttft-target/release/memra-server sha256=99f05bcf1943548fa7b7e8301f60357229dea3093205440777e59bc6c909e1b4
+model=/home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf bytes=46483327296
+draft=/home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf bytes=3707276416
+prompt4k=/home/ubuntu/cx-ttft-memra/research/step-sku-20260807/prompt-pp4096.txt bytes=25036 sha256=23c1d8384a16c7c0bcb7736b412d43e64c0b4d8e238703864e928565f824ae11
+protocol=sequential cold namespaces, 1 warmup then N=8 short and N=5 4k
+serve=grouped=0 prefill_tick=default PP-2 0,1 spec=off
+lock acquired 2026-08-08T13:09:09Z
+0, NVIDIA RTX PRO 6000 Blackwell Server Edition, 28, 180 MHz, 0 MiB, 0 %
+1, NVIDIA RTX PRO 6000 Blackwell Server Edition, 28, 180 MHz, 0 MiB, 0 %
+server ready after ~35s
+########## short N=8 ##########
+{"cache_salt": "grouped-off-short-warmup-0-1786194584624595551", "client_ttft_ms": 988.3556989952922, "completion_tokens": 8, "finish_reason": "length", "id": "chatcmpl-a3900f759b470a7ba58b7900e44431d4", "index": 0, "label": "grouped-off", "latency_ms": 1079.6820640098304, "measured": false, "prompt_tokens": 228, "shape": "short", "ts": "2026-08-08T13:09:45.704437+00:00"}
+{"cache_salt": "grouped-off-short-measured-0-1786194585704532664", "client_ttft_ms": 936.7276440025307, "completion_tokens": 8, "finish_reason": "length", "id": "chatcmpl-55693ed8e03de3535a3cd097f1a98b73", "index": 0, "label": "grouped-off", "latency_ms": 1028.3226949977688, "measured": true, "prompt_tokens": 228, "shape": "short", "ts": "2026-08-08T13:09:46.732904+00:00"}
+{"cache_salt": "grouped-off-short-measured-1-1786194586732953335", "client_ttft_ms": 934.6251119859517, "completion_tokens": 8, "finish_reason": "length", "id": "chatcmpl-9f755ad78a8af24c729f454c37289832", "index": 1, "label": "grouped-off", "latency_ms": 1025.7149550016038, "measured": true, "prompt_tokens": 228, "shape": "short", "ts": "2026-08-08T13:09:47.758700+00:00"}
+{"cache_salt": "grouped-off-short-measured-2-1786194587758747060", "client_ttft_ms": 936.0058229940478, "completion_tokens": 8, "finish_reason": "length", "id": "chatcmpl-ca93af8e3a9550df6b0dc91f086f65d3", "index": 2, "label": "grouped-off", "latency_ms": 1027.0945609954651, "measured": true, "prompt_tokens": 228, "shape": "short", "ts": "2026-08-08T13:09:48.785871+00:00"}
+{"cache_salt": "grouped-off-short-measured-3-1786194588785927657", "client_ttft_ms": 934.0049470192753, "completion_tokens": 8, "finish_reason": "length", "id": "chatcmpl-2316e1ded9c1420cb33f33b6b01cf751", "index": 3, "label": "grouped-off", "latency_ms": 1025.3027970029507, "measured": true, "prompt_tokens": 228, "shape": "short", "ts": "2026-08-08T13:09:49.811264+00:00"}
+{"cache_salt": "grouped-off-short-measured-4-1786194589811309761", "client_ttft_ms": 934.8108739941381, "completion_tokens": 8, "finish_reason": "length", "id": "chatcmpl-e22cdec48f96054bbe4b2a5c8f9d816e", "index": 4, "label": "grouped-off", "latency_ms": 1026.107565005077, "measured": true, "prompt_tokens": 228, "shape": "short", "ts": "2026-08-08T13:09:50.837446+00:00"}
+{"cache_salt": "grouped-off-short-measured-5-1786194590837492596", "client_ttft_ms": 931.1799750139471, "completion_tokens": 8, "finish_reason": "length", "id": "chatcmpl-b1385cd9457f0276d7b77b2136e31712", "index": 5, "label": "grouped-off", "latency_ms": 1022.6188260130584, "measured": true, "prompt_tokens": 228, "shape": "short", "ts": "2026-08-08T13:09:51.860140+00:00"}
+{"cache_salt": "grouped-off-short-measured-6-1786194591860186502", "client_ttft_ms": 940.3233969933353, "completion_tokens": 8, "finish_reason": "length", "id": "chatcmpl-0e993f805f7c147a15e9de072678acd8", "index": 6, "label": "grouped-off", "latency_ms": 1031.5360109962057, "measured": true, "prompt_tokens": 228, "shape": "short", "ts": "2026-08-08T13:09:52.891751+00:00"}
+{"cache_salt": "grouped-off-short-measured-7-1786194592891798009", "client_ttft_ms": 930.9946389985271, "completion_tokens": 8, "finish_reason": "length", "id": "chatcmpl-aaddb4df2960ada87a6cd48143f2996c", "index": 7, "label": "grouped-off", "latency_ms": 1022.5525440182537, "measured": true, "prompt_tokens": 228, "shape": "short", "ts": "2026-08-08T13:09:53.914380+00:00"}
+{"summary": {"client_ttft_max_ms": 940.3233969933353, "client_ttft_min_ms": 930.9946389985271, "client_ttft_p50_ms": 934.8108739941381, "label": "grouped-off", "n": 8, "prompt_tokens": [228], "shape": "short"}}
+0, NVIDIA RTX PRO 6000 Blackwell Server Edition, 36, 2392 MHz, 49233 MiB, 32 %
+1, NVIDIA RTX PRO 6000 Blackwell Server Edition, 39, 2340 MHz, 59603 MiB, 54 %
+########## 4k N=5 ##########
+{"cache_salt": "grouped-off-4k-warmup-0-1786194593993768238", "client_ttft_ms": 11012.053459999152, "completion_tokens": 8, "finish_reason": "length", "id": "chatcmpl-3aebce2370e860ba4969dbabd2a9f8bb", "index": 0, "label": "grouped-off", "latency_ms": 11109.912347979844, "measured": false, "prompt_tokens": 4107, "shape": "4k", "ts": "2026-08-08T13:10:05.103875+00:00"}
+{"cache_salt": "grouped-off-4k-measured-0-1786194605103944371", "client_ttft_ms": 10826.66504199733, "completion_tokens": 8, "finish_reason": "length", "id": "chatcmpl-caca9277b7f3b5f1f257b0d7203291d0", "index": 0, "label": "grouped-off", "latency_ms": 10924.090949003585, "measured": true, "prompt_tokens": 4107, "shape": "4k", "ts": "2026-08-08T13:10:16.028104+00:00"}
+{"cache_salt": "grouped-off-4k-measured-1-1786194616028169811", "client_ttft_ms": 10849.181516998215, "completion_tokens": 8, "finish_reason": "length", "id": "chatcmpl-d67a87bf0b79b4af78f5ca2d705f1972", "index": 1, "label": "grouped-off", "latency_ms": 10945.456426998135, "measured": true, "prompt_tokens": 4107, "shape": "4k", "ts": "2026-08-08T13:10:26.973699+00:00"}
+{"cache_salt": "grouped-off-4k-measured-2-1786194626973746473", "client_ttft_ms": 10855.248926003696, "completion_tokens": 8, "finish_reason": "length", "id": "chatcmpl-e457bd4ce34fb263c5beb019e751ca85", "index": 2, "label": "grouped-off", "latency_ms": 10951.410726003814, "measured": true, "prompt_tokens": 4107, "shape": "4k", "ts": "2026-08-08T13:10:37.925214+00:00"}
+{"cache_salt": "grouped-off-4k-measured-3-1786194637925267279", "client_ttft_ms": 10873.40113002574, "completion_tokens": 8, "finish_reason": "length", "id": "chatcmpl-7af0da71ad71cf9b36d8b26ba16df88a", "index": 3, "label": "grouped-off", "latency_ms": 10970.065195026109, "measured": true, "prompt_tokens": 4107, "shape": "4k", "ts": "2026-08-08T13:10:48.895396+00:00"}
+{"cache_salt": "grouped-off-4k-measured-4-1786194648895450151", "client_ttft_ms": 10861.323726014234, "completion_tokens": 8, "finish_reason": "length", "id": "chatcmpl-19d4d667dc9df5514287391aa38fd61e", "index": 4, "label": "grouped-off", "latency_ms": 10958.133367006667, "measured": true, "prompt_tokens": 4107, "shape": "4k", "ts": "2026-08-08T13:10:59.853645+00:00"}
+{"summary": {"client_ttft_max_ms": 10873.40113002574, "client_ttft_min_ms": 10826.66504199733, "client_ttft_p50_ms": 10855.248926003696, "label": "grouped-off", "n": 5, "prompt_tokens": [4107], "shape": "4k"}}
+0, NVIDIA RTX PRO 6000 Blackwell Server Edition, 44, 2377 MHz, 51153 MiB, 45 %
+1, NVIDIA RTX PRO 6000 Blackwell Server Edition, 47, 2407 MHz, 61907 MiB, 46 %
+shape	n	prompt_tokens	client_ttft_p50_ms	request_parse_ms	admission_ms	queue_wait_ms	tokenize_ms	prime_wait_ms	prime_ms	decode_wait_ms	sse_handoff_ms	total_ms	client_minus_server_ms
+4k	5	4107	10855.249	0.038	0.015	0.035	8.887	1.159	10844.910	0.132	0.028	10855.047	0.222
+short	8	228	934.811	0.019	0.016	0.041	0.677	5.647	928.069	0.133	0.036	934.585	0.226
+trace_lines=15 expected=15
+lock released 2026-08-08T13:11:04Z
+=== TTFT anatomy rc=0
+run_dir=/tmp/ttft-20260808/grouped-off
+=== done 2026-08-08T13:11:04Z

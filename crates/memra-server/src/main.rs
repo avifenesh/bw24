@@ -61,6 +61,7 @@ pub(crate) mod darklane;
 pub(crate) mod health;
 pub(crate) mod lanes { pub use memra_lanes::*; }
 mod toolcall;
+mod ttft;
 mod worker;
 
 use std::collections::HashMap;
@@ -68,12 +69,15 @@ use std::sync::Arc;
 use std::sync::mpsc::Sender;
 
 use axum::{
-    Json, Router,
-    extract::{Query, State},
-    http::StatusCode,
+    body::Body,
+    Extension, Json, Router,
+    extract::{Query, Request as AxumRequest, State},
+    http::{header::CONTENT_TYPE, StatusCode},
+    middleware::{self, Next},
     response::{sse::{Event as SseEvent, Sse}, IntoResponse, Response},
     routing::{get, post},
 };
+use futures_core::Stream as _;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -82,6 +86,51 @@ use memra_engine::sampler::SamplerConfig;
 use memra_tokenizer::chat::{ThinkMode, ToolCall as TmplToolCall, Turn as TmplTurn};
 use toolcall::{ParsedToolCall, Piece, ToolStreamParser};
 use worker::{Cmd, Event, ModelCaps, Request, SharedMetrics};
+
+#[derive(Clone, Default)]
+struct TtftRequestTrace(Option<Arc<ttft::Trace>>);
+
+fn is_sse_data_frame(bytes: &[u8]) -> bool {
+    bytes
+        .windows(b"data:".len())
+        .any(|window| window == b"data:")
+}
+
+async fn ttft_request_start(mut req: AxumRequest, next: Next) -> Response {
+    let trace = ttft::start(req.uri().path());
+    req.extensions_mut().insert(TtftRequestTrace(trace.clone()));
+    let response = next.run(req).await;
+    let Some(trace) = trace else {
+        return response;
+    };
+    let is_sse = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/event-stream"));
+    if !is_sse {
+        return response;
+    }
+
+    // Stamp the first serialized application data frame as Hyper polls it. Axum's
+    // keepalive comments can precede a long prefill, so non-data frames do not count.
+    let (parts, body) = response.into_parts();
+    let mut body = Box::pin(body.into_data_stream());
+    let stream = async_stream::stream! {
+        while let Some(frame) =
+            std::future::poll_fn(|cx| body.as_mut().poll_next(cx)).await
+        {
+            if frame
+                .as_ref()
+                .is_ok_and(|bytes| is_sse_data_frame(bytes))
+            {
+                trace.mark_first_sse_byte();
+            }
+            yield frame;
+        }
+    };
+    Response::from_parts(parts, Body::from_stream(stream))
+}
 
 const OPENROUTER_SCHEMA_VERSION: &str = "2.4";
 const JSON_SAFE_INTEGER_MAX: u64 = 9_007_199_254_740_991;
@@ -1473,6 +1522,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/metrics", get(get_metrics))
         .route("/yield/metrics", get(yield_metrics))
         .with_state(state);
+    let app = if ttft::enabled() {
+        app.layer(middleware::from_fn(ttft_request_start))
+    } else {
+        app
+    };
 
     let addr = std::env::var("MEMRA_ADDR").unwrap_or_else(|_| "127.0.0.1:8080".into());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -2205,8 +2259,19 @@ async fn peek_shed(
 }
 
 /// Build the (GenParams, SamplerConfig, stop, prompt) from a request body.
+#[cfg(test)]
 fn build_request(req: &CompletionReq, tx: tokio::sync::mpsc::UnboundedSender<Event>,
                  lane: lanes::Lane, affinity: Option<String>) -> Request {
+    build_request_with_trace(req, tx, lane, affinity, None)
+}
+
+fn build_request_with_trace(
+    req: &CompletionReq,
+    tx: tokio::sync::mpsc::UnboundedSender<Event>,
+    lane: lanes::Lane,
+    affinity: Option<String>,
+    ttft: Option<Arc<ttft::Trace>>,
+) -> Request {
     let params = GenParams {
         max_new: req.max_tokens.unwrap_or(worker::MAX_NEW_CTX_BOUNDED),
         max_ctx: req.max_ctx,
@@ -2233,6 +2298,7 @@ fn build_request(req: &CompletionReq, tx: tokio::sync::mpsc::UnboundedSender<Eve
         lane,
         grammar: None, // /v1/completions carries no response_format (chat surface only)
         oom_retries: 0, // step-OOM park budget: fresh from the HTTP layer (lane/admit-oom)
+        ttft,
         tx,
     }
 }
@@ -2246,9 +2312,22 @@ struct ChatPlan {
     parser: Option<ToolStreamParser>,
 }
 
+#[cfg(test)]
 fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
                       tx: tokio::sync::mpsc::UnboundedSender<Event>,
                       lane: lanes::Lane, affinity: Option<String>)
+                      -> Result<ChatPlan, String> {
+    build_chat_request_with_trace(req, caps, tx, lane, affinity, None)
+}
+
+fn build_chat_request_with_trace(
+    req: ChatCompletionReq,
+    caps: Option<&ModelCaps>,
+    tx: tokio::sync::mpsc::UnboundedSender<Event>,
+    lane: lanes::Lane,
+    affinity: Option<String>,
+    ttft: Option<Arc<ttft::Trace>>,
+)
                       -> Result<ChatPlan, String> {
     let tool_choice = parse_tool_choice(&req.tool_choice)?;
     // Template honesty gate (serve-st lane, 2026-08-04): a directory checkpoint
@@ -2380,6 +2459,7 @@ fn build_chat_request(req: ChatCompletionReq, caps: Option<&ModelCaps>,
             lane,
             grammar,
             oom_retries: 0, // step-OOM park budget: fresh from the HTTP layer (lane/admit-oom)
+            ttft,
             tx,
         },
         parser,
@@ -2464,10 +2544,16 @@ fn meter_admit(env: &Envelope, tenant: &auth::TenantCtx, model: &str, lane: lane
 }
 
 async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
+                     trace: Option<Extension<TtftRequestTrace>>,
                      Json(req): Json<CompletionReq>) -> Response {
     // API key: OpenAI-style `Authorization: Bearer <key>` -> tenant identity
     // (MEMRA_API_KEYS keyring and/or the MEMRA_API_KEY single key; nothing set = open).
     let env = Envelope::new(false);
+    let ttft = trace.and_then(|Extension(trace)| trace.0);
+    if let Some(trace) = ttft.as_ref() {
+        trace.mark_parsed();
+        trace.bind_request(&env.id, &req.model);
+    }
     let tenant = match authenticate(&headers) {
         Ok(t) => t,
         Err(resp) => return with_request_id(&env.id, resp),
@@ -2501,7 +2587,7 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
     let model = req.model.clone();
     let stream = req.stream;
     let affinity = affinity_key(&req.session_id, &req.user, &headers);
-    let mut request = build_request(&req, tx, lane, affinity);
+    let mut request = build_request_with_trace(&req, tx, lane, affinity, ttft.clone());
     request.cache_ns = tenant_namespace(&tenant, &req.cache_salt);
     meter_admit(&env, &tenant, &model, lane);
     let stop_strings = request.stop_strings.clone();
@@ -2511,6 +2597,9 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
     // this request's admission wait stops scaling with MEMRA_SPEC_BURST. The worker
     // decrements at pop (handle_cmd).
     worker::PENDING_ADMITS.fetch_add(1, std::sync::atomic::Ordering::Release);
+    if let Some(trace) = ttft.as_ref() {
+        trace.mark_submitted();
+    }
     if st.cmd_tx.send(Cmd::Generate(Box::new(request))).is_err() {
         worker::PENDING_ADMITS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
         return rl.attach(with_request_id(&env.id, worker_unavailable_response()));
@@ -2533,8 +2622,14 @@ async fn completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
 }
 
 async fn chat_completions(State(st): State<AppState>, headers: axum::http::HeaderMap,
+                          trace: Option<Extension<TtftRequestTrace>>,
                           Json(req): Json<ChatCompletionReq>) -> Response {
     let env = Envelope::new(true);
+    let ttft = trace.and_then(|Extension(trace)| trace.0);
+    if let Some(trace) = ttft.as_ref() {
+        trace.mark_parsed();
+        trace.bind_request(&env.id, &req.model);
+    }
     let tenant = match authenticate(&headers) {
         Ok(t) => t,
         Err(resp) => return with_request_id(&env.id, resp),
@@ -2567,7 +2662,9 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
     let cache_salt = req.cache_salt.clone();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     let affinity = affinity_key(&req.session_id, &req.user, &headers);
-    let mut plan = match build_chat_request(req, st.caps.get(&model), tx, lane, affinity) {
+    let mut plan = match build_chat_request_with_trace(
+        req, st.caps.get(&model), tx, lane, affinity, ttft.clone())
+    {
         Ok(plan) => plan,
         Err(err) => {
             return with_request_id(&env.id, bad_request(&err, None));
@@ -2589,6 +2686,9 @@ async fn chat_completions(State(st): State<AppState>, headers: axum::http::Heade
     let stop_strings = plan.request.stop_strings.clone();
     // Admission yield (lane/admission-latency): gauge up before send — see completions.
     worker::PENDING_ADMITS.fetch_add(1, std::sync::atomic::Ordering::Release);
+    if let Some(trace) = ttft.as_ref() {
+        trace.mark_submitted();
+    }
     if st.cmd_tx.send(Cmd::Generate(Box::new(plan.request))).is_err() {
         worker::PENDING_ADMITS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
         return rl.attach(with_request_id(&env.id, worker_unavailable_response()));
@@ -3547,6 +3647,15 @@ mod tests {
         assert_eq!(lines.last(), Some(&"[DONE]"));
     }
 
+    #[test]
+    fn ttft_sse_marker_ignores_keepalive_comments() {
+        assert!(!is_sse_data_frame(b": keep-alive\n\n"));
+        assert!(is_sse_data_frame(b"data: {\"choices\":[]}\n\n"));
+        assert!(is_sse_data_frame(
+            b"event: error\ndata: {\"error\":\"failed\"}\n\n"
+        ));
+    }
+
     #[tokio::test]
     async fn error_bodies_use_the_openai_object_shape() {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -3656,6 +3765,7 @@ mod tests {
         let completion = completions(
             State(st.clone()),
             axum::http::HeaderMap::new(),
+            None,
             Json(serde_json::from_value(serde_json::json!({
                 "model": "m", "prompt": "test"
             })).unwrap()),
@@ -3663,6 +3773,7 @@ mod tests {
         let chat = chat_completions(
             State(st),
             axum::http::HeaderMap::new(),
+            None,
             Json(serde_json::from_value(serde_json::json!({
                 "model": "m", "messages": [{"role": "user", "content": "test"}]
             })).unwrap()),
@@ -4240,7 +4351,7 @@ mod tests {
         let st = fake_worker_state();
         // non-stream chat: headers present, remaining = cap - 1 (this request held
         // the only slot), slot freed after completion.
-        let resp = chat_completions(State(st.clone()), axum::http::HeaderMap::new(),
+        let resp = chat_completions(State(st.clone()), axum::http::HeaderMap::new(), None,
             Json(serde_json::from_value(serde_json::json!({
                 "model": "m", "messages": [{"role": "user", "content": "t"}]
             })).unwrap())).await;
@@ -4254,7 +4365,7 @@ mod tests {
                    "slot must free at completion");
         // streaming completions: headers on the SSE response too; slot freed once the
         // body is drained (the guard rides the stream).
-        let resp = completions(State(st.clone()), axum::http::HeaderMap::new(),
+        let resp = completions(State(st.clone()), axum::http::HeaderMap::new(), None,
             Json(serde_json::from_value(serde_json::json!({
                 "model": "m", "prompt": "t", "stream": true
             })).unwrap())).await;
@@ -4275,7 +4386,7 @@ mod tests {
         let st = fake_worker_state();
         DRAINING.store(true, std::sync::atomic::Ordering::SeqCst);
         // both completion routes: immediate 503 + Retry-After, no slot held.
-        let resp = chat_completions(State(st.clone()), axum::http::HeaderMap::new(),
+        let resp = chat_completions(State(st.clone()), axum::http::HeaderMap::new(), None,
             Json(serde_json::from_value(serde_json::json!({
                 "model": "m", "messages": [{"role": "user", "content": "t"}]
             })).unwrap())).await;
@@ -4294,7 +4405,7 @@ mod tests {
         assert!(payload["error"]["message"].as_str().unwrap().contains("draining"));
         assert_eq!(payload["error"]["type"], "server_error");
         assert_eq!(payload["error"]["code"], "draining");
-        let resp = completions(State(st.clone()), axum::http::HeaderMap::new(),
+        let resp = completions(State(st.clone()), axum::http::HeaderMap::new(), None,
             Json(serde_json::from_value(serde_json::json!({
                 "model": "m", "prompt": "t"
             })).unwrap())).await;
@@ -4326,7 +4437,7 @@ mod tests {
         assert!(payload["detail"].as_str().unwrap().contains("draining"));
         DRAINING.store(false, std::sync::atomic::Ordering::SeqCst);
         // flag cleared: requests admit again (the gate is the flag, nothing latent).
-        let resp = chat_completions(State(st.clone()), axum::http::HeaderMap::new(),
+        let resp = chat_completions(State(st.clone()), axum::http::HeaderMap::new(), None,
             Json(serde_json::from_value(serde_json::json!({
                 "model": "m", "messages": [{"role": "user", "content": "t"}]
             })).unwrap())).await;

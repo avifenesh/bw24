@@ -1,0 +1,20 @@
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 trunk layers; optional MTP skipped)
+prompt text: "Write a short paragraph explaining how a CPU pipeline improves instruction throughput, and mention one hazard."
+prompt tokens: [0, 21750, 260, 3107, 15363, 26131, 1192, 260, 25454, 28499, 28232, 12740, 62027, 14, 305, 6731, 834, 23616, 16]
+prefill argmax=6776  decode argmax=6776  logit maxdiff=8.228e-1  MATCH
+batched-prime argmax=6776  tokenwise argmax=6776  logit maxdiff=7.178e-1  MATCH
+prefill 19 tok in 0.5161s = 36.8 tok/s (pp19)
+generated 64 tokens in 3.429s = 18.67 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.127s) [stop: MaxNew]
+tokens: [6776, 666, 7805, 11490, 2143, 35, 25454, 28499, 21994, 270, 16846, 294, 411, 12740, 1055, 3586, 13656, 343, 70698, 14, 64285, 14, 22218, 14, 6464, 14, 5085, 43360, 3555, 797, 6001, 834, 12740, 344, 295, 270, 22218, 6632, 14, 270, 2894, 588, 366, 91249, 14, 305, 270, 834, 1561, 396, 588, 366, 114400, 14, 832, 3586, 12846, 477, 295, 14349, 19649, 16, 1162, 48058]
+MoE cache: 15356 slots | cumulative hits=10422 misses=5211 (hit-rate=66.7%) | Stage-1 baseline = 2678 MB/decode-token (every block, every layer, every token)
+MoE cache STEADY-STATE (32 tokens after warmup): hit-rate=0.0% | 0.0 MB/decode-token (vs 2678 MB/token Stage-1 => infx less PCIe)
+OUTPUT TEXT: "  \n\n**Answer:**  \nA CPU pipeline breaks the execution of an instruction into several stages (fetch, decode, execute, memory, write‑back). While one instruction is in the execute stage, the next can be decoded, and the one after that can be fetched, so several instructions are in flight simultaneously. This overlapping"
+--- generated text ---
+  
+
+**Answer:**  
+A CPU pipeline breaks the execution of an instruction into several stages (fetch, decode, execute, memory, write‑back). While one instruction is in the execute stage, the next can be decoded, and the one after that can be fetched, so several instructions are in flight simultaneously. This overlapping
