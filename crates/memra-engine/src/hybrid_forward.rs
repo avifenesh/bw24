@@ -709,13 +709,21 @@ impl HybridModel {
     /// its OWN slabs on its own device (a dev0 slab dereferenced by a dev1 kernel would be
     /// a peer read per GEMM operand, the exact class Lever B removes). Single-device rigs
     /// see one entry, byte-identical behavior.
-    pub fn prime_slabs_get(&self, e: &Engine, t: usize, n_embd: usize, n_ff_max: usize)
-                           -> Result<std::sync::MutexGuard<'_, std::collections::HashMap<usize, PrimeSlabs>>, Box<dyn std::error::Error>> {
-        let mut g = self.prime_slabs.lock().unwrap();
+    pub fn prime_slabs_get(
+        &self,
+        e: &Engine,
+        t: usize,
+        n_embd: usize,
+        n_ff_max: usize,
+    ) -> Result<std::sync::Arc<std::sync::Mutex<PrimeSlabs>>, Box<dyn std::error::Error>> {
+        let mut slabs = self.prime_slabs.lock().unwrap();
         let dev = e.ctx().ordinal();
-        let need_new = match g.get(&dev) { None => true, Some(sl) => sl.t_cap < t };
+        let need_new = match slabs.get(&dev) {
+            None => true,
+            Some(sl) => sl.lock().unwrap().t_cap < t,
+        };
         if need_new {
-            g.insert(dev, PrimeSlabs {
+            slabs.insert(dev, std::sync::Arc::new(std::sync::Mutex::new(PrimeSlabs {
                 t_cap: t,
                 h: e.uninit(t * n_embd)?,
                 x1: e.uninit(t * n_embd)?,
@@ -732,9 +740,9 @@ impl HybridModel {
                 mixed: e.uninit(t * n_embd)?,
                 seg_mid: Vec::new(),
                 seg_t: 0,
-            });
+            })));
         }
-        Ok(g)
+        Ok(slabs.get(&dev).expect("prime slab inserted").clone())
     }
 
     /// `seq_end` = the whole REQUEST's absolute end position (`cache.pos + prompt_len` at
@@ -808,11 +816,12 @@ impl HybridModel {
             _ => n_embd,
         }).max().unwrap_or(n_embd).max(n_embd);
         let use_slabs = std::env::var("MEMRA_PRIME_SLABS").as_deref() != Ok("0");
-        let mut slab_guard = if use_slabs {
+        let slab = if use_slabs {
             Some(self.prime_slabs_get(e, t, n_embd, n_ff_max)?)
         } else {
             None
         };
+        let mut slab_guard = slab.as_ref().map(|sl| sl.lock().unwrap());
         let mut x_own;   // fallback storage when slabs are off
         type SlabRefs<'a> = (&'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<u8>, &'a mut CudaSlice<u8>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>, &'a mut CudaSlice<f32>);
         let (mut x_cur, mut x_nxt, sl): (&mut CudaSlice<f32>, &mut CudaSlice<f32>, Option<SlabRefs>);
@@ -820,9 +829,7 @@ impl HybridModel {
         let mut x_own2;
         match slab_guard.as_mut() {
             Some(g) => {
-                // per-device map (lane/pp-leverb): the getter above populated this engine's
-                // entry; a missing key here is a getter contract bug, fail loudly.
-                let slabs = g.get_mut(&e.ctx().ordinal()).expect("prime slabs for this device");
+                let slabs = &mut **g;
                 e.copy_into(&mut slabs.xa, 0, &x_in, t * n_embd)?;
                 let PrimeSlabs { xa, xb, h, x1, z, act, h16, z16, gate, up, ffn_out, seg_glue, mixed, seg_mid, seg_t, .. } = slabs;
                 x_cur = xa;

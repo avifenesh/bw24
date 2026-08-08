@@ -1150,9 +1150,13 @@ pub struct HybridModel {
     /// seven trunk transients live in RESIDENT per-model buffers instead of per-call pool
     /// allocs — kills ~224 alloc/free API calls per prime AND freezes the Lt GEMM operand
     /// addresses (nvjet's alignment-variant kernels become run-to-run stable once their
-    /// pointers stop moving). Sized on first prime to the largest T seen; Mutex = lazy init
-    /// only (single GPU worker).
-    pub prime_slabs: std::sync::Mutex<std::collections::HashMap<usize, crate::hybrid_forward::PrimeSlabs>>,
+    /// pointers stop moving). Sized on first prime to the largest T seen. The map lock covers
+    /// lookup/grow only; each device owns a separate slab lock so PP stages on distinct
+    /// devices can drive their host-synchronized layer walks concurrently.
+    pub prime_slabs: std::sync::Mutex<std::collections::HashMap<
+        usize,
+        std::sync::Arc<std::sync::Mutex<crate::hybrid_forward::PrimeSlabs>>,
+    >>,
 }
 
 impl HybridModel {
