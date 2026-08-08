@@ -1,0 +1,5 @@
+    ppsplit: T=4883 steps=8 chunks=4096,513 door=OPEN devices=0,1 force_unsplit=false force_serial_pipe=true
+      chunk 4096 | serial-vs-ref diff L/H/S/D=0/0/0/0 | pipe-vs-serial diff L/H/S/D=0/0/0/0 | split_chunks R/S/P=0/2/2 need S,P>=2 | pipe_overlaps R/S/P=0/0/0 need P>=1 | *** PIPE-NOT-LIVE (serial split replayed)
+      chunk 513 | serial-vs-ref diff L/H/S/D=0/0/0/0 | pipe-vs-serial diff L/H/S/D=0/0/0/0 | split_chunks R/S/P=0/10/10 need S,P>=10 | pipe_overlaps R/S/P=0/0/0 need P>=9 | *** PIPE-NOT-LIVE (serial split replayed)
+    ppsplit verdict: *** RED (split/pipeline absent, not live, or not bit-identical)
+prime-split-gate: PASS (serial-pipeline canary broke overlap liveness as required; log /tmp/prime-split-gate-qm8atN.log)

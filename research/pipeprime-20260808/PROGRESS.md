@@ -166,3 +166,15 @@ Receipts:
 - `raw/build-box2-97dec983.log`
 - `raw/ppsplit-naked-raw-20260808T070244Z.log`
 - `raw/ppsplit-naked-summary-20260808T070244Z.log`
+
+Pipeline-specific canary (`MEMRA_PRIME_PIPE=0` only in the PIPE arm):
+
+- serial split liveness stayed live at 2/10 chunks;
+- every compared bit still matched;
+- pipeline overlap counts were 0/0 against required 1/9;
+- probe verdict was `PIPE-NOT-LIVE`, wrapper verdict **PASS (canary has teeth)**.
+
+Canary receipts:
+
+- `raw/ppsplit-canary-raw-20260808T070722Z.log`
+- `raw/ppsplit-canary-summary-20260808T070722Z.log`
