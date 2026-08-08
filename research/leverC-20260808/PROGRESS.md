@@ -84,3 +84,39 @@ Raw build, gate, and performance logs will be retained under `research/leverC-20
 Every reported median will state N and thermal regime. The supplied steering path
 `~/.lanectl/inbox/cx-leverC.md` was absent at lane start; no alternate Lever C steering file was
 present under `~/.lanectl`.
+
+## Increment 1 - grouped q8 prefill implementation
+
+The local pipeline-prime tip `62fac3c0` was merged first, preserving its measured 417.6 tok/s
+pp4096 baseline and current `ppsplit`/chunk/tick gate surfaces.
+
+The grouped implementation now has two exact storage cases behind one host-routed dispatch:
+
+- **Resident uniform Step35 bank:** the host sigmoid oracle produces the original pair ids,
+  expert ids, and weights. An expert CSR feeds the existing `moe_pairs_matvec_q8_dec` kernel,
+  which decodes one expert weight group and applies it to all routed rows in that expert segment.
+  Gate/up outputs remain indexed by original pair id; `ffn_act_lim` applies the layer's Step35
+  clamp; down uses the same CSR; `moe_pairs_scatter` performs the original slot-ordered FMA chain.
+  This reuses only the pairs arm's arithmetic kernel, not its softmax router or plain-SiLU
+  dispatch policy.
+- **Spill, remote-slab, or mixed-layout bank:** the existing A2 expert groups remain
+  metadata-aware. Uniform q8-supported experts run `quantize_q8_1` plus
+  `qmatvec_expert_q8` at `m=m_e` from a local slab or live SLRU slot. Direct no-cache/frozen
+  staging and mixed layouts retain the sequential oracle's f32 class, with each expert's
+  authoritative `qtype`, `row_bytes`, `len`, and source.
+
+`moe_router_logits` is now shared by sequential and grouped dispatch, so both use
+`router_gemv` under the exact-prefill policy. All prefill entry points call the prefill wrapper;
+decode and speculative verification keep the original wrapper and dispatch class.
+`MEMRA_MOE_GROUPED=0` is the live rollback seam, while an explicit nonzero value preserves the
+old opt-in behavior for other callers.
+
+Local proof:
+
+| Check | Verdict |
+|---|---|
+| `cargo check -p memra-engine` | PASS, CUDA 13.1, auto-detected sm_120a |
+| worktree scope | source + flag catalog + this increment only |
+
+Target-rig exactness and performance remain pending; no winner claim is made from the local
+compile.
