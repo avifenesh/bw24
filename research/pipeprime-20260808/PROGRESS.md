@@ -360,3 +360,25 @@ Receipts:
 - `raw/tickinv35c-20260808T082535Z.log`
 - `raw/tickinv-gate-TepX3x.log`
 - `raw/tickinv-gate-gG2mMy.log`
+
+## Increment 11 - final-code target acceptance battery
+
+Box2 reran the full acceptance battery against release binaries built from final code
+candidate `61c8d2f2`, under one GPU-lock hold:
+
+| Gate | Verdict |
+|---|---|
+| model-backed `kernel-check` | **ALL GREEN** |
+| PP-2 `run-gen` | **MATCH**: prefill/decode argmax 6776; batched-prime/tokenwise argmax 6776 |
+| PP-2 `run-spec` K=1..8 | **8/8 self-consistency PASS** |
+
+The pinned speculative-acceptance ledger was unchanged: K=1 accepted `14/17 = 82.4%`;
+K=2..8 each accepted 15 tokens (`15/32` through `15/128`). The run ended at 37/36 C,
+2370/2272 MHz, with both devices back at 0 MiB.
+
+Receipts:
+
+- `raw/acceptance-summary-20260808T084654Z.log`
+- `raw/kernel-check-20260808T084654Z.log`
+- `raw/run-gen-20260808T084654Z.log`
+- `raw/run-spec-20260808T084654Z.log`
