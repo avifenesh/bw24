@@ -1254,14 +1254,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Ok(())
             };
+            // STAGE-OWNED KV (lane/pp-leverb): pp::new_cache = Cache::new verbatim with the
+            // door shut; door-open it homes each stage's KV on its own card — the serving
+            // config. A plain Cache::new here would make the split prime peer-WRITE stage-1
+            // appends and understate the walker (the pp2-batch wrong-card-KV harness class).
             for _ in 0..warmup {
-                let mut c = Cache::new(&cx.e, &cx.model.cfg, t + 8)?;
+                let mut c = memra_engine::pp::new_cache(&cx.e, &cx.model.cfg, t + 8)?;
                 run(&mut c)?;
             }
             cx.e.stream().synchronize()?;
             let mut times = Vec::with_capacity(reps);
             for r in 0..reps {
-                let mut c = Cache::new(&cx.e, &cx.model.cfg, t + 8)?;
+                let mut c = memra_engine::pp::new_cache(&cx.e, &cx.model.cfg, t + 8)?;
                 let t0 = std::time::Instant::now();
                 run(&mut c)?;
                 cx.e.stream().synchronize()?;
