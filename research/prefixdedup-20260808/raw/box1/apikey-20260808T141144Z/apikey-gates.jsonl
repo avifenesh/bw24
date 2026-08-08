@@ -1,0 +1,18 @@
+{"ts": "2026-08-08T14:15:44+0000", "gate": "no-key-401", "verdict": "PASS", "status": 401}
+{"ts": "2026-08-08T14:15:44+0000", "gate": "bad-key-401", "verdict": "PASS", "status": 401}
+{"ts": "2026-08-08T14:15:44+0000", "gate": "revoked-key-403", "verdict": "PASS", "status": 403, "message": "api key is disabled"}
+{"ts": "2026-08-08T14:15:44+0000", "gate": "single-key-200", "verdict": "PASS", "status": 200}
+{"ts": "2026-08-08T14:15:44+0000", "gate": "acme-k1-seed-P", "verdict": "PASS", "prompt": 94, "cached": 0}
+{"ts": "2026-08-08T14:15:45+0000", "gate": "acme-k2-HIT-P-same-tenant", "verdict": "PASS", "prompt": 94, "cached": 94}
+{"ts": "2026-08-08T14:15:45+0000", "gate": "blue-MISS-P-cross-tenant", "verdict": "PASS", "prompt": 94, "cached": 0}
+{"ts": "2026-08-08T14:15:45+0000", "gate": "blue-seed-Q", "verdict": "PASS", "prompt": 101, "cached": 0}
+{"ts": "2026-08-08T14:15:45+0000", "gate": "blue-HIT-own-Q-cache-alive", "verdict": "PASS", "prompt": 101, "cached": 101}
+{"ts": "2026-08-08T14:15:45+0000", "gate": "acme-MISS-Q-cross-tenant-reverse", "verdict": "PASS", "prompt": 101, "cached": 0}
+{"ts": "2026-08-08T14:15:45+0000", "gate": "acme-salted-MISS-vs-unsalted", "verdict": "PASS", "prompt": 94, "cached": 0}
+{"ts": "2026-08-08T14:15:45+0000", "gate": "acme-salted-HIT-itself", "verdict": "PASS", "prompt": 94, "cached": 94}
+{"ts": "2026-08-08T14:15:45+0000", "gate": "tenant-rl-override-headers", "verdict": "PASS", "status": 200, "limit": 2, "remaining": 1}
+{"ts": "2026-08-08T14:15:46+0000", "gate": "uncapped-key-global-cap", "verdict": "PASS", "limit": 64}
+{"ts": "2026-08-08T14:15:46+0000", "gate": "batch-key-interactive-403", "verdict": "PASS", "status": 403, "message": "this api key is batch-class: x-lane interactive is not permitted (use judge or harvest)"}
+{"ts": "2026-08-08T14:15:46+0000", "gate": "batch-key-judge-admits", "verdict": "PASS", "status": 200}
+{"ts": "2026-08-08T14:15:49+0000", "gate": "hot-revoke-403-within-poll", "verdict": "PASS", "status": 403}
+{"ts": "2026-08-08T14:15:49+0000", "gate": "sibling-key-survives-revoke", "verdict": "PASS", "status": 200}

@@ -1,0 +1,18 @@
+{"cached_tokens": 0, "chunks": 8, "kind": "request", "label": "dedup-off", "prompt_tokens": 1040, "request": 0, "ttft_s": 22.262703, "wall_s": 22.737431}
+{"cached_tokens": 0, "chunks": 8, "kind": "request", "label": "dedup-off", "prompt_tokens": 1040, "request": 1, "ttft_s": 22.262458, "wall_s": 22.73756}
+{"cached_tokens": 0, "chunks": 4, "kind": "request", "label": "dedup-off", "prompt_tokens": 1040, "request": 2, "ttft_s": 22.262249, "wall_s": 22.737132}
+{"cached_tokens": 0, "chunks": 8, "kind": "request", "label": "dedup-off", "prompt_tokens": 1040, "request": 3, "ttft_s": 22.262612, "wall_s": 22.737346}
+{"cached_tokens": 0, "chunks": 8, "kind": "request", "label": "dedup-off", "prompt_tokens": 1040, "request": 4, "ttft_s": 22.262676, "wall_s": 22.737392}
+{"cached_tokens": 0, "chunks": 8, "kind": "request", "label": "dedup-off", "prompt_tokens": 1040, "request": 5, "ttft_s": 22.261899, "wall_s": 22.736969}
+{"cached_tokens": 0, "chunks": 8, "kind": "request", "label": "dedup-off", "prompt_tokens": 1040, "request": 6, "ttft_s": 22.262674, "wall_s": 22.737089}
+{"cached_tokens": 0, "chunks": 4, "kind": "request", "label": "dedup-off", "prompt_tokens": 1040, "request": 7, "ttft_s": 21.234702, "wall_s": 22.683896}
+{"cached_tokens": [0, 0, 0, 0, 0, 0, 0, 0], "concurrency": 8, "expect": "cold", "kind": "summary", "label": "dedup-off", "n": 8, "shared_prefix_tokens": 1024, "suffix_tokens": 16, "ttft_max_s": 22.262703, "ttft_mean_s": 22.133997, "ttft_min_s": 21.234702, "ttft_p50_s": 22.262535, "ttft_p95_s": 22.262703}
+{"cached_tokens": 1024, "chunks": 8, "kind": "request", "label": "dedup-on", "prompt_tokens": 1040, "request": 0, "ttft_s": 3.851505, "wall_s": 4.335373}
+{"cached_tokens": 0, "chunks": 8, "kind": "request", "label": "dedup-on", "prompt_tokens": 1040, "request": 1, "ttft_s": 3.851264, "wall_s": 4.335387}
+{"cached_tokens": 1024, "chunks": 4, "kind": "request", "label": "dedup-on", "prompt_tokens": 1040, "request": 2, "ttft_s": 3.851556, "wall_s": 4.335421}
+{"cached_tokens": 1024, "chunks": 8, "kind": "request", "label": "dedup-on", "prompt_tokens": 1040, "request": 3, "ttft_s": 3.85183, "wall_s": 4.335439}
+{"cached_tokens": 1024, "chunks": 8, "kind": "request", "label": "dedup-on", "prompt_tokens": 1040, "request": 4, "ttft_s": 3.851805, "wall_s": 4.335391}
+{"cached_tokens": 1024, "chunks": 8, "kind": "request", "label": "dedup-on", "prompt_tokens": 1040, "request": 5, "ttft_s": 3.851869, "wall_s": 4.33536}
+{"cached_tokens": 1024, "chunks": 8, "kind": "request", "label": "dedup-on", "prompt_tokens": 1040, "request": 6, "ttft_s": 3.851187, "wall_s": 4.335039}
+{"cached_tokens": 1024, "chunks": 5, "kind": "request", "label": "dedup-on", "prompt_tokens": 1040, "request": 7, "ttft_s": 3.85254, "wall_s": 4.335924}
+{"cached_tokens": [0, 1024, 1024, 1024, 1024, 1024, 1024, 1024], "concurrency": 8, "expect": "dedup", "kind": "summary", "label": "dedup-on", "n": 8, "shared_prefix_tokens": 1024, "suffix_tokens": 16, "ttft_max_s": 3.85254, "ttft_mean_s": 3.851694, "ttft_min_s": 3.851187, "ttft_p50_s": 3.851681, "ttft_p95_s": 3.85254}
