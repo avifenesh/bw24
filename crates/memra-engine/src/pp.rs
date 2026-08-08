@@ -296,6 +296,14 @@ pub fn prime_pp_on() -> bool {
     std::env::var("MEMRA_PRIME_PP").as_deref() != Ok("0")
 }
 
+/// MEMRA_PRIME_PIPE=0: rollback/A-B seam for the PP-2 PRIME CHUNK PIPELINE
+/// (lane/cx-pipeline-prime 2026-08-08). Default ON when the prime stage split is live;
+/// setting 0 keeps the serial per-chunk stage walk. Read per prime call so the exactness
+/// gate can replay both schedules against one loaded model.
+pub fn prime_pipe_on() -> bool {
+    std::env::var("MEMRA_PRIME_PIPE").as_deref() != Ok("0")
+}
+
 /// SPLIT-LIVENESS COUNTER for the prime stage split: bumped ONCE per prime chunk that
 /// actually executed the per-stage walk. The `prime-split-gate` requires this to ADVANCE
 /// during its split arm — bit-identity of two identical UNSPLIT walks is vacuous, so a gate
@@ -307,6 +315,16 @@ pub static PRIME_SPLIT_CHUNKS: AtomicUsize = AtomicUsize::new(0);
 /// Read the split-liveness counter (gate-side).
 pub fn prime_split_chunks() -> usize {
     PRIME_SPLIT_CHUNKS.load(Ordering::Relaxed)
+}
+
+/// PIPELINE-LIVENESS COUNTER: bumped when stage 0 of chunk N+1 is enqueued before the
+/// stage-1 result of chunk N is drained. This proves the pipelined gate exercised the
+/// double-buffer schedule rather than comparing two serial split walks.
+pub static PRIME_PIPE_OVERLAPS: AtomicUsize = AtomicUsize::new(0);
+
+/// Read the prime-pipeline overlap counter (gate-side).
+pub fn prime_pipe_overlaps() -> usize {
+    PRIME_PIPE_OVERLAPS.load(Ordering::Relaxed)
 }
 
 /// MEMRA_SPEC_PP=0: rollback/A-B seam for the SPEC VERIFY stage split (pp2-spec 2026-08-06).

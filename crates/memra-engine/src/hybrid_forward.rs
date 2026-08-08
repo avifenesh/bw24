@@ -614,7 +614,9 @@ impl HybridModel {
         let pos_d = e.htod_i32(&pos)?;
 
         let x_embed = self.embed(e, tokens)?;   // [T, n_embd]
-        let x = self.prime_layers(e, x_embed, 0, self.layers.len(), &pos_d, t, cache, seq_end)?;
+        let x = self.prime_layers(
+            e, x_embed, 0, self.layers.len(), &pos_d, t, base, cache, seq_end,
+        )?;
         self.prime_chunk_epilogue(e, x, t, cache)
     }
 
@@ -635,12 +637,12 @@ impl HybridModel {
     ///     `self.layers[il+1]` unconditionally) — `use_seg` gains `lo == 0 && hi == n_layers`.
     #[allow(clippy::too_many_arguments)]
     fn prime_layers(&self, e: &Engine, x_in: CudaSlice<f32>, lo: usize, hi: usize,
-                    pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, seq_end: usize)
+                    pos_d: &CudaSlice<i32>, t: usize, base: usize, cache: &mut Cache,
+                    seq_end: usize)
                     -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
         let n_embd = cfg.n_embd as usize;
         let eps = cfg.rms_eps;
-        let base = cache.pos;
         // task #14: fuse the fp16 GEMM-operand emission into the trunk norms (kills the
         // standalone convert launches). Only when the f16 lane serves and T reaches the
         // GEMM tier; bit-identical either way.
@@ -1010,7 +1012,9 @@ impl HybridModel {
             let e0 = rt.engine(0, e);
             let pos_d = e0.htod_i32(&pos)?;
             let x = self.embed(e0, tokens)?;
-            let x = self.prime_layers(e0, x, fence[0], fence[1], &pos_d, t, cache, seq_end)?;
+            let x = self.prime_layers(
+                e0, x, fence[0], fence[1], &pos_d, t, base, cache, seq_end,
+            )?;
             rt.tx(0, &x, payload)?
             // x + pos_d drop here: freed stream-ordered on stage-0's stream after use.
         };
@@ -1021,7 +1025,9 @@ impl HybridModel {
             let es = rt.engine(s, e);
             let pos_d = es.htod_i32(&pos)?;
             let x = rt.rx(s - 1, slot, payload)?;
-            let x = self.prime_layers(es, x, fence[s], fence[s + 1], &pos_d, t, cache, seq_end)?;
+            let x = self.prime_layers(
+                es, x, fence[s], fence[s + 1], &pos_d, t, base, cache, seq_end,
+            )?;
             slot = rt.tx(s, &x, payload)?;
         }
 
@@ -1030,7 +1036,9 @@ impl HybridModel {
         let el = rt.engine(n_st - 1, e);
         let pos_d = el.htod_i32(&pos)?;
         let x = rt.rx(n_st - 2, slot, payload)?;
-        let x = self.prime_layers(el, x, fence[n_st - 1], fence[n_st], &pos_d, t, cache, seq_end)?;
+        let x = self.prime_layers(
+            el, x, fence[n_st - 1], fence[n_st], &pos_d, t, base, cache, seq_end,
+        )?;
         let out = self.prime_chunk_epilogue(el, x, t, cache)?;
         // EXIT PUBLICATION: h_seed + the hidden stack are device-resident on the last
         // stage's stream; the caller resumes on its own stream (chunk-loop copy_into /

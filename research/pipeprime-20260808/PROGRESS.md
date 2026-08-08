@@ -88,3 +88,16 @@ The minimum safe shape is a PP-2-specific chunk scheduler:
 
 Raw logs will live under `research/pipeprime-20260808/raw/`; every claimed median will
 state N and thermal regime.
+
+## Increment 1 — position contract and rollback seam
+
+Behavior-neutral groundwork:
+
+- `MEMRA_PRIME_PIPE=0` is the live-per-call rollback seam;
+- `PRIME_PIPE_OVERLAPS` is the gate-visible schedule-liveness counter;
+- `prime_layers` now receives the chunk's absolute `base` explicitly instead of reading
+  mutable `cache.pos`.
+
+The serial walker still supplies `base = cache.pos`, so this increment does not change
+launch order or arithmetic. The explicit base is required before stage 0 of N+1 can be
+issued while stage 1 of N still owns the current host position.
