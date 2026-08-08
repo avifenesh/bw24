@@ -130,3 +130,19 @@ The scheduler is now wired for chunked PP-2 primes:
 `PRIME_PIPE_OVERLAPS` advances once per N→N+1 issue pair. Same-device multi-stream
 placement refuses with an instruction to use one device per stage or
 `MEMRA_PRIME_PIPE=0`; the known quarantined surface is not silently re-enabled.
+
+## Increment 4 — standing exactness and liveness gate
+
+`ppsplit` now runs three schedules over one sharded load:
+
+- unsplit reference (`MEMRA_PRIME_PP=0`);
+- serial split (`MEMRA_PRIME_PIPE=0`);
+- pipelined split (default).
+
+It compares logits, h_seed, the full hidden stack, and teacher-forced continuation logits
+bit-for-bit. Both split arms must advance `PRIME_SPLIT_CHUNKS`; only the pipelined arm
+may advance `PRIME_PIPE_OVERLAPS`, by at least `chunk_count - 1`.
+
+The `ppsplitc` canary now forces only the pipeline arm back to the serial split. Split
+liveness remains valid, so the canary can pass only when the overlap assertion itself
+detects the missing schedule.
