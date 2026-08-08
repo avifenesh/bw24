@@ -224,3 +224,31 @@ Receipts:
 - `raw/kernel-check-20260808T072957Z.log`
 - `raw/run-gen-20260808T072957Z.log`
 - `raw/run-spec-20260808T072957Z.log`
+
+## Diagnostic 1 — enqueue-order liveness was vacuous
+
+The first equal-microchunk perf sweep disproved the initial liveness counter. N=5,
+alternating SERIAL/PIPE order, one GPU-lock hold:
+
+| shape | serial | initial PIPE | ratio |
+|---|---:|---:|---:|
+| pp512, T=461, chunk=256 | 245.4 tok/s | 246.6 tok/s | 1.005x |
+| pp2048, T=1833, chunk=1024 | 263.7 tok/s | 263.5 tok/s | 0.999x |
+| pp4096, T=4096, chunk=2048 | 265.4 tok/s | 265.8 tok/s | 1.002x |
+
+`PRIME_PIPE_OVERLAPS` advanced once in every PIPE sample, but the devices did not perform
+the two stage walks concurrently. Step's resident-MoE prefill still performs a router
+readback plus stream synchronization in every MoE layer. A single host thread therefore
+finished the stage-1 walker before it could enter stage 0 of the next chunk, even though
+the high-level call happened before the epilogue drain.
+
+This receipt invalidates "enqueued before epilogue" as the overlap-liveness definition.
+The scheduler must use concurrent stage-owned host walkers, and the counter must advance
+only while both walkers are active.
+
+Receipts:
+
+- `raw/perf-summary-20260808T073806Z.log`
+- `raw/pp512-raw-20260808T073806Z.log`
+- `raw/pp2048-raw-20260808T073806Z.log`
+- `raw/pp4096-raw-20260808T073806Z.log`
