@@ -118,16 +118,49 @@ The per-session view arithmetic reads ONLY `caches[bi].kv[il].len` — no cross-
 isolation holds by construction. `pos_d` is per-row (each session's own pos), matching what
 `rope_neox2` already consumes at t=B.
 
+## Built (commits d8dad0c8..a50abe62)
+
+- **b2geo35/b2geo35c** (`tools/step35-b2-geometry-gate.sh`, registered in fast-gate): c=2/c=4
+  byte-vs-serial PLUS batched evidence (spawn-log `decode chunk cap >= 2` + the engine's
+  one-shot `[step35-batch] first B>1` line) — the evidence half is what makes the gate
+  non-vacuous under a B=1 pin. Canary = `MEMRA_STEP35_BATCH=0` re-pin must break it.
+  c=1 reference pinned to the batched class via `MEMRA_SERVE_B1FAST=0` (the gate2 pin —
+  within-config byte identity, not the cross-config FP gap).
+- **The arm** (`step35_decode_batch_layers`, decode_batch.rs): batched at m=B for every
+  weight-streaming op (attn_norm+q8, wq/wk/wv/attn_gate, q/k norms, ONE rope_neox2 with
+  per-row pos + per-layer n_rot/base/ff, attn_head_gate, wo, add_rms_norm, dense FFN via
+  clamp-aware ffn_act_lim, MoE via moe_ffn_il_zq8 at t=B); per-session for KV state (append
+  + SWA/global view from THAT session's own kvl.len + fa_decode_kvmod — the per-seq fallback
+  shape). Stage-scoped `[lo,hi)` from birth; ppn calls it per stage, #87 fences unchanged.
+  IQ4_XS numeric class: no mmvq/batched kernel exists, so m=1 AND m=B both ride the
+  grid-(out_f,m) dp4a family — per-column the m=1 program (decode-parity by construction).
+- **Routing**: unsplit body + ppn body both route step35 to the walk at any B; the generic
+  `decode_batch_layers` is unreachable for step35 at every B. B=1 under the door keeps
+  `b1_stage_fast` (the m=1 fusion chain).
+- **Pin lift**: `chunk_cap_for` step35 -> min(MEMRA_DECODE_BATCH_CAP, 8) (exact16
+  structurally refused: MoE). `MEMRA_STEP35_BATCH=0` restores cap 1 + engine Err backstops.
+- **Graph promotion fix (found on the walk)**: a solo greedy step35 session with budget >=
+  gs_min (384) graph-promoted into `decode_step_dc_cap_masked`, whose full-attn arm REFUSES
+  step35 — and the refusal lands on the cache-consumed degrade path = the request DIES.
+  step35 is now a named exclusion next to eager_only.
+- **decode-batch-gate --plen**: the pp battery's synthetic prompts (20-35 tok) sat INSIDE
+  step35's 512 window, so the per-session view-offset arm never fired — the chunkinv35
+  vacuous-coverage class again. The battery runs --plen 520.
+
 ## Ledger
 
 | item | state |
 |---|---|
 | read conclusions + arm shape | DONE (this file) |
-| red b2geo35 standing gate | open — next commit |
-| engine arm (step35_decode_batch_layers) | open |
-| unsplit + ppn routing | open |
-| chunk_cap_for pin lift | open |
-| bit-identity gate B∈{2,4,8} | open |
-| serve gates (b2geo35 GREEN, c=1..8) | open |
-| kernel-check / run-gen / run-spec / chunkinv / tickinv | open |
-| perf c-scaling vs 34-flat | open |
+| red b2geo35 standing gate | DONE — registered red (commit 9a12b53a) |
+| engine arm (step35_decode_batch_layers) | DONE (commit c5cd6a35) |
+| unsplit + ppn routing | DONE (same commit) |
+| chunk_cap_for pin lift | DONE (same commit) |
+| bit-identity gate B∈{1,2,4,8} (pp battery, plen 520) | RUNNING on box1 (battery-20260808T034540Z) |
+| serve gates (b2geo35 GREEN + canary, c=1..8) | RUNNING (same battery) |
+| kernel-check / run-gen / run-spec / chunkinv / tickinv | RUNNING (same battery) |
+| perf c-scaling vs 34-flat | RUNNING (same battery, P1 phase) |
+
+Boxes: box1 lane workspace `~/stepbatch-memra` (rsync tree, binaries verified to carry the
+arm), raw at `~/step37/raw-stepbatch/`. Box2 clone `~/step35-batch` @ lane tip (own clone —
+the shared `~/memra` untouched), built; Step shard 3/3 still in transit at battery time.

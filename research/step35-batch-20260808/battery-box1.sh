@@ -37,9 +37,11 @@ echo "=== step35-batch battery $TS tree=$(git rev-parse --short HEAD 2>/dev/null
   grep -c FAIL "$RAW/kernel-check-$TS.log" | xargs -I{} echo "kernel-check FAIL-lines={} exit=$RC"
   tail -2 "$RAW/kernel-check-$TS.log"
 
-  echo; echo "########## G2: decode-batch-gate --mode pp, step35, B=1,2,4,8 ##########"
-  MEMRA_PP_DEVICES=0,1 timeout 5400 ./target/release/decode-batch-gate "$M" \
-    --mode pp --batch 1,2,4,8 --steps 24 --reps 2 --stages 2 \
+  echo; echo "########## G2: decode-batch-gate --mode pp, step35, B=1,2,4,8, plen 520 ##########"
+  # --plen 520: prompts must CROSS the 512 SWA window or the per-session view-offset arm
+  # (the batched walk's own mechanism) never fires and the gate compares FA-only regimes.
+  MEMRA_PP_DEVICES=0,1 timeout 7200 ./target/release/decode-batch-gate "$M" \
+    --mode pp --batch 1,2,4,8 --steps 24 --reps 2 --stages 2 --plen 520 \
     > "$RAW/dbg-pp-step35-$TS.log" 2>&1
   echo "decode-batch-gate exit=$?"
   grep -E "pp mode verdict|BIT-IDENTICAL|FAIL|differing" "$RAW/dbg-pp-step35-$TS.log" | tail -20
