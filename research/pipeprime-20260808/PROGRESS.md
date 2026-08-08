@@ -114,3 +114,19 @@ issued while stage 1 of N still owns the current host position.
 Prewarming is load-bearing for a two-chunk prompt. Without it, slot B's first lazy
 allocation synchronizes the RX stream after stage 1 of chunk N is queued, draining that
 work before stage 0 of N+1 can publish and making the apparent pipeline serial.
+
+## Increment 3 — PP-2 chunk scheduler
+
+The scheduler is now wired for chunked PP-2 primes:
+
+1. fence both stage streams behind prior caller reads;
+2. prewarm boundary slots A/B;
+3. enqueue stage 0(N), then stage 1(N);
+4. enqueue stage 0(N+1) through the alternate slot before stage 1(N)'s epilogue D2H;
+5. drain N in order, publish/copy its hidden stack, then apply the #87 reverse fence
+   before stage 1(N+1) can allocate;
+6. repeat, retaining the same per-chunk epilogue arithmetic as the serial split.
+
+`PRIME_PIPE_OVERLAPS` advances once per N→N+1 issue pair. Same-device multi-stream
+placement refuses with an instruction to use one device per stage or
+`MEMRA_PRIME_PIPE=0`; the known quarantined surface is not silently re-enabled.

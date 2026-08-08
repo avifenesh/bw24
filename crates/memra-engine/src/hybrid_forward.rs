@@ -508,6 +508,29 @@ impl HybridModel {
         if chunk == 0 || t <= chunk {
             return self.prime_chunk(e, tokens, cache, seq_end);
         }
+        // PIPELINED PP-2 PRIME (lane/cx-pipeline-prime, 2026-08-08): overlap stage 0 of
+        // chunk N+1 with stage 1 of chunk N. The serial split stays reachable through
+        // MEMRA_PRIME_PIPE=0 and is the exactness oracle. N>2 keeps the serial walker;
+        // this lane owns the balanced two-stage schedule only.
+        if crate::pp::prime_pipe_on()
+            && crate::pp::prime_pp_on()
+            && !crate::pp::pp2_streams_off()
+        {
+            if let Some(fence) = crate::pp::pp_cuts(self.layers.len()).filter(|f| f.len() == 3) {
+                if crate::pp::pp_multi_stream_same_device() {
+                    return Err(
+                        "prime chunk pipeline refused with 2 stage streams on one device — \
+                         that concurrent-stream placement remains quarantined by the deferred \
+                         pp flake record. Use one device per stage or MEMRA_PRIME_PIPE=0 for \
+                         the serial split."
+                            .into(),
+                    );
+                }
+                return self.prime_cache_pp2_pipelined(
+                    e, tokens, cache, seq_end, chunk, &fence,
+                );
+            }
+        }
         let mut hiddens = e.uninit(t * n_embd)?;
         let mut last: Option<(Vec<f32>, CudaSlice<f32>)> = None;
         let mut start = 0usize;
@@ -520,6 +543,134 @@ impl HybridModel {
             last = Some((l, hs));
             start = end;
         }
+        let (logits, h_seed) = last.unwrap();
+        Ok((logits, h_seed, hiddens))
+    }
+
+    /// PP-2 chunk scheduler: stage 1 of chunk N and stage 0 of chunk N+1 are both queued
+    /// before N's epilogue D2H drains the last-stage stream. Arithmetic is unchanged:
+    /// every chunk still runs the same two `prime_layers` ranges, boundary copy, output
+    /// norm, lm head, and caller hidden-stack copy as the serial split.
+    fn prime_cache_pp2_pipelined(
+        &self,
+        e: &Engine,
+        tokens: &[u32],
+        cache: &mut Cache,
+        seq_end: usize,
+        chunk: usize,
+        fence: &[usize],
+    ) -> Result<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
+        debug_assert_eq!(fence.len(), 3);
+        let rt = crate::pp::PpNRt::get(e)?;
+        assert_eq!(rt.n_stages(), 2, "prime pipeline requires exactly two PP stages");
+        let n_embd = self.cfg.n_embd as usize;
+        let t = tokens.len();
+        let initial_base = cache.pos;
+        let caller_stream = e.stream();
+
+        let mut ranges = Vec::new();
+        let mut start = 0usize;
+        while start < t {
+            let mut end = (start + chunk).min(t);
+            if t - end > 0 && t - end < PRIME_MIN_T {
+                end = t;
+            }
+            ranges.push((start, end));
+            start = end;
+        }
+        debug_assert!(ranges.len() >= 2);
+
+        // #87 reverse publication before any new stage allocation, then prewarm both
+        // boundary slots while the stage streams are otherwise empty. Lazy-growing slot B
+        // after stage 1(N) is queued would synchronize that stream and erase the first
+        // overlap on a two-chunk prompt.
+        rt.fence_stages_behind(&caller_stream)?;
+        let max_payload = ranges
+            .iter()
+            .map(|(s, e)| (e - s) * n_embd)
+            .max()
+            .unwrap();
+        rt.prepare_overlap_slots(0, max_payload)?;
+
+        let mut hiddens = e.uninit(t * n_embd)?;
+        let mut last: Option<(Vec<f32>, CudaSlice<f32>)> = None;
+        let (first_start, first_end) = ranges[0];
+        let mut slot = self.prime_pp2_stage0_enqueue(
+            e,
+            rt,
+            &tokens[first_start..first_end],
+            cache,
+            seq_end,
+            fence,
+            initial_base + first_start,
+            true,
+        )?;
+
+        for (i, &(start, end)) in ranges.iter().enumerate() {
+            let base = initial_base + start;
+            debug_assert_eq!(
+                cache.pos, base,
+                "stage 1 must drain chunks in original position order"
+            );
+            let x = self.prime_pp2_stage1_enqueue(
+                e,
+                rt,
+                slot,
+                end - start,
+                cache,
+                seq_end,
+                fence,
+                base,
+            )?;
+
+            // The scheduling move: enqueue the next stage-0 range before the current
+            // stage-1 epilogue's dtoh. Different boundary slots remove any dependency
+            // between these two ranges; a later reuse of this chunk's slot waits ev_rx.
+            let next_slot = if let Some(&(next_start, next_end)) = ranges.get(i + 1) {
+                let next = self.prime_pp2_stage0_enqueue(
+                    e,
+                    rt,
+                    &tokens[next_start..next_end],
+                    cache,
+                    seq_end,
+                    fence,
+                    initial_base + next_start,
+                    true,
+                )?;
+                crate::pp::PRIME_PIPE_OVERLAPS
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Some(next)
+            } else {
+                None
+            };
+
+            let out = {
+                let _st1 = rt.enter(1);
+                let e1 = rt.engine(1, e);
+                self.prime_chunk_epilogue(e1, x, end - start, cache)?
+            };
+            rt.publish_to(1, &caller_stream)?;
+            e.copy_into(
+                &mut hiddens,
+                start * n_embd,
+                &out.2,
+                (end - start) * n_embd,
+            )?;
+            last = Some((out.0, out.1));
+            crate::pp::PRIME_SPLIT_CHUNKS
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+            if let Some(next) = next_slot {
+                // The caller copy above reads a stage-1 allocation. Before stage 1 of the
+                // next chunk can allocate/reuse blocks, mirror #87's body-entry fence.
+                // Stage 0(N+1) is already queued before this wait is appended, so its
+                // overlap with stage 1(N) is preserved.
+                rt.fence_stages_behind(&caller_stream)?;
+                slot = next;
+            }
+        }
+
+        debug_assert_eq!(cache.pos, initial_base + t);
         let (logits, h_seed) = last.unwrap();
         Ok((logits, h_seed, hiddens))
     }
@@ -1004,6 +1155,25 @@ impl HybridModel {
         // self-order into a no-op) — the decode_step_t_core_ppn pattern.
         let caller_stream = e.stream();
         rt.fence_stages_behind(&caller_stream)?;
+
+        if n_st == 2 {
+            let slot = self.prime_pp2_stage0_enqueue(
+                e, rt, tokens, cache, seq_end, fence, base, false,
+            )?;
+            let x = self.prime_pp2_stage1_enqueue(
+                e, rt, slot, t, cache, seq_end, fence, base,
+            )?;
+            let out = {
+                let _st1 = rt.enter(1);
+                let e1 = rt.engine(1, e);
+                self.prime_chunk_epilogue(e1, x, t, cache)?
+            };
+            rt.publish_to(1, &caller_stream)?;
+            crate::pp::PRIME_SPLIT_CHUNKS
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Ok(out);
+        }
+
         let pos: Vec<i32> = (base as i32..(base + t) as i32).collect();
 
         // ---- STAGE 0: embed + layers [0, fence[1]) + boundary-0 TX ----
@@ -1048,6 +1218,56 @@ impl HybridModel {
         rt.publish_to(n_st - 1, &caller_stream)?;
         crate::pp::PRIME_SPLIT_CHUNKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(out)
+    }
+
+    fn prime_pp2_stage0_enqueue(
+        &self,
+        e: &Engine,
+        rt: &crate::pp::PpNRt,
+        tokens: &[u32],
+        cache: &mut Cache,
+        seq_end: usize,
+        fence: &[usize],
+        base: usize,
+        pipelined: bool,
+    ) -> Result<usize, Box<dyn std::error::Error>> {
+        let t = tokens.len();
+        let n_embd = self.cfg.n_embd as usize;
+        let pos: Vec<i32> = (base as i32..(base + t) as i32).collect();
+        let _st0 = rt.enter(0);
+        let e0 = rt.engine(0, e);
+        let pos_d = e0.htod_i32(&pos)?;
+        let x = self.embed(e0, tokens)?;
+        let x = self.prime_layers(
+            e0, x, fence[0], fence[1], &pos_d, t, base, cache, seq_end,
+        )?;
+        if pipelined {
+            rt.tx_pipelined(0, &x, t * n_embd)
+        } else {
+            rt.tx(0, &x, t * n_embd)
+        }
+    }
+
+    fn prime_pp2_stage1_enqueue(
+        &self,
+        e: &Engine,
+        rt: &crate::pp::PpNRt,
+        slot: usize,
+        t: usize,
+        cache: &mut Cache,
+        seq_end: usize,
+        fence: &[usize],
+        base: usize,
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let pos: Vec<i32> = (base as i32..(base + t) as i32).collect();
+        let _st1 = rt.enter(1);
+        let e1 = rt.engine(1, e);
+        let pos_d = e1.htod_i32(&pos)?;
+        let x = rt.rx(0, slot, t * n_embd)?;
+        self.prime_layers(
+            e1, x, fence[1], fence[2], &pos_d, t, base, cache, seq_end,
+        )
     }
 
     /// CAPTURE-SAFE prime trunk (task #14 increment 1, ARCHITECTURE-H100.md design v2):
