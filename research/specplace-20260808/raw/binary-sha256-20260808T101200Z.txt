@@ -1,0 +1,1 @@
+5f73240cffb3f993d18e30552d311b18c273cc8674b017a209364a0615ff4950  /home/ubuntu/specplace-target/release/memra-server

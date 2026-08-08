@@ -1,0 +1,84 @@
+[server] starting; models config = [("step35", "/data/models/step37/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf", Some("/data/models/step37/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf"))]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (device=1, MEMRA_FAST=true)
+[worker] loading model "step35" <- /data/models/step37/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.72GB (expert budget 94.80GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+[mtp-draft] step35 MTP geometry blk.45: n_head=96 n_head_kv=8 n_rot=128 rope_base=10000 swa=true window=512
+[mtp-draft] external draft head: blk.45, source=nextn.shared_head_head.weight, head_vocab=128896 (full)
+[worker] step35: regime draft attached (/data/models/step37/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf)
+[worker]   loaded "step35": 45 layers, eos=128007
+[worker] step35: template caps tools=true think=true think_switch=false chat_ok=true effort_levels=true gemma_think=false ctx=262144 tok="deepseek-v3" instruct=Some("chatml")
+[worker] step35: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["step35"]
+[server] listening on http://127.0.0.1:8127
+[meter] admit id=chatcmpl-eb8a55b6d4a7f48b8fccc1cb5ed01fad tenant=default lane=interactive model="step35"
+[worker] observed session VRAM cost for "step35": 168MB (admission gate = 2x)
+[prefix-cache] insert (seed): 228 tokens, 19.0MB (resident 19.0MB / 268MB, model step35)
+[meter] admit id=chatcmpl-30fff126b3c18bc3a944b036c980a4ef tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-601e007c56847a67e5992a6b8675c798 tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-a125869c8de54963bc696e4d66531bc8 tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-a230fca33bc94a59e8252dddc290296d tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-99b4558f0d6a68f4e42db04799e6a19a tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-9ca337c21f15db1c51535dffe29aef35 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-595479566cda882989fd0f351023b979 tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[step35-batch] first B>1 batched step35 walk: B=2 layers=[0,22)
+[meter] admit id=chatcmpl-835a3b267fd78c8627ca47fa303f42f3 tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-5571bae474919f0800619a785904e3c8 tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-7bc7cb289dcfbe994cce286ea2fae8f3 tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-9b38fa49d4a72d7f4d126d26cb9ad8e5 tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-428f247f24bee0272e9b66da7434fdb7 tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-be27154f209ab69cd36b9d3fc3688b30 tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-58384cdf829c42a792a643de413e2ea7 tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-06083493897d3b4c508bd3bfca74a42c tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-a3ec77992b778df935c0f82225d95884 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-0ea4ea9da66b6b71112f6d6649207d30 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-c17ab3c31540345b2413ef18e0e5b3b4 tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-6dcd1ce86e4ed1475f66aa8c66acdefe tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-7b9f8d2051abb6c78f2c330ef8846a63 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-1ecd544cb15d111e52e8f4b2c83b3ff7 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-965d77738896eecdf5952992633bc634 tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-c9adf94c0470c4f53c3e63b907251e3d tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-488ab0786d49be3bdbc3ce886bc44e45 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-7b6f88581ad3ebd3eacb33e4fb9f5b56 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-64b2a2c742446233e3dfbe8c34493ac5 tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-2502305188fd7f33eac1e763db567093 tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[meter] admit id=chatcmpl-8b051ea58cf47ecc687661166373be6f tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-c04004d79846ee6b2390a07b0e32f6a7 tenant=default lane=interactive model="step35"
+[meter] admit id=chatcmpl-f81efd13209a8f680d45154664bcd6e4 tenant=default lane=interactive model="step35"
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[prefix-cache] hit: 228 of 228 prompt tokens from cache (model step35)
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
