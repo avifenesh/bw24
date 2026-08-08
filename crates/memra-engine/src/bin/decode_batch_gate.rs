@@ -91,6 +91,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(2);
     let reps: usize = rest.iter().position(|a| a == "--reps")
         .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(2);
+    // --plen: base synthetic-prompt length (default 20 = the historic prompts, row i adds
+    // 5i). Exists for SWA archs (lane/step35-batched-decode): step35's window is 512, so
+    // the 20-token prompts leave every session INSIDE the window and the per-session view
+    // offset (`off = len - win`, the mechanism the batched arm adds) never fires — the
+    // chunkinv35 lesson (a gate whose prompts sit inside the window compares one kernel
+    // against itself). The step35 battery passes --plen 520 so row 0 crosses the window
+    // during decode and later rows start past it.
+    let plen: u32 = rest.iter().position(|a| a == "--plen")
+        .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(20);
 
     // PIN THE PRIME CONFIG (2026-07-26): this gate compares DECODE configs
     // (decode_step_batch vs decode_step_h) from a shared primed state — the GDN prime
@@ -162,7 +171,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             return Err("decode-batch-gate --mode ppspec FAILED".into());
         }
-        let fails = pp_battery(&e, &model, stages, steps, &batches, reps, seed)?;
+        let fails = pp_battery(&e, &model, stages, steps, &batches, reps, seed, plen)?;
         if fails == 0 {
             println!("ALL GREEN: batched PP-{stages} stage-split exactness battery");
             return Ok(());
@@ -178,7 +187,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seed: u32 = std::env::var("MEMRA_GATE_SEED").ok()
         .and_then(|v| v.parse().ok()).unwrap_or(0);
     let prompts: Vec<Vec<u32>> = (0..b_n.max(2))
-        .map(|i| (0..20 + i as u32 * 5).map(|j| 55 + seed * 13 + i as u32 * 97 + j * 31).collect())
+        .map(|i| (0..plen + i as u32 * 5).map(|j| 55 + seed * 13 + i as u32 * 97 + j * 31).collect())
         .collect();
     let ctx = 512 + steps + 64;
 
@@ -604,6 +613,7 @@ fn pp_battery(
     batches: &[usize],
     reps: usize,
     seed: u32,
+    plen: u32,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let n_layers = model.layers.len();
     let fence = memra_engine::pp::pp_cuts(n_layers).unwrap_or_else(|| {
@@ -626,15 +636,19 @@ fn pp_battery(
     println!("pp mode: B=1 fast path pinned OFF (live default = {})",
              if b1_live { "ON" } else { "OFF" });
 
-    let ctx = 512 + steps + 64;
+    // widest row's prompt is plen + 5*(maxB-1); the historic 512+steps+64 floor stands.
+    let max_b = *batches.iter().max().unwrap_or(&1);
+    let ctx = (plen as usize + 5 * max_b) + 512 + steps + 64;
     let mut fails = 0usize;
 
     for &b in batches {
         // Uneven prompt lengths => uneven cache.pos across rows, which is the real serving
         // shape (per-row t_kv, so the split's per-stage pointer tables and the t_kv_max
         // padding path are both exercised rather than a degenerate all-equal-pos batch).
+        // `plen` base (default 20): SWA archs pass a length past their window so the
+        // per-session view-offset arm actually fires (see the --plen doc at parse).
         let prompts: Vec<Vec<u32>> = (0..b)
-            .map(|i| (0..20 + i as u32 * 5)
+            .map(|i| (0..plen + i as u32 * 5)
                  .map(|j| 55 + seed * 13 + i as u32 * 97 + j * 31).collect())
             .collect();
 
@@ -770,7 +784,7 @@ fn pp_battery(
     {
         let b = *batches.iter().max().unwrap();
         let prompts: Vec<Vec<u32>> = (0..b)
-            .map(|i| (0..20 + i as u32 * 5)
+            .map(|i| (0..plen + i as u32 * 5)
                  .map(|j| 55 + seed * 13 + i as u32 * 97 + j * 31).collect())
             .collect();
         let n_s = steps.min(8);
