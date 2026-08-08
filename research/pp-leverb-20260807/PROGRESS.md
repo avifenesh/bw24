@@ -330,3 +330,33 @@ dispatch runs on dev1's engine with its own SLRU/slabs) and (b) CHUNK PIPELINING
 At 266 tok/s serial-split, the two stages are ~balanced (22+23 layers), so pipelining's
 ceiling is ~2x → the 400-500 class is exactly its territory, consistent with the original
 projection arithmetic.
+
+### The serve receipt: 4k-prompt TTFT (`raw/ttft4k-20260808T025454Z.log`)
+
+Serve-level, streaming, N=5 + 1 warmup per arm, one lock hold, spec OFF, drafter attached,
+think-mode delta counting (the leverA-ttft4k shape verbatim):
+
+| arm | 4k TTFT p50 | p95 | min-max |
+|---|---|---:|---|
+| SPLIT (naked walker) | **15.47 s** | 15.52 s | 15.46-15.55 |
+| UNSPLIT (`MEMRA_PRIME_PP=0`) | 32.15 s | 32.34 s | 32.04-32.45 |
+
+**2.08x on TTFT** — bigger than the probe's 1.88x because the worker primes in
+`PREFILL_TICK_T=1024` chunks: at chunk_t=1024 the boundary/epilogue overheads amortize
+differently and the unsplit walk's peer-read tax is per-chunk-constant. The unsplit arm
+reproduces Lever A's 32.04 s receipt to within noise (same-binary control). The 4k TTFT
+arc across the two lanes: **38.2 s (floor) → 32.0 s (Lever A) → 15.5 s (Lever B)**.
+
+### What remains (the honest cut line)
+
+- **Chunk pipelining (step 6)** — stage-0 chunk N+1 under stage-1 chunk N, the SGLang
+  #33666 per-stage-budget + TRT-LLM #16170 drain-before-block laws. The remaining ~2x to
+  the 400-500 class. Cut to a follow-up lane per the brief's "only if time to spare":
+  the walker + gates + receipts consumed this lane's window, and pipelining wants the
+  deferred-boundary design done carefully (the 2026-08-02 pipelined-arm flake history says
+  this is not an evening bolt-on).
+- **Decode over the split with the slab arm** — G3's single-run 18.74 vs 16.12 gen-only
+  suggests the slab arm helps decode too; needs its own interleaved N=5.
+- The serve worker's `MEMRA_SERVE_B1FAST` B=1 path and batched ticks already had their
+  splits (pp2-batch); prime was the last unsplit serving path. `decode_step_dc` + graph
+  capture remain fail-closed (unchanged, not on the serving path).

@@ -1,0 +1,29 @@
+=== leverb ttft4k 20260808T025454Z (walker 564fb04d rsync)
+lock acquired 2026-08-08T03:09:12Z
+
+--- arm SPLIT (naked walker), 4k prompt, stream, N=5 + 1 warmup ---
+ready ~35s
+  req 0: ttft=15.743s
+warmup-split: N=1 ttft p50=15.743s p95=15.743s min=15.743 max=15.743
+  req 0: ttft=15.515s
+  req 1: ttft=15.549s
+  req 2: ttft=15.469s
+  req 3: ttft=15.457s
+  req 4: ttft=15.473s
+SPLIT: N=5 ttft p50=15.473s p95=15.515s min=15.457 max=15.549
+
+--- arm UNSPLIT (MEMRA_PRIME_PP=0), same shape ---
+ready ~35s
+  req 0: ttft=34.244s
+warmup-unsplit: N=1 ttft p50=34.244s p95=34.244s min=34.244 max=34.244
+  req 0: ttft=32.445s
+  req 1: ttft=32.337s
+  req 2: ttft=32.042s
+  req 3: ttft=32.100s
+  req 4: ttft=32.147s
+UNSPLIT: N=5 ttft p50=32.147s p95=32.337s min=32.042 max=32.445
+0, 0 MiB
+1, 0 MiB
+lock released 2026-08-08T03:15:27Z
+=== ttft4k rc=0
+=== done 2026-08-08T03:15:27Z
