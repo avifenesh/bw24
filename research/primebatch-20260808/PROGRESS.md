@@ -38,3 +38,37 @@ Box2 red receipt: `raw/primebatch35-naked-20260808T101939Z.log`. The two serial 
 reference primes completed, then the batch call returned the named
 `prime_cache_batch: step35 has no batched prime core` error. Both cards were 0 MiB at
 entry and exit.
+
+## Increment 2 — dedicated step35 concat prime, exact + PP-2 green
+
+Mechanism: `step35_prime_cache_batch` is a step35-specific range walker rather than an
+admission into the generic concat attention core. It concatenates the prompt rows for
+embedding, norms, Q/K/V projections, and FFN work. Each sequence is then split back out
+for the existing `step35_attn_pre_wo` core and `wo`, preserving the layer's query-head
+count, partial/dual-base RoPE, request-level `seq_end`, SWA view/fence arithmetic,
+head-wise gate, and isolated KV append. The output head remains one-row per request,
+matching the serial prime's arithmetic.
+
+The PP-N wrapper mirrors `prime_chunk_ppn`: fence stage streams behind the caller,
+allocate positions and execute each layer range on its owning stage engine, transport
+only the concatenated residual at each boundary, run the epilogue on the head stage,
+and publish its device-resident outputs back to the caller. Interactive serving already
+drains every eligible fresh prompt in full before `prime_cache_batch`; carried step35
+dark-lane batches refuse and keep their existing single-chunk fallback because that path
+would need per-request queued-after metadata.
+
+Box2 receipts:
+
+| gate | result | evidence |
+|---|---:|---|
+| `pbatch35` B=2, T=520/537, PP-2 | GREEN | `raw/primebatch35-naked-20260808T103724Z.log` |
+| serial vs batch logits | 0 / 257,792 differing f32 | same |
+| serial vs batch `h_seed` | 0 / 8,192 differing f32 | same |
+| serial vs batch hidden stacks | 0 / 4,329,472 differing f32 | same |
+| 4 teacher-forced decode steps/sequence | 0 differing logits; streams match | same |
+| dedicated batch / PP split liveness | 1 / 1 | same |
+| `pbatch35c` (`MEMRA_STEP35_PRIME_BATCH=0`) | CANARY OK, named refusal | `raw/primebatch35-canary-20260808T103938Z.log` |
+
+The naked run's entry snapshot was not idle (`87537 / 56081 MiB` in use); it is a
+correctness receipt only and will not be used for performance. It exited with both cards
+at 0 MiB. The canary run entered and exited at 0 MiB on both cards.
