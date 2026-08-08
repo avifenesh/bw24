@@ -178,3 +178,78 @@ receipt geometry is N=8, K=1024, suffix=16.
 release builds, the intended 9B `serve-smoke` artifact pair (including the extended
 cache-meter fanout), the API-key/PC-ISO battery, Step PP-2 `run-gen`, and the N=8 Step
 TTFT A/B. Every command writes a raw log before its verdict is parsed.
+
+## Final report
+
+### Dedup and pin point
+
+The dedup stage sits between admission and interactive fresh-prime batch formation.
+Admission still allocates isolated session caches and records provisional prefix-cache
+misses. Before those cold sessions enter `prime_cache_batch` or per-session prefill, the
+stage groups exact token prefixes only inside one `(model, cache_ns)` pool, primes one
+budget-capped common prefix, snapshots it, and restores it into each sibling.
+
+The shared `PrefixEntry` is inserted with one lease per successful participant.
+Ordinary later hits acquire the same lease type. Pinned entries are absent from the LRU
+and emergency-flush victim set until the last centralized retire releases them; every
+request continues to own a deep-copied mutable session cache.
+
+On the measured N=8 burst, seven requests reached the grouping stage together:
+
+```text
+[prefix-dedup] B=7 prefix=1024 saved=6144 ... retained=true
+```
+
+The eighth arrived after publication and took the normal 1024-token cache hit. The
+final served-path contract was therefore still exactly one computed prefix plus seven
+cached prefixes. The rollback arm logged eight independent 1040-token seed inserts.
+
+### Gate table
+
+| gate | result | receipt |
+|---|---:|---|
+| host `memra-server` tests | **PASS**, 123/123 | local `DOCS_RS=1 cargo test -p memra-server` |
+| prefix grouping/security/pinning units | **PASS**, same model+tenant+salt only; cross-model/tenant/salt excluded; refcount eviction and emergency flush green | host test output; implementation commits below |
+| release build on box1 | **PASS**, CUDA 13.2, auto `sm_120a` | `raw/box1/build-server-20260808T141144Z.log` |
+| simultaneous cache meter, N=5 + cross-salt | **PASS**, 1 computed + 4 cached, B cold, hits/misses/inserts `4/2/2`, exact usage/LCP/tenant/economics arithmetic | `raw/box1/serve-smoke-20260808T141144Z.log` |
+| `serve-smoke` intended 9B pair | **PASS**, 0 failed; plain, concurrency, cache meter, spec identity, sampled truncation, affinity liveness | same receipt |
+| API-key / PC-ISO | **PASS**, 18/18; same-tenant hit, both cross-tenant directions cold, within-tenant cross-salt cold then self-hit | `raw/box1/apikey-20260808T141144Z/apikey-gates.jsonl` |
+| Step PP-2 `run-gen` | **MATCH** for prefill/decode and batched-prime/tokenwise argmax | `raw/box1/run-gen-20260808T141144Z.log` |
+| Step N=8 fanout receipt validity | **PASS**, rollback cached `[0]x8`; default cached `[0]+[1024]x7` | `raw/box1/fanout-ttft-20260808T141637Z.jsonl` |
+
+The optional gemma4 sub-arm in `serve-smoke` skipped because that artifact was not
+present on box1; all applicable smoke arms passed.
+
+### N=8 same-prefix TTFT
+
+Box1, 2x RTX PRO 6000 Blackwell Server Edition, PP-2 devices 0/1, Step-3.7-Flash
+IQ4_XS, one 1024-token shared prefix plus a distinct 16-token suffix per request,
+8-token generation, one same-shape warmup per arm. This is one simultaneous
+eight-request burst per arm; p50/p95 are the distribution across those eight requests,
+not repeated-burst medians. Entry/exit snapshots were 0 MiB, 32-35 C; the initial
+active clocks were 2407/2325 MHz.
+
+| arm | cached-token distribution | TTFT min | TTFT p50 | TTFT p95/max |
+|---|---:|---:|---:|---:|
+| `MEMRA_PREFIX_DEDUP=0` | `[0] x 8` | 21.235 s | 22.263 s | 22.263 s |
+| default ON | `[0] + [1024] x 7` | 3.851 s | 3.852 s | 3.853 s |
+
+Default ON reduces burst p50 TTFT by **82.7%** (**5.78x**). Warmup TTFT was
+2.933 s OFF and 2.947 s ON, so lazy initialization was balanced before each measured
+burst. Raw client rows, server logs, binary/model hashes, and thermal snapshots are in
+`research/prefixdedup-20260808/raw/box1/`.
+
+### Commits
+
+| commit | increment |
+|---|---|
+| `b4f03dd1` | current-path analysis, dedup/security/pinning design |
+| `1a182f19` | simultaneous N=5 + cross-salt cache-meter gate registered |
+| `98f50c1d` | refcounted entry leases and eviction protection |
+| `d7fc97f5` | scheduler fanout, exact accounting, tenant/salt grouping |
+| `1a7282ed` | streaming N=8 TTFT harness |
+| `242ea324` | caller-held lock composition for the TTFT runner |
+| `54871d97` | reproducible box1 gate battery |
+| `31657510` | raw box1 correctness, isolation, and TTFT receipts |
+
+No origin push, merge, tag, or release was performed.
