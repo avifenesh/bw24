@@ -27,6 +27,11 @@ below is dated; projections are stated against OUR receipts, never against vendo
 | MoE decode dispatch | m=1 expert launch pairs below B=8 (`b1_stage_fast` eager chain); leverC grouped only PREFILL | `research/pp-prefill-20260807/PROGRESS.md` (28% share), leverC scope note |
 | acceptance is prompt-shaped | short-ctx sampled acceptance 0.55 vs 0.73 | upstream-sweeps 08-05 (dogfood receipt) |
 
+The four axes used throughout: **faster** (tok/s and TTFT on the boards), **more-load**
+(concurrency scaling, KV/session capacity, admission under pressure), **faster-onboarding**
+(day-one bring-up of a new SKU — the 3.8 runbook class), **serve-ready** (isolation,
+determinism, QoS, metering — the marketplace bar).
+
 (Sections below are filled per-basket; the ranked top-8 closes the file.)
 
 ## Basket 1 — BRING HOME (engines)
