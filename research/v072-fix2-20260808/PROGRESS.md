@@ -30,17 +30,15 @@ correctness win (multi-tenant device follow): surgical repair, not revert.
 ## Plan
 
 1. [x] PROGRESS.md committed (this file).
-2. [ ] Read 5f27c55c diff + worker.rs drafter attach/load path + spec round loop
+2. [x] Read 5f27c55c diff + worker.rs drafter attach/load path + spec round loop
        device context. Identify where the drafter loads relative to worker_device().
-3. [ ] Repro on box2 (fastest: 9B+drafter over PP-2, memra at ~/memra @ a131e8c7,
-       models at /data/models). Confirm collapse at HEAD, N=3.
-4. [ ] Device experiment: force old device-0 behavior (env/patch) -> confirm ~112
-       returns. Quote the receipt.
-5. [ ] Fix: drafter + spec-round buffers follow the same primary-device rule (or the
-       round loop sets the correct current device). Keep device-follow correctness.
-6. [ ] Verify: spec+PP-2 c=1/c=2 ~112 class (N>=3), spec-off unchanged, single-card
-       unchanged, run-spec K=1..8 PASS, #87 quick crash gate c=4 x50 clean.
-7. [ ] Receipts (raw logs + summary) committed here.
+3. [x] Repro on box2 (q9 embedded MTP over PP-2). Collapse at BASE: 17.4/17.5.
+4. [x] Device experiment: BASE vs FIX A/B, one lock hold — 17.4 -> 111.7/112.0/111.9.
+5. [x] Fix committed (05ddfef2): worker primary follows the PP HEAD stage (the lm
+       head's device), keeping the device-follow correctness win.
+6. [x] Verify: spec+PP-2 c=1/c=2 112 class N=3, spec-off 221.7 unchanged, single-card
+       543.5 unchanged, run-spec 8/8 PASS pinned acceptance, crash gate c=4 x50 clean.
+7. [x] Receipts (raw logs + points jsonl + driver log) committed in raw/.
 
 ## Log
 
@@ -152,6 +150,21 @@ recorded as a "~20x placement-scheduling question" in the pp2spec lane — is fi
 correctness win of 5f27c55c is preserved: the primary is always a placement device
 (multi-tenant device-follow), invalid strings still refuse at boot (now validated at
 every position, not just [0]).
+
+### GPU-free suites (local)
+
+- `cargo test -p memra-server worker_device` — 2 passed (new semantics pinned: 1,0 -> 0,
+  0,1 -> 1, every position validated).
+- `cargo test -p memra-server -- --test-threads=1` — 115 passed, 0 failed.
+- `cargo test -p memra-engine --lib` — 48 passed, 1 GPU-only ignored.
+- PARALLEL-RUN FLAKE, PRE-EXISTING, quoted: the default (parallel) suite intermittently
+  fails ONE health test (`liveness_failure_obeys_the_retry_contract` or
+  `a_wedged_gpu_flips_health...`) with `left: 200, right: 503`. Counted x10 both arms:
+  HEAD worker.rs 9/10 pass, a131e8c7 worker.rs 8/10 pass — present at BASE, unchanged by
+  this fix, and it is the SAME transient the cx-503b lane recorded in its own
+  verification ("One earlier parallel full-suite invocation failed the unrelated
+  a_wedged_gpu... assertion... the serial 115-test suite passed"). Serial is 115/115
+  deterministic. Not this lane's regression; flagged, not fixed here.
 
 ### Not addressed here (out of scope, already owned elsewhere)
 
