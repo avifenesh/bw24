@@ -1,0 +1,8 @@
+source_commit=3e12cc625f1137ab3dfae7344264b5501f04d251
+candidate_tree=89d1d368af7db1d0fbfc6097026c8447a1437213
+qwen35_token_array=EXACT
+prefill argmax=760  decode argmax=760  logit maxdiff=9.425e-1  MATCH
+batched-prime argmax=760  tokenwise argmax=760  logit maxdiff=1.127e0  MATCH
+step35_token_array=EXACT
+prefill argmax=128799  decode argmax=128799  logit maxdiff=1.983e0  MATCH
+batched-prime argmax=128799  tokenwise argmax=128799  logit maxdiff=1.945e0  MATCH
