@@ -115,12 +115,13 @@ tickinv35c	cmd	tools/tick-invariance-gate.sh	--label step35-tick --prompts resea
 # ppsplit/ppsplitc: PRIME PP schedule identity + liveness. Three arms share one sharded load:
 # unsplit reference, serial stage split, and chunk-pipelined stage split. Returned
 # logits/h_seed/full hidden stack plus teacher-forced continuation logits must be bit-identical;
-# PRIME_SPLIT_CHUNKS proves both split arms ran, and PRIME_PIPE_OVERLAPS proves the pipelined
-# arm issued stage0(N+1) before draining stage1(N). Needs the 2-GPU placement; SKIPs locally.
+# PRIME_SPLIT_CHUNKS proves both split arms ran, and PRIME_PIPE_OVERLAPS proves the two
+# stage-owned host walkers were concurrently inside their layer ranges. Needs the 2-GPU
+# placement; SKIPs locally.
 # ppsplitc forces only the pipeline arm back to the serial split, so split liveness remains
 # green and the overlap assertion alone must bite.
-ppsplit	cmd	tools/prime-split-gate.sh	--devices 0,1 --stages 2 --chunks 4096,513 --steps 8	-	-
-ppsplitc	cmd	tools/prime-split-gate.sh	--devices 0,1 --stages 2 --chunks 4096,513 --steps 8 --canary	-	-
+ppsplit	cmd	tools/prime-split-gate.sh	--devices 0,1 --stages 2 --chunks auto,513 --steps 8	-	-
+ppsplitc	cmd	tools/prime-split-gate.sh	--devices 0,1 --stages 2 --chunks auto,513 --steps 8 --canary	-	-
 # b2geo35/b2geo35c: batched-decode GEOMETRY on the launch SKU — step35 served at c=2/c=4 on the
 # DEFAULT batched scheduler over PP-2 must return byte-identical greedy text to the c=1 reference
 # AND prove a B>1 batched step35 tick actually ran (spawn-log chunk cap >= 2 + the engine's
