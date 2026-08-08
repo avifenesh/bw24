@@ -135,6 +135,14 @@ ppsplitc	cmd	tools/prime-split-gate.sh	--devices 0,1 --stages 2 --chunks auto,51
 # Needs 2 GPUs + the staged artifact; SKIPs cleanly when absent.
 b2geo35	cmd	tools/step35-b2-geometry-gate.sh	-	-	-
 b2geo35c	cmd	tools/step35-b2-geometry-gate.sh	--canary	-	-
+# pbatch35/pbatch35c: step35 cross-request PRIME exactness over PP-2. Two uneven prompts
+# beyond the 512-token SWA window compare serial vs batched logits, h_seed, full hidden
+# stacks, and teacher-forced decode logits bit-for-bit. Liveness requires both the dedicated
+# step35 batch arm and its PP stage split; an unsplit whole-trunk walk cannot pass vacuously.
+# Registered RED by lane/cx-prime-batch 2026-08-08: prime_cache_batch refuses step35.
+# Canary: MEMRA_STEP35_PRIME_BATCH=0 restores that refusal after the mechanism lands.
+pbatch35	cmd	tools/step35-prime-batch-gate.sh	-	-	-
+pbatch35c	cmd	tools/step35-prime-batch-gate.sh	--canary	-	-
 # gwstress: the MEMRA_GRAPH_WARMUPS=1 pool-growth adversarial gate (lane/graph-warmups) —
 # large<->small session cycles + overlap arm force captures over freed async-pool blocks;
 # bit-identity vs eager is the arbiter (#68's class corrupts without faulting) and the

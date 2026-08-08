@@ -1,0 +1,17 @@
+lock acquired 2026-08-08T10:43:01Z
+0, 31, 180 MHz, 0 MiB
+1, 31, 180 MHz, 0 MiB
+tick-invariance-gate: label=step35-tick assert=invariant seam=MEMRA_PRIME_CALLLOCAL legacy-seam=off got=invariant canary=0 budgets=0,1024,513,512,256,64 splits=64,256,512 model=Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+       1024 |     5 | EXACT |            -1 | 0.000e0 | - | identical
+        513 |    10 | EXACT |            -1 | 0.000e0 | - | identical
+        512 |    10 | EXACT |            -1 | 0.000e0 | - | identical
+        256 |    20 | EXACT |            -1 | 0.000e0 | - | identical
+         64 |    77 | EXACT |            -1 | 0.000e0 | - | identical
+       sp64 |     2 | EXACT |            -1 | 0.000e0 | - | identical
+      sp256 |     2 | EXACT |            -1 | 0.000e0 | - | identical
+      sp512 |     2 | EXACT |            -1 | 0.000e0 | - | identical
+    tickinv verdict: TICK-INVARIANT — prefill logits bit-identical at every per-tick prefill budget
+tick-invariance-gate: PASS (raw log /tmp/tickinv-gate-iFZicW.log)
+0, 41, 2370 MHz, 0 MiB
+1, 42, 2272 MHz, 0 MiB
+lock released 2026-08-08T10:46:57Z rc=0

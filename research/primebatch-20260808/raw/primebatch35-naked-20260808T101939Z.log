@@ -1,0 +1,14 @@
+=== step35-prime-batch-gate tag=naked ts=20260808T101939Z model=/data/models/step37/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf ===
+lock acquired 2026-08-08T10:30:32Z
+0, 0 MiB
+1, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers); batch=2
+Error: "prime_cache_batch: step35 has no batched prime core (per-layer n_head / partial rope / SWA / head-wise gate) — use prime_cache per sequence"
+0, 0 MiB
+1, 0 MiB
+lock released 2026-08-08T10:31:20Z
+step35-prime-batch-gate: FAIL rc=1 (refusal, mismatch, or split not live)

@@ -1530,6 +1530,397 @@ impl HybridModel {
         Ok(())
     }
 
+    fn step35_prime_batch_on() -> bool {
+        std::env::var("MEMRA_STEP35_PRIME_BATCH").as_deref() != Ok("0")
+    }
+
+    /// Step35 cross-request prime range: weight-streaming work runs once at `m=sum(T)`;
+    /// sequence-scoped attention/KV work stays on each request's own cache and positions.
+    #[allow(clippy::too_many_arguments)]
+    fn step35_prime_batch_layers(
+        &self,
+        e: &Engine,
+        mut x: CudaSlice<f32>,
+        lo: usize,
+        hi: usize,
+        ts: &[usize],
+        offs: &[usize],
+        pos_ds: &[CudaSlice<i32>],
+        caches: &mut [&mut Cache],
+    ) -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
+        let cfg = &self.cfg;
+        let n_embd = cfg.n_embd as usize;
+        let eps = cfg.rms_eps;
+        let b = ts.len();
+        let total: usize = ts.iter().sum();
+        let f16fuse = crate::f16_ffi::pp_f16_enabled() && total >= 16;
+
+        let split = |e: &Engine, y: &CudaSlice<f32>, dim: usize|
+                     -> Result<Vec<CudaSlice<f32>>, Box<dyn std::error::Error>> {
+            let mut out = Vec::with_capacity(b);
+            for s in 0..b {
+                let mut ys = e.uninit(ts[s] * dim)?;
+                e.copy_view_into(
+                    &mut ys,
+                    0,
+                    &y.slice(offs[s] * dim..(offs[s] + ts[s]) * dim),
+                    ts[s] * dim,
+                )?;
+                out.push(ys);
+            }
+            Ok(out)
+        };
+
+        for il in lo..hi {
+            let layer = &self.layers[il];
+            let Mixer::Full(fa) = &layer.mixer else {
+                return Err(format!("step35 layer {il} is not full-attn — corrupt config").into());
+            };
+
+            let mut h = e.uninit(total * n_embd)?;
+            let mut hx16 = e.alloc_u8_uninit(total * n_embd * 2)?;
+            if f16fuse {
+                e.rms_norm_f16out(
+                    &x,
+                    layer.attn_norm.float_data(),
+                    &mut h,
+                    &mut hx16,
+                    n_embd,
+                    total,
+                    eps,
+                )?;
+            } else {
+                e.rms_norm(
+                    &x,
+                    layer.attn_norm.float_data(),
+                    &mut h,
+                    n_embd,
+                    total,
+                    eps,
+                )?;
+            }
+
+            // Q/K/V + gate projections and wo are batched weight streams. The step35 core
+            // remains per sequence, so its partial RoPE, SWA view, KV append, and gate
+            // application stay verbatim.
+            let gate_w = fa
+                .attn_gate
+                .as_ref()
+                .ok_or("step35 layer is missing attn_gate.weight (head-wise attention gate)")?;
+            let mut g4 = if f16fuse {
+                e.matmul_group_xh(&[&fa.wq, &fa.wk, &fa.wv, gate_w], &h, &hx16, total)?
+            } else {
+                e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv, gate_w], &h, total)?
+            };
+            let gate = g4.pop().unwrap();
+            let mut parts: Vec<Vec<CudaSlice<f32>>> =
+                (0..b).map(|_| Vec::with_capacity(3)).collect();
+            for (w, y) in [&fa.wq, &fa.wk, &fa.wv].iter().zip(g4) {
+                for (s, ys) in split(e, &y, w.out_features())?.into_iter().enumerate() {
+                    parts[s].push(ys);
+                }
+            }
+            let gates = split(e, &gate, gate_w.out_features())?;
+            let (hd, _, nh, _, _, _) = self.step35_geom(il);
+            let mut ag_cat = e.uninit(total * nh * hd)?;
+            for (s, (g3s, gate)) in parts.into_iter().zip(gates).enumerate() {
+                let ag = self.step35_attn_pre_wo(
+                    e,
+                    fa,
+                    g3s,
+                    None,
+                    Some(&gate),
+                    &pos_ds[s],
+                    ts[s],
+                    Some(&mut *caches[s]),
+                    il,
+                    ts[s],
+                )?;
+                e.copy_into(
+                    &mut ag_cat,
+                    offs[s] * nh * hd,
+                    &ag,
+                    ts[s] * nh * hd,
+                )?;
+            }
+            let mixed = e.matmul(&fa.wo, &ag_cat, total)?;
+
+            let mut x1 = e.uninit(total * n_embd)?;
+            let mut z = e.uninit(total * n_embd)?;
+            let mut zx16 = e.alloc_u8_uninit(total * n_embd * 2)?;
+            if f16fuse {
+                e.add_rms_norm_f16out(
+                    &x,
+                    &mixed,
+                    layer.post_attn_norm.float_data(),
+                    &mut x1,
+                    &mut z,
+                    &mut zx16,
+                    n_embd,
+                    total,
+                    eps,
+                )?;
+            } else {
+                e.add(&x, &mixed, &mut x1, total * n_embd)?;
+                e.rms_norm(
+                    &x1,
+                    layer.post_attn_norm.float_data(),
+                    &mut z,
+                    n_embd,
+                    total,
+                    eps,
+                )?;
+            }
+
+            let ffn_out = match &layer.ffn {
+                crate::hybrid::Ffn::Dense { ffn_gate, ffn_up, ffn_down } => {
+                    let n_ff = ffn_gate.out_features();
+                    let mut g2 = if f16fuse {
+                        e.matmul_group_xh(&[ffn_gate, ffn_up], &z, &zx16, total)?
+                    } else {
+                        e.matmul_group(&[ffn_gate, ffn_up], &z, total)?
+                    };
+                    let up = g2.pop().unwrap();
+                    let gate = g2.pop().unwrap();
+                    let mut act = e.uninit(total * n_ff)?;
+                    let d_lim = cfg.clamp_shexp_at(il as u32);
+                    if Self::f16out_on(e, total) && cfg.m3.is_none() && d_lim.is_none() {
+                        let mut a16 = e.alloc_u8_uninit(total * n_ff * 2)?;
+                        e.silu_mul_f16out(&gate, &up, &mut act, &mut a16, total * n_ff)?;
+                        match e.try_f16_gemm_pre(ffn_down, &a16, total)? {
+                            Some(y) => y,
+                            None => e.matmul(ffn_down, &act, total)?,
+                        }
+                    } else {
+                        Self::ffn_act_lim(
+                            e,
+                            cfg,
+                            &gate,
+                            &up,
+                            1.0,
+                            1.0,
+                            d_lim,
+                            &mut act,
+                            total * n_ff,
+                        )?;
+                        e.matmul(ffn_down, &act, total)?
+                    }
+                }
+                crate::hybrid::Ffn::Moe(m) => self.moe_ffn_il(e, m, &z, total, il as u16)?,
+            };
+            let mut x2 = e.uninit(total * n_embd)?;
+            e.add(&x1, &ffn_out, &mut x2, total * n_embd)?;
+            x = x2;
+        }
+        Ok(x)
+    }
+
+    fn step35_prime_batch_epilogue(
+        &self,
+        e: &Engine,
+        x: CudaSlice<f32>,
+        ts: &[usize],
+        offs: &[usize],
+        caches: &mut [&mut Cache],
+    ) -> Result<Vec<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>)>, Box<dyn std::error::Error>> {
+        let n_embd = self.cfg.n_embd as usize;
+        let total: usize = ts.iter().sum();
+        let mut hn = e.uninit(total * n_embd)?;
+        e.rms_norm(
+            &x,
+            self.output_norm.float_data(),
+            &mut hn,
+            n_embd,
+            total,
+            self.cfg.rms_eps,
+        )?;
+
+        let hidden_src = if crate::spec::spec_hpost() { &hn } else { &x };
+        let mut out = Vec::with_capacity(ts.len());
+        for s in 0..ts.len() {
+            let mut hidden = e.uninit(ts[s] * n_embd)?;
+            e.copy_view_into(
+                &mut hidden,
+                0,
+                &hidden_src.slice(offs[s] * n_embd..(offs[s] + ts[s]) * n_embd),
+                ts[s] * n_embd,
+            )?;
+            let last0 = (offs[s] + ts[s] - 1) * n_embd;
+            let mut h_seed = e.uninit(n_embd)?;
+            e.copy_view_into(
+                &mut h_seed,
+                0,
+                &hidden_src.slice(last0..last0 + n_embd),
+                n_embd,
+            )?;
+            // Exactness-first: the serial reference runs the output head at m=1.
+            let mut hlast = e.uninit(n_embd)?;
+            e.copy_view_into(
+                &mut hlast,
+                0,
+                &hn.slice(last0..last0 + n_embd),
+                n_embd,
+            )?;
+            let logits = e.dtoh(&e.matmul(&self.output, &hlast, 1)?)?;
+            caches[s].pos += ts[s];
+            out.push((logits, h_seed, hidden));
+        }
+        Ok(out)
+    }
+
+    fn step35_prime_cache_batch(
+        &self,
+        e: &Engine,
+        prompts: &[&[u32]],
+        caches: &mut [&mut Cache],
+    ) -> Result<Vec<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>)>, Box<dyn std::error::Error>> {
+        if !Self::step35_prime_batch_on() {
+            return Err("step35 batched prime is disabled (MEMRA_STEP35_PRIME_BATCH=0)".into());
+        }
+        if caches.iter().any(|c| c.pos != 0) {
+            return Err(
+                "step35 batched prime currently supports complete fresh prompts only; \
+                 continuation/tick chunks require per-request queued_after"
+                    .into(),
+            );
+        }
+
+        let ts: Vec<usize> = prompts.iter().map(|p| p.len()).collect();
+        for &t in &ts {
+            assert!(t >= PRIME_MIN_T, "step35 batched prime needs T >= {PRIME_MIN_T}");
+        }
+        for (s, c) in caches.iter().enumerate() {
+            assert!(ts[s] <= c.max_ctx, "step35 batched prime exceeds cache max_ctx");
+        }
+        let offs: Vec<usize> = ts
+            .iter()
+            .scan(0usize, |a, &t| {
+                let o = *a;
+                *a += t;
+                Some(o)
+            })
+            .collect();
+        let total: usize = ts.iter().sum();
+        let payload = total * self.cfg.n_embd as usize;
+        let cat_tokens: Vec<u32> = prompts.iter().flat_map(|p| p.iter().copied()).collect();
+        let positions: Vec<Vec<i32>> = ts
+            .iter()
+            .map(|&t| (0..t as i32).collect())
+            .collect();
+        let upload_positions = |e: &Engine|
+                                -> Result<Vec<CudaSlice<i32>>, Box<dyn std::error::Error>> {
+            positions
+                .iter()
+                .map(|p| e.htod_i32(p))
+                .collect::<Result<_, _>>()
+        };
+
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            eprintln!(
+                "[step35-prime-batch] first concat prime: B={} tokens={total}",
+                prompts.len()
+            );
+        });
+
+        let out = if !crate::pp::pp2_streams_off() && crate::pp::prime_pp_on() {
+            if let Some(fence) = crate::pp::pp_cuts(self.layers.len()) {
+                let rt = crate::pp::PpNRt::get(e)?;
+                let n_st = fence.len() - 1;
+                assert_eq!(rt.n_stages(), n_st, "step35 prime batch stage count mismatch");
+                let caller_stream = e.stream();
+                rt.fence_stages_behind(&caller_stream)?;
+
+                let mut slot = {
+                    let _st0 = rt.enter(0);
+                    let e0 = rt.engine(0, e);
+                    let pos_ds = upload_positions(e0)?;
+                    let x = self.embed(e0, &cat_tokens)?;
+                    let x = self.step35_prime_batch_layers(
+                        e0,
+                        x,
+                        fence[0],
+                        fence[1],
+                        &ts,
+                        &offs,
+                        &pos_ds,
+                        caches,
+                    )?;
+                    rt.tx(0, &x, payload)?
+                };
+                for s in 1..n_st - 1 {
+                    let _st = rt.enter(s);
+                    let es = rt.engine(s, e);
+                    let pos_ds = upload_positions(es)?;
+                    let x = rt.rx(s - 1, slot, payload)?;
+                    let x = self.step35_prime_batch_layers(
+                        es,
+                        x,
+                        fence[s],
+                        fence[s + 1],
+                        &ts,
+                        &offs,
+                        &pos_ds,
+                        caches,
+                    )?;
+                    slot = rt.tx(s, &x, payload)?;
+                }
+
+                let _stl = rt.enter(n_st - 1);
+                let el = rt.engine(n_st - 1, e);
+                let pos_ds = upload_positions(el)?;
+                let x = rt.rx(n_st - 2, slot, payload)?;
+                let x = self.step35_prime_batch_layers(
+                    el,
+                    x,
+                    fence[n_st - 1],
+                    fence[n_st],
+                    &ts,
+                    &offs,
+                    &pos_ds,
+                    caches,
+                )?;
+                let out = self.step35_prime_batch_epilogue(el, x, &ts, &offs, caches)?;
+                rt.publish_to(n_st - 1, &caller_stream)?;
+                crate::pp::STEP35_PRIME_BATCH_SPLITS.fetch_add(
+                    1,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                out
+            } else {
+                let pos_ds = upload_positions(e)?;
+                let x = self.embed(e, &cat_tokens)?;
+                let x = self.step35_prime_batch_layers(
+                    e,
+                    x,
+                    0,
+                    self.layers.len(),
+                    &ts,
+                    &offs,
+                    &pos_ds,
+                    caches,
+                )?;
+                self.step35_prime_batch_epilogue(e, x, &ts, &offs, caches)?
+            }
+        } else {
+            let pos_ds = upload_positions(e)?;
+            let x = self.embed(e, &cat_tokens)?;
+            let x = self.step35_prime_batch_layers(
+                e,
+                x,
+                0,
+                self.layers.len(),
+                &ts,
+                &offs,
+                &pos_ds,
+                caches,
+            )?;
+            self.step35_prime_batch_epilogue(e, x, &ts, &offs, caches)?
+        };
+        crate::pp::STEP35_PRIME_BATCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(out)
+    }
+
     /// Cross-request BATCHED fresh prime (task #13, design in ARCHITECTURE-H100.md): the
     /// trunk's token-parallel ops (embed, norms, adds, ffn, projection GROUPS) run once on
     /// the CONCATENATION of B sequences — GEMMs at m = sum_T, the continuous-batching win
@@ -1564,14 +1955,10 @@ impl HybridModel {
             return Err("prime_cache_batch: gemma4 has no batched prime core (per-layer \
                         swa/global geometry, softcapped head) — use gemma4_prime per sequence".into());
         }
-        // step35: the cross-request batch driver splits the concat projection outputs and feeds
-        // them to `full_attn_prime_core_inner` (the GENERIC attn core — uniform n_head, 128-dim
-        // rope on every layer, no window, no head-wise gate). Running step35 through it compiles
-        // and produces plausible-but-wrong logits, so refuse until a step35 varlen core exists.
-        // The single-sequence `prime_cache` path is the supported prefill.
+        // Step35 has a dedicated concat walk: the generic core below cannot express its
+        // per-layer geometry/SWA/head gate, and under PP the dedicated path is stage-scoped.
         if cfg.step35.is_some() {
-            return Err("prime_cache_batch: step35 has no batched prime core (per-layer n_head / \
-                        partial rope / SWA / head-wise gate) — use prime_cache per sequence".into());
+            return self.step35_prime_cache_batch(e, prompts, caches);
         }
         let ts: Vec<usize> = prompts.iter().map(|p| p.len()).collect();
         for &t in &ts { assert!(t >= PRIME_MIN_T, "prime_cache_batch needs T >= {PRIME_MIN_T}"); }
@@ -7484,7 +7871,9 @@ impl HybridModel {
     /// gate, returning the GATED attention output PRE-`wo` (the caller runs wo, so this composes
     /// with both the plain `matmul(&fa.wo, ..)` sites and the f16/into-slab GEMM sites).
     ///
-    /// `hg` = the POST-attn_norm hidden state (upstream's `cur`) — the gate projection's input.
+    /// `hg` = the POST-attn_norm hidden state (upstream's `cur`) — the gate projection's input
+    /// on single-sequence paths. `gt_pre` supplies the already-projected per-head gate for a
+    /// cross-request batch; exactly one of `hg` or `gt_pre` must be present.
     /// `cache`:
     ///   * `Some` => PRIME mode: append this chunk's post-rope K / raw V rows into the resident
     ///     quantized cache and attend THROUGH the cache view, exactly like the generic
@@ -7539,7 +7928,8 @@ impl HybridModel {
     /// those with t_kv <= win = 512.
     #[allow(clippy::too_many_arguments)]
     fn step35_attn_pre_wo(&self, e: &Engine, fa: &FullAttnLayer, mut g3: Vec<CudaSlice<f32>>,
-                          hg: &CudaSlice<f32>, pos_d: &CudaSlice<i32>, t: usize,
+                          hg: Option<&CudaSlice<f32>>, gt_pre: Option<&CudaSlice<f32>>,
+                          pos_d: &CudaSlice<i32>, t: usize,
                           cache: Option<&mut Cache>, il: usize, seq_end: usize)
                           -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let (hd, nkv, nh, rbase, scale, swa) = self.step35_geom(il);
@@ -7686,9 +8076,18 @@ impl HybridModel {
         // attn *= sigmoid(gate) broadcast over head_dim. BEFORE wo.
         let gw = fa.attn_gate.as_ref()
             .ok_or("step35 layer is missing attn_gate.weight (head-wise attention gate)")?;
-        let gt = e.matmul(gw, hg, t)?;
+        let gt_owned = if gt_pre.is_none() {
+            Some(e.matmul(
+                gw,
+                hg.ok_or("step35 attention needs hg when gt_pre is absent")?,
+                t,
+            )?)
+        } else {
+            None
+        };
+        let gt = gt_pre.or(gt_owned.as_ref()).unwrap();
         let mut ag = e.uninit(t * nh * hd)?;
-        e.attn_head_gate(&attn, &gt, &mut ag, None, hd, nh, t)?;
+        e.attn_head_gate(&attn, gt, &mut ag, None, hd, nh, t)?;
         Ok(ag)
     }
 
@@ -7699,7 +8098,7 @@ impl HybridModel {
                               -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
         let g3 = e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], h, t)?;
         // Monolithic path: the request ends at t (no chunk loop). See step35_attn_pre_wo's note.
-        let ag = self.step35_attn_pre_wo(e, fa, g3, h, pos_d, t, None, il, t)?;
+        let ag = self.step35_attn_pre_wo(e, fa, g3, Some(h), None, pos_d, t, None, il, t)?;
         Ok(e.matmul(&fa.wo, &ag, t)?)
     }
 
@@ -7718,7 +8117,18 @@ impl HybridModel {
             Some(xh) => e.matmul_group_xh(&[&fa.wq, &fa.wk, &fa.wv], h, xh, t)?,
             None => e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], h, t)?,
         };
-        let ag = self.step35_attn_pre_wo(e, fa, g3, h, pos_d, t, Some(cache), il, seq_end)?;
+        let ag = self.step35_attn_pre_wo(
+            e,
+            fa,
+            g3,
+            Some(h),
+            None,
+            pos_d,
+            t,
+            Some(cache),
+            il,
+            seq_end,
+        )?;
         Ok(e.matmul(&fa.wo, &ag, t)?)
     }
 

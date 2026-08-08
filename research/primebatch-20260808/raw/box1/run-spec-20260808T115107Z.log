@@ -1,0 +1,39 @@
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[mtp-draft] loading external MTP draft: /home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf
+[mtp-draft] step35 MTP geometry blk.45: n_head=96 n_head_kv=8 n_rot=128 rope_base=10000 swa=true window=512
+[mtp-draft] external draft head: blk.45, source=nextn.shared_head_head.weight, head_vocab=128896 (full)
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers, nextn=0)
+text prompt (110 chars) -> 19 tokens
+prompt tokens: [0, 21750, 260, 3107, 15363, 26131, 1192, 260, 25454, 28499, 28232, 12740, 62027, 14, 305, 6731, 834, 23616, 16]
+
+[generate]   31 tok in 1.358s = 22.83 tok/s (gen-only; this run's prime 0.154s)
+  tokens: [6776, 666, 7805, 11490, 2143, 35, 25454, 28499, 21994, 270, 16846, 294, 411, 12740, 1055, 3586, 13656, 343, 70698, 14, 64285, 14, 22218, 14, 6464, 14, 5085, 43360, 3555, 797, 6001, 834]
+
+[generate_spec K=1] 32 tok in 0.383s = 81.03 tok/s (3.55x vs generate; this run's prime 0.154s)
+  acceptance: 14/17 = 82.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 32 tok in 0.512s = 60.53 tok/s (2.65x vs generate; this run's prime 0.153s)
+  acceptance: 15/32 = 46.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 32 tok in 0.664s = 46.69 tok/s (2.05x vs generate; this run's prime 0.154s)
+  acceptance: 15/48 = 31.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 32 tok in 0.815s = 38.05 tok/s (1.67x vs generate; this run's prime 0.153s)
+  acceptance: 15/64 = 23.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 32 tok in 0.967s = 32.05 tok/s (1.40x vs generate; this run's prime 0.153s)
+  acceptance: 15/80 = 18.8%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 32 tok in 1.120s = 27.69 tok/s (1.21x vs generate; this run's prime 0.154s)
+  acceptance: 15/96 = 15.6%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 32 tok in 1.274s = 24.33 tok/s (1.07x vs generate; this run's prime 0.155s)
+  acceptance: 15/112 = 13.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 32 tok in 1.428s = 21.71 tok/s (0.95x vs generate; this run's prime 0.153s)
+  acceptance: 15/128 = 11.7%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===

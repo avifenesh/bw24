@@ -347,6 +347,19 @@ impl Drop for PrimePipeStageGuard {
         let active = PRIME_PIPE_ACTIVE_STAGES.fetch_sub(1, Ordering::AcqRel);
         debug_assert!(active > 0, "prime pipeline active-stage counter underflow");
     }
+
+/// Step35 cross-request prime liveness counters (lane/cx-prime-batch, 2026-08-08).
+/// The exactness gate requires BOTH to advance: a successful step35 batch alone is not
+/// sufficient under PP-N if it walked the whole sharded trunk on one stream.
+pub static STEP35_PRIME_BATCHES: AtomicUsize = AtomicUsize::new(0);
+pub static STEP35_PRIME_BATCH_SPLITS: AtomicUsize = AtomicUsize::new(0);
+
+pub fn step35_prime_batches() -> usize {
+    STEP35_PRIME_BATCHES.load(Ordering::Relaxed)
+}
+
+pub fn step35_prime_batch_splits() -> usize {
+    STEP35_PRIME_BATCH_SPLITS.load(Ordering::Relaxed)
 }
 
 /// MEMRA_SPEC_PP=0: rollback/A-B seam for the SPEC VERIFY stage split (pp2-spec 2026-08-06).

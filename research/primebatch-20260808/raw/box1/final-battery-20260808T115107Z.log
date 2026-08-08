@@ -1,0 +1,49 @@
+=== step35 primebatch final battery box1 ts=20260808T115107Z commit=7d36a61c ===
+lock acquired 2026-08-08T11:51:07Z
+0, 27, 180 MHz, 29.51 W, 0 MiB
+1, 27, 180 MHz, 31.47 W, 0 MiB
+########## kernel-check ##########
+kernel-check exit=0 FAIL-lines=0
+swiglu_clamped != swigluoai by mechanism: up=-1_oai_zero=true up=-0.99_two_orders=true gate>limit_clamp_order=true up=0_no_linear=true OK
+
+ALL GREEN: kernels match CPU reference.
+0, 29, 2407 MHz, 89.70 W, 0 MiB
+1, 27, 180 MHz, 29.99 W, 0 MiB
+########## run-gen PP-2 ##########
+run-gen exit=0
+prefill argmax=6776  decode argmax=6776  logit maxdiff=8.228e-1  MATCH
+batched-prime argmax=6776  tokenwise argmax=6776  logit maxdiff=7.178e-1  MATCH
+generated 64 tokens in 3.402s = 18.81 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.154s) [stop: MaxNew]
+--- generated text ---
+0, 32, 2407 MHz, 94.68 W, 0 MiB
+1, 32, 2325 MHz, 93.48 W, 0 MiB
+########## run-spec K=1..8 PP-2 ##########
+run-spec exit=0
+  acceptance: 14/17 = 82.4%   self-consistency: PASS (identical to generate)
+  acceptance: 15/32 = 46.9%   self-consistency: PASS (identical to generate)
+  acceptance: 15/48 = 31.2%   self-consistency: PASS (identical to generate)
+  acceptance: 15/64 = 23.4%   self-consistency: PASS (identical to generate)
+  acceptance: 15/80 = 18.8%   self-consistency: PASS (identical to generate)
+  acceptance: 15/96 = 15.6%   self-consistency: PASS (identical to generate)
+  acceptance: 15/112 = 13.4%   self-consistency: PASS (identical to generate)
+  acceptance: 15/128 = 11.7%   self-consistency: PASS (identical to generate)
+=== SELF-CONSISTENCY PASS ===
+0, 34, 2407 MHz, 93.45 W, 0 MiB
+1, 34, 2325 MHz, 92.23 W, 0 MiB
+########## tickinv35 final ##########
+tickinv35 exit=0
+tick-invariance-gate: label=step35-tick assert=invariant seam=MEMRA_PRIME_CALLLOCAL legacy-seam=off got=invariant canary=0 budgets=0,1024,513,512,256,64 splits=64,256,512 model=Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+       1024 |     5 | EXACT |            -1 | 0.000e0 | - | identical
+        513 |    10 | EXACT |            -1 | 0.000e0 | - | identical
+        512 |    10 | EXACT |            -1 | 0.000e0 | - | identical
+        256 |    20 | EXACT |            -1 | 0.000e0 | - | identical
+         64 |    77 | EXACT |            -1 | 0.000e0 | - | identical
+       sp64 |     2 | EXACT |            -1 | 0.000e0 | - | identical
+      sp256 |     2 | EXACT |            -1 | 0.000e0 | - | identical
+      sp512 |     2 | EXACT |            -1 | 0.000e0 | - | identical
+    tickinv verdict: TICK-INVARIANT — prefill logits bit-identical at every per-tick prefill budget
+tick-invariance-gate: PASS (raw log /tmp/tickinv-gate-3j19lN.log)
+tickinv probe receipt=research/primebatch-20260808/raw/box1/tickinv35-final-probe-20260808T115107Z.log
+0, 37, 2400 MHz, 95.44 W, 0 MiB
+1, 39, 2317 MHz, 96.22 W, 0 MiB
+lock released 2026-08-08T11:56:30Z rc=0

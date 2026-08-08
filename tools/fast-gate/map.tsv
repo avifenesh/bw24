@@ -94,7 +94,7 @@
 # b2geo35/b2geo35c pin the step35 BATCHED-DECODE geometry (per-layer n_head / partial rope /
 # per-session SWA views / head gate at B>1, over PP-2) + the batched-evidence teeth — the
 # HTTP-200-garbage class no logit gate reaches from serve level. research/step35-batch-20260808.
-^crates/memra-engine/src/(decode|decode_batch|forward|hybrid_forward|pp|prime_graph|graph_update|mla)\.rs$	synthetic	g12,q9,q35,q35slru,chunkinv,chunkinvc,chunkinv35,chunkinv35c,tickinv35,tickinv35c,gwstress,isogap,isogapc,b2geo35,b2geo35c	q35spec
+^crates/memra-engine/src/(decode|decode_batch|forward|hybrid_forward|pp|prime_graph|graph_update|mla)\.rs$	synthetic	g12,q9,q35,q35slru,chunkinv,chunkinvc,chunkinv35,chunkinv35c,tickinv35,tickinv35c,gwstress,isogap,isogapc,b2geo35,b2geo35c,pbatch35,pbatch35c	q35spec
 # Variant-only forward paths: E4B owns PLE/KV-sharing, while KAT is the non-expert IQ4_XS trunk.
 ^crates/memra-engine/src/(decode|hybrid_forward)\.rs$	synthetic	e4b,kat	-
 # amargin compares these exact two arithmetic surfaces: batched forward_last vs tokenwise decode.
