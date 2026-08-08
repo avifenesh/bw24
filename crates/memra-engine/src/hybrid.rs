@@ -1152,7 +1152,7 @@ pub struct HybridModel {
     /// addresses (nvjet's alignment-variant kernels become run-to-run stable once their
     /// pointers stop moving). Sized on first prime to the largest T seen; Mutex = lazy init
     /// only (single GPU worker).
-    pub prime_slabs: std::sync::Mutex<Option<crate::hybrid_forward::PrimeSlabs>>,
+    pub prime_slabs: std::sync::Mutex<std::collections::HashMap<usize, crate::hybrid_forward::PrimeSlabs>>,
 }
 
 impl HybridModel {
@@ -1918,7 +1918,7 @@ impl HybridModel {
             embd_gpu: std::sync::OnceLock::new(),
             gemma4_aux,
             step35_aux,
-            prime_slabs: std::sync::Mutex::new(None),
+            prime_slabs: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         e.configure_moe_cache_layout(model.moe_cache_block_sizes());
         if force_embd_gpu {
