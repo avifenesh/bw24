@@ -320,6 +320,8 @@ re-measures published cells on engine-touching pushes ([CONTRIBUTING.md](CONTRIB
 - [docs/FLAGS.md](docs/FLAGS.md) — the audited flag catalog.
 - [docs/COMPETITOR-SETUP.md](docs/COMPETITOR-SETUP.md) — competitor engines at their peak.
 - [docs/DRAFT-REGIME.md](docs/DRAFT-REGIME.md) — the standard drafter pipeline.
+- [docs/ONBOARDING.md](docs/ONBOARDING.md) — architecture bring-up from artifact
+  inspection through geometry, standing gates, target-rig receipts, and the Qwen 3.8 example.
 - [docs/SERVING.md](docs/SERVING.md) — the serve surface: fleet runbook, tools,
   constrained decoding, prompt caching, tenant isolation.
 - [docs/HY3-SPILL.md](docs/HY3-SPILL.md) — Hy3 spill runbook.

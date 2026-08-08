@@ -1,0 +1,49 @@
+source_tree=rsync-tree
+timestamp=2026-08-08T13:43:21Z
+compute_apps_at_entry:
+index, name, memory.used [MiB], temperature.gpu
+0, NVIDIA RTX PRO 6000 Blackwell Server Edition, 0 MiB, 26
+1, NVIDIA RTX PRO 6000 Blackwell Server Edition, 0 MiB, 26
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[mtp-draft] loading external MTP draft: /home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf
+[mtp-draft] step35 MTP geometry blk.45: n_head=96 n_head_kv=8 n_rot=128 rope_base=10000 swa=true window=512
+[mtp-draft] external draft head: blk.45, source=nextn.shared_head_head.weight, head_vocab=128896 (full)
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers, nextn=0)
+text prompt (472 chars, chat-templated) -> 102 tokens
+prompt tokens: [0, 128006, 5265, 201, 671, 8412, 6005, 15246, 39105, 28499, 14712, 8739, 23997, 538, 60944, 9130, 1407, 83119, 5908, 84152, 1060, 63310, 71, 1055, 5291, 6464, 14, 1479, 5059, 1766, 1781, 8086, 87375, 28907, 1066, 16, 8829, 6632, 344, 9720, 3672, 418, 270, 3628, 14, 1754, 260, 13058, 29009, 588, 20118, 260, 1499, 2641, 105209, 18103, 16, 39843, 14, 3132, 513, 3132, 14, 1192, 260, 13376, 9934, 86473, 1648, 67940, 63203, 305, 74638, 1009, 13523, 362, 260, 4031, 17840, 14, 305, 8470, 778, 6632, 81252, 52636, 1082, 270, 8739, 6939, 38504, 5291, 6464, 603, 128007, 201, 128006, 624, 15059, 201, 128798, 201]
+
+[generate]   31 tok in 0.578s = 53.61 tok/s (gen-only; this run's prime 0.462s)
+  tokens: [70935, 436, 14, 2513, 734, 28780, 566, 3417, 3132, 513, 3132, 16, 5978, 14, 342, 1309, 304, 1635, 3645, 342, 4508, 1234, 1840, 5949, 28, 1257, 14, 270, 3132, 10531, 15537, 10192]
+
+[generate_spec K=1] 32 tok in 0.352s = 87.99 tok/s (1.64x vs generate; this run's prime 0.459s)
+  acceptance: 15/17 = 88.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 32 tok in 0.384s = 80.66 tok/s (1.50x vs generate; this run's prime 0.460s)
+  acceptance: 18/26 = 69.2%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 32 tok in 0.459s = 67.60 tok/s (1.26x vs generate; this run's prime 0.459s)
+  acceptance: 19/36 = 52.8%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 32 tok in 0.563s = 55.11 tok/s (1.03x vs generate; this run's prime 0.459s)
+  acceptance: 19/48 = 39.6%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 32 tok in 0.666s = 46.52 tok/s (0.87x vs generate; this run's prime 0.459s)
+  acceptance: 19/60 = 31.7%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 32 tok in 0.770s = 40.27 tok/s (0.75x vs generate; this run's prime 0.464s)
+  acceptance: 19/72 = 26.4%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 32 tok in 0.874s = 35.47 tok/s (0.66x vs generate; this run's prime 0.460s)
+  acceptance: 19/84 = 22.6%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 32 tok in 0.980s = 31.63 tok/s (0.59x vs generate; this run's prime 0.459s)
+  acceptance: 19/96 = 19.8%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+finished=2026-08-08T13:44:08Z
+index, memory.used [MiB], temperature.gpu
+0, 0 MiB, 33
+1, 0 MiB, 34

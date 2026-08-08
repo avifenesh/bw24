@@ -1,0 +1,9 @@
+test_generates_scripts_and_registry_fragments (tools.test_generate_arch_gates.ArchGateGeneratorTests.test_generates_scripts_and_registry_fragments) ... ok
+test_refuses_overwrite_without_force (tools.test_generate_arch_gates.ArchGateGeneratorTests.test_refuses_overwrite_without_force) ... ok
+test_rejects_invalid_scientific_inputs (tools.test_generate_arch_gates.ArchGateGeneratorTests.test_rejects_invalid_scientific_inputs) ... ok
+test_rejects_output_path_with_whitespace (tools.test_generate_arch_gates.ArchGateGeneratorTests.test_rejects_output_path_with_whitespace) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.321s
+
+OK

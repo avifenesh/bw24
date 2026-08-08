@@ -647,6 +647,9 @@ mod tests {
         assert_eq!(s.rope_dims_swa, 128);
         assert_eq!(s.rope_dims_full, 64);
         assert_eq!(s.n_full_attn(45), 12, "3:1 over 45 blocks = 12 full + 33 SWA");
+        let table = c.geometry.as_ref().expect("step35 has a geometry table");
+        assert_eq!(table.classes().len(), 2, "one full class and one SWA class");
+        assert_eq!(table.layer_classes().len(), 45);
 
         for il in 0..45u32 {
             let full = il % 4 == 0;
@@ -659,6 +662,18 @@ mod tests {
             assert_eq!(s.n_rot(il), if full { 64 } else { 128 }, "n_rot at layer {il}");
             assert!((s.rope_base(il) - if full { 5e6 } else { 1e4 }).abs() < 1.0,
                 "rope base at layer {il}");
+            let geometry = c.layer_geometry(il).expect("geometry row");
+            assert_eq!(geometry.n_head, if full { 64 } else { 96 });
+            assert_eq!(geometry.n_head_kv, 8);
+            assert_eq!(geometry.head_dim_k, 128);
+            assert_eq!(geometry.head_dim_v, 128);
+            assert_eq!(geometry.n_rot, if full { 64 } else { 128 });
+            assert_eq!(geometry.window, (!full).then_some(512));
+            assert_eq!(geometry.rope_factors, full);
+            assert_eq!(
+                geometry.attention_gate,
+                crate::config::AttentionGateKind::SeparateHead
+            );
         }
 
         // --- SwiGLU clamp: unset everywhere but 43 (7.0) and 44 (16.0) ---
@@ -776,6 +791,8 @@ mod tests {
         assert_eq!(ts.n_head(45), 64, "n_head's `.last()` fallback answers layer 44's 64");
         assert_ne!(ts.n_head(45), ds.n_head(45), "the true count is 96 — a 1.5x shape error");
         assert_ne!(tcfg.n_head_at(45), ds.n_head(45), "ModelConfig's accessor inherits the trap");
+        assert!(tcfg.layer_geometry(45).is_none(),
+            "the declarative table must not fabricate a drafter row from trunk metadata");
         // Concretely, that mismatch is a projection-shape error, not a tuning nit: the real
         // blk.45.attn_q.weight is [4096, 12288] = 96*128, so a 64-head reader builds q/attn
         // buffers of 8192 and reads the wrong rows for 32 heads' worth of the output.

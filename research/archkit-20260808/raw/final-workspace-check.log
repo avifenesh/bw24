@@ -1,0 +1,3 @@
+warning: memra-engine@0.72.0: nvcc from $CUDA_HOME: /usr/local/cuda-13.1/bin/nvcc
+warning: memra-engine@0.72.0: MEMRA_CUDA_ARCH auto-detected 120a (compute_cap 12.0); set MEMRA_CUDA_ARCH to override
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.06s

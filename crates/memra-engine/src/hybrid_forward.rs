@@ -1621,7 +1621,9 @@ impl HybridModel {
                 }
             }
             let gates = split(e, &gate, gate_w.out_features())?;
-            let (hd, _, nh, _, _, _) = self.step35_geom(il);
+            let geometry = self.step35_geom(il);
+            let hd = geometry.head_dim_k as usize;
+            let nh = geometry.n_head as usize;
             let mut ag_cat = e.uninit(total * nh * hd)?;
             for (s, (g3s, gate)) in parts.into_iter().zip(gates).enumerate() {
                 let ag = self.step35_attn_pre_wo(
@@ -1999,13 +2001,18 @@ impl HybridModel {
                     // q/k/v split copies vanish) + ONE varlen FA. Per-block math identical
                     // everywhere (bit-gateable); MEMRA_FA_VL=0 or a non-bf16kv config falls
                     // back to the per-seq dispatch.
-                    let (n_head, n_head_kv, head_dim) =
-                        (self.cfg.n_head as usize, self.cfg.n_head_kv as usize, self.cfg.head_dim_k as usize);
-                    let fa_scale = 1.0 / (head_dim as f32).sqrt();
+                    let geometry = self.cfg.full_attention_geometry_at(il as u32);
+                    let (n_head, n_head_kv, head_dim) = (
+                        geometry.n_head as usize,
+                        geometry.n_head_kv as usize,
+                        geometry.head_dim_k as usize,
+                    );
+                    let fa_scale = geometry.attention_scale();
                     let use_favl = !carried
                         && (2..=8).contains(&b)
                         && (head_dim == 256 || head_dim == 128)
-                        && self.cfg.attn_out_gate()
+                        && geometry.attention_gate
+                            == memra_gguf::config::AttentionGateKind::FusedQ
                         && std::env::var("MEMRA_NOFA").is_err()
                         && std::env::var("MEMRA_FA_FLOOR").is_err()
                         && std::env::var("MEMRA_FA_PP_W2").as_deref() != Ok("1")
@@ -2048,8 +2055,8 @@ impl HybridModel {
                             }
                         }).collect();
                         e.attn_pre_vl8(&pargs, fa.q_norm.float_data(), fa.k_norm.float_data(),
-                                       head_dim, self.cfg.rope_dim_count as usize, n_head, n_head_kv,
-                                       self.cfg.rms_eps, self.cfg.rope_freq_base, 1.0,
+                                       head_dim, geometry.n_rot as usize, n_head, n_head_kv,
+                                       self.cfg.rms_eps, geometry.rope_base, 1.0,
                                        kv_dim_k, kv_dim_v, ktb, vtb)?;
                         for s in 0..b {
                             let kvl = caches[s].kv[il].as_mut().unwrap();
@@ -2304,10 +2311,11 @@ impl HybridModel {
                             pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize)
                             -> Result<(CudaSlice<f32>, Option<CudaSlice<u8>>), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
-        let n_head = cfg.n_head as usize;
-        let n_head_kv = cfg.n_head_kv as usize;
-        let head_dim = cfg.head_dim_k as usize;
-        let scale = 1.0 / (head_dim as f32).sqrt();
+        let geometry = cfg.full_attention_geometry_at(il as u32);
+        let n_head = geometry.n_head as usize;
+        let n_head_kv = geometry.n_head_kv as usize;
+        let head_dim = geometry.head_dim_k as usize;
+        let scale = geometry.attention_scale();
         let (pre, base_len) = self.full_attn_prime_pre_fa(e, fa, g3, pos_d, t, cache, il)?;
         let AttnPre { q, k, v, gate } = pre;
         let mut attn = e.uninit(t * n_head * head_dim)?;
@@ -2324,15 +2332,17 @@ impl HybridModel {
                             pos_d: &CudaSlice<i32>, t: usize, cache: &mut Cache, il: usize)
                             -> Result<(AttnPre, usize), Box<dyn std::error::Error>> {
         let cfg = &self.cfg;
-        let n_head = cfg.n_head as usize;
-        let n_head_kv = cfg.n_head_kv as usize;
-        let head_dim = cfg.head_dim_k as usize;
+        let geometry = cfg.full_attention_geometry_at(il as u32);
+        let n_head = geometry.n_head as usize;
+        let n_head_kv = geometry.n_head_kv as usize;
+        let head_dim = geometry.head_dim_k as usize;
         let eps = cfg.rms_eps;
 
         // qwen35 fuses [q|gate] per head in wq (2*head_dim stride); M3/Hy3 have NO output gate
         // (attention_output_gate=false) — wq out = n_head*head_dim exactly, and q_gate_split
         // would read 2x out of bounds. `gated` keys both the split and the sigmoid epilogue.
-        let gated = cfg.attn_out_gate();
+        let gated = geometry.attention_gate
+            == memra_gguf::config::AttentionGateKind::FusedQ;
         let v = g3.pop().unwrap();
         let mut k = g3.pop().unwrap();
         let qf = g3.pop().unwrap();
@@ -2351,9 +2361,9 @@ impl HybridModel {
         let mut kn = e.uninit(t * n_head_kv * head_dim)?;
         e.rms_norm(&k, fa.k_norm.float_data(), &mut kn, head_dim, n_head_kv * t, eps)?;
         k = kn;
-        let rope_dims = cfg.rope_dim_count as usize;
-        e.rope_neox(&mut q, pos_d, head_dim, rope_dims, n_head, t, cfg.rope_freq_base, 1.0)?;
-        e.rope_neox(&mut k, pos_d, head_dim, rope_dims, n_head_kv, t, cfg.rope_freq_base, 1.0)?;
+        let rope_dims = geometry.n_rot as usize;
+        e.rope_neox(&mut q, pos_d, head_dim, rope_dims, n_head, t, geometry.rope_base, 1.0)?;
+        e.rope_neox(&mut k, pos_d, head_dim, rope_dims, n_head_kv, t, geometry.rope_base, 1.0)?;
 
         // CACHE SIDE-EFFECT: append the T post-rope K/V token rows (token-major [T, kv_dim] ==
         // the cache row layout) quantized into cache.kv[il], then advance len + device len_d.
@@ -2820,15 +2830,17 @@ impl HybridModel {
         }
         let cfg = &self.cfg;
         let _n_embd = cfg.n_embd as usize;
-        let n_head = cfg.n_head as usize;
-        let n_head_kv = cfg.n_head_kv as usize;
-        let head_dim = cfg.head_dim_k as usize;
+        let geometry = cfg.full_attention_geometry_at(il as u32);
+        let n_head = geometry.n_head as usize;
+        let n_head_kv = geometry.n_head_kv as usize;
+        let head_dim = geometry.head_dim_k as usize;
         let eps = cfg.rms_eps;
-        let scale = 1.0 / (head_dim as f32).sqrt();
+        let scale = geometry.attention_scale();
 
         // qwen35: wq output = head_dim*2*n_head (fused [q|gate] per head). M3/Hy3: NO output
         // gate — wq out = n_head*head_dim, no split (see prime-path note).
-        let gated = cfg.attn_out_gate();
+        let gated = geometry.attention_gate
+            == memra_gguf::config::AttentionGateKind::FusedQ;
         // grouped: one f16 activation convert feeds q/k/v (matmul_group)
         let mut g3 = e.matmul_group(&[&fa.wq, &fa.wk, &fa.wv], h, t)?;
         let v = g3.pop().unwrap();
@@ -2850,9 +2862,9 @@ impl HybridModel {
         let mut kn = e.uninit(t * n_head_kv * head_dim)?;
         e.rms_norm(&k, fa.k_norm.float_data(), &mut kn, head_dim, n_head_kv * t, eps)?;
         k = kn;
-        let rope_dims = cfg.rope_dim_count as usize;
-        e.rope_neox(&mut q, pos_d, head_dim, rope_dims, n_head, t, cfg.rope_freq_base, 1.0)?;
-        e.rope_neox(&mut k, pos_d, head_dim, rope_dims, n_head_kv, t, cfg.rope_freq_base, 1.0)?;
+        let rope_dims = geometry.n_rot as usize;
+        e.rope_neox(&mut q, pos_d, head_dim, rope_dims, n_head, t, geometry.rope_base, 1.0)?;
+        e.rope_neox(&mut k, pos_d, head_dim, rope_dims, n_head_kv, t, geometry.rope_base, 1.0)?;
 
         // SDPA
         let mut attn = e.uninit(t * n_head * head_dim)?;
@@ -7855,16 +7867,16 @@ impl HybridModel {
 //
 // Attention scale is the DEFAULT 1/sqrt(n_embd_head_k) (step35.cpp:255) — NOT gemma4's 1.0.
 impl HybridModel {
-    /// Per-layer attention geometry: (head_dim, n_kv, n_head, rope_base, scale, is_swa).
-    pub(crate) fn step35_geom(&self, il: usize) -> (usize, usize, usize, f32, f32, bool) {
-        let s = self.cfg.step35.as_ref().unwrap();
-        let hd = self.cfg.head_dim_k as usize;
-        (hd,
-         s.n_head_kv(il as u32) as usize,        // 8 (uniform on 3.7-Flash)
-         s.n_head(il as u32) as usize,           // 64 full / 96 SWA
-         s.rope_base(il as u32),                 // 5e6 full / 1e4 SWA
-         1.0 / (hd as f32).sqrt(),               // step35.cpp:255 kq_scale
-         s.is_swa(il as u32))
+    /// Step35's declarative geometry row. Missing rows are artifact/config errors; never
+    /// synthesize a drafter or trunk layer from a neighboring class.
+    pub(crate) fn step35_geom(&self, il: usize) -> memra_gguf::config::LayerGeometry {
+        let geometry = self.cfg.layer_geometry(il as u32)
+            .unwrap_or_else(|| panic!("step35 layer {il} has no geometry-table row"));
+        debug_assert_eq!(
+            geometry.attention_gate,
+            memra_gguf::config::AttentionGateKind::SeparateHead
+        );
+        geometry
     }
 
     /// step35 attention core: everything from the q/k/v projection outputs through the head-wise
@@ -7932,11 +7944,16 @@ impl HybridModel {
                           pos_d: &CudaSlice<i32>, t: usize,
                           cache: Option<&mut Cache>, il: usize, seq_end: usize)
                           -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        let (hd, nkv, nh, rbase, scale, swa) = self.step35_geom(il);
+        let geometry = self.step35_geom(il);
+        let hd = geometry.head_dim_k as usize;
+        let nkv = geometry.n_head_kv as usize;
+        let nh = geometry.n_head as usize;
+        let rbase = geometry.rope_base;
+        let scale = geometry.attention_scale();
+        let swa = geometry.window.is_some();
         let eps = self.cfg.rms_eps;
-        let s = self.cfg.step35.as_ref().unwrap();
-        let win = s.sliding_window as usize;
-        let n_rot = s.n_rot(il as u32) as usize;
+        let win = geometry.window.unwrap_or(0) as usize;
+        let n_rot = geometry.n_rot as usize;
 
         let v = g3.pop().unwrap();
         let k0 = g3.pop().unwrap();
@@ -7949,8 +7966,10 @@ impl HybridModel {
         e.rms_norm(&q0, fa.q_norm.float_data(), &mut q, hd, nh * t, eps)?;
         let mut k = e.uninit(t * nkv * hd)?;
         e.rms_norm(&k0, fa.k_norm.float_data(), &mut k, hd, nkv * t, eps)?;
-        let ff = if swa { None } else {
+        let ff = if geometry.rope_factors {
             self.step35_aux.as_ref().and_then(|a| a.rope_freqs.as_ref())
+        } else {
+            None
         };
         e.rope_neox2(&mut q, &mut k, pos_d, hd, n_rot, nh, nkv, t, rbase, 1.0, ff)?;
 
@@ -8147,11 +8166,16 @@ impl HybridModel {
                           pre_q: Option<(&CudaSlice<i8>, &CudaSlice<f32>)>,
                           pos_d: &CudaSlice<i32>, cache: &mut Cache)
                           -> Result<CudaSlice<f32>, Box<dyn std::error::Error>> {
-        let (hd, nkv, nh, rbase, scale, swa) = self.step35_geom(il);
+        let geometry = self.step35_geom(il);
+        let hd = geometry.head_dim_k as usize;
+        let nkv = geometry.n_head_kv as usize;
+        let nh = geometry.n_head as usize;
+        let rbase = geometry.rope_base;
+        let scale = geometry.attention_scale();
+        let swa = geometry.window.is_some();
         let eps = self.cfg.rms_eps;
-        let s = self.cfg.step35.as_ref().unwrap();
-        let win = s.sliding_window as usize;
-        let n_rot = s.n_rot(il as u32) as usize;
+        let win = geometry.window.unwrap_or(0) as usize;
+        let n_rot = geometry.n_rot as usize;
         let n_embd = self.cfg.n_embd as usize;
         let gw = fa.attn_gate.as_ref()
             .ok_or("step35 layer is missing attn_gate.weight (head-wise attention gate)")?;

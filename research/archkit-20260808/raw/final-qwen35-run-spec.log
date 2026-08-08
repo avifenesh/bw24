@@ -1,0 +1,44 @@
+source_commit=1e83e8875dd3056d0a82aca68e3961b9e7132291
+timestamp=2026-08-08T13:42:41Z
+compute_apps_at_entry:
+7600, /home/avifenesh/projects/hermes-agent/.venv/bin/python, 394 MiB
+2291278, target/release/concat-prime-probe, 12802 MiB
+index, name, memory.used [MiB], temperature.gpu
+0, NVIDIA GeForce RTX 5090 Laptop GPU, 13260 MiB, 59
+[mtp-draft] loading external MTP draft: /data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/draft-9b-owntrim-nvfp4head-q4blk.gguf
+[mtp-draft] external draft head: blk.32, source=output.weight, head_vocab=32768 (trimmed, d2t map)
+loaded qwen35 (33 layers, nextn=1)
+text prompt (472 chars, chat-templated) -> 99 tokens
+prompt tokens: [248045, 846, 198, 760, 5638, 4534, 11147, 8232, 14855, 10480, 6009, 13914, 494, 23683, 7575, 1472, 46120, 3357, 26502, 888, 87567, 1083, 3545, 4779, 11, 1332, 9966, 1452, 5344, 3947, 61369, 23304, 1070, 13, 8618, 6228, 369, 16384, 3658, 440, 279, 3672, 11, 1521, 264, 10281, 9705, 628, 9959, 264, 795, 1395, 14043, 29551, 13, 58737, 11, 2923, 539, 2923, 11, 1204, 264, 20340, 8404, 17830, 15089, 23776, 47493, 321, 49703, 1141, 11312, 364, 264, 3074, 3817, 11, 321, 10033, 864, 6228, 80018, 37972, 948, 279, 6009, 5883, 34105, 3545, 4779, 13, 248046, 198, 248045, 74455, 198, 248068, 198]
+
+[generate]   31 tok in 0.222s = 139.37 tok/s (gen-only; this run's prime 0.037s)
+  tokens: [8160, 579, 264, 7047, 1817, 421, 11177, 310, 279, 11488, 4087, 25, 271, 16, 13, 220, 2972, 2014, 53983, 279, 5952, 64700, 198, 262, 348, 256, 2972, 25562, 64700, 14269, 4534, 11147]
+
+[generate_spec K=1] 32 tok in 0.155s = 199.42 tok/s (1.43x vs generate; this run's prime 0.039s)
+  acceptance: 15/16 = 93.8%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=2] 32 tok in 0.113s = 274.59 tok/s (1.97x vs generate; this run's prime 0.040s)
+  acceptance: 21/22 = 95.5%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=3] 32 tok in 0.103s = 301.79 tok/s (2.17x vs generate; this run's prime 0.040s)
+  acceptance: 24/27 = 88.9%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=4] 32 tok in 0.109s = 284.34 tok/s (2.04x vs generate; this run's prime 0.041s)
+  acceptance: 25/32 = 78.1%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=5] 32 tok in 0.091s = 338.93 tok/s (2.43x vs generate; this run's prime 0.040s)
+  acceptance: 27/30 = 90.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=6] 32 tok in 0.100s = 310.71 tok/s (2.23x vs generate; this run's prime 0.040s)
+  acceptance: 27/36 = 75.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=7] 32 tok in 0.093s = 333.46 tok/s (2.39x vs generate; this run's prime 0.040s)
+  acceptance: 28/35 = 80.0%   self-consistency: PASS (identical to generate)
+
+[generate_spec K=8] 32 tok in 0.110s = 282.41 tok/s (2.03x vs generate; this run's prime 0.039s)
+  acceptance: 28/40 = 70.0%   self-consistency: PASS (identical to generate)
+
+=== SELF-CONSISTENCY PASS ===
+finished=2026-08-08T13:43:57Z
+index, memory.used [MiB], temperature.gpu
+0, 430 MiB, 65

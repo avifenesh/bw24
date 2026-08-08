@@ -1,0 +1,87 @@
+source_commit=3e12cc625f1137ab3dfae7344264b5501f04d251
+candidate_tree=89d1d368af7db1d0fbfc6097026c8447a1437213
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running unittests src/lib.rs (target/debug/deps/memra_gguf-de66bc9a84b68bda)
+
+running 78 tests
+test hf_mapping::tests::hy3_moe_names ... ok
+test dequant::tests::bf16_known_values ... ok
+test hf_mapping::tests::expert_names ... ok
+test dequant::tests::nvfp4_table_and_finite ... ok
+test config::hf_tests::qwen35_mtp_layer_is_explicit_full_attention_geometry ... ok
+test hf_mapping::tests::hy3_appended_mtp_names_use_layer_namespace ... ok
+test hf_mapping::tests::block_perm_alignment ... ok
+test config::hf_tests::parse_hy3_reap_config ... ok
+test config::hf_tests::nested_text_config_hybrid ... ok
+test config::hf_tests::parse_qwen3_dense ... ok
+test hf_mapping::tests::fp8_blk_non_aligned_refused ... ok
+test dequant::tests::bf16_dequant_on_use_kernel_contract ... ok
+test dequant::tests::q8_0_roundtrip_simple ... ok
+test dequant::tests::q5k_no_nan_zeromean ... ok
+test dequant::tests::iq3s_vs_ggml_oracle ... ok
+test config::minimax_tests::minimax_name_mapping_against_index ... ok
+test config::minimax_tests::parse_minimax_m3_vl ... ok
+test hf_mapping::tests::norm_transform_is_arch_specific ... ok
+test dequant::tests::fp16_known_values ... ok
+test dequant::tests::q3k_hmask_offset ... ok
+test config::hf_tests::head_dim_fallback ... ok
+test dequant::tests::q2k_planes_scales_and_minimum ... ok
+test config::hf_tests::moe_config ... ok
+test micro_gguf::tests::non_glm_arch_has_no_mla ... ok
+test hf_mapping::tests::per_layer_dense ... ok
+test micro_gguf::tests::parse_step35_mtp_drafter_metadata_and_trunk_fallback_trap ... ok
+test micro_gguf::tests::parse_step35_pinned_metadata ... ok
+test nvfp4_repack::fp8_tests::e4m3_encode_roundtrip ... ok
+test nvfp4_repack::fp8_tests::e4m3_known_values ... ok
+test hf_mapping::tests::top_level_names ... ok
+test hf_mapping::tests::qwen35_moe_appended_mtp_names_use_mtp_namespace ... ok
+test nvfp4_repack::tests::col_perm_nvfp4_equals_f32 ... ok
+test nvfp4_repack::tests::f32_to_nvfp4_roundtrip_class_error ... ok
+test hf_mapping::tests::unmapped_returns_none ... ok
+test hf_mapping::tests::v_reorder_permutation ... ok
+test hf_mapping::tests::v_reorder_rows ... ok
+test nvfp4_repack::tests::nibble_order_conversion ... ok
+test nvfp4_repack::tests::repack_roundtrip_matches_modelopt ... ok
+test nvfp4_repack::tests::row_perm_nvfp4_equals_f32 ... ok
+test source::m3_probe::minimax_m3_lm_head_q8 ... ok
+test safetensors::tests::synthetic_dequant_through_path ... ok
+test safetensors::tests::multi_shard_index_routing ... ok
+test nvfp4_repack::tests::split_plane_matches_gguf_blocks ... ok
+test safetensors::tests::real_qwen3_17b_config ... ok
+test safetensors::tests::synthetic_header_roundtrip ... ok
+test source::f8_block128::scale_shape_detection ... ok
+test source::f8_block128::fp8_native_carries_block_grid ... ok
+test micro_gguf::tests::parse_glm52_pinned_metadata ... ok
+test safetensors::tests::fp8_panics_explicitly - should panic ... ok
+test source::compressed_tensors_roundtrip::ct_global_scale_inversion ... ok
+test safetensors::tests::single_file_model_open ... ok
+test source::compressed_tensors_roundtrip::modelopt_scale2_direct_borrow ... ok
+test source::hy3_repack_probe::hy3_inventory_dtype_shape_assertions ... ok
+test source::hy3_repack_probe::hy3_manifest_offset_roundtrip ... ok
+test source::hy3_repack_probe::hy3_load_plan_dry_run_no_cuda ... ok
+test micro_gguf::tests::parse_glm52_without_indexer_types_key ... ok
+test source::tests::manifest_payload_paths_cannot_escape_artifact_root ... ok
+test source::f8_block128::per_tensor_scale_class_unchanged ... ok
+test source::tests::expert_mmap_advice_parser_preserves_random_default ... ok
+test source::tests::expert_overlay_overrides_selected_tensor_and_falls_back_to_hf ... ok
+test source::tests::safetensors_source_find_maps_names ... ok
+test source::tests::hy3_expert_bias_resolves_current_and_preview_keys ... ok
+test source::tests::v2_overlay_supports_repack_fallback_offsets_and_prune_mask ... ok
+test split_tests::split_shard_with_a_nonstandard_filename_is_a_clear_error ... ok
+test split_tests::split_model_presents_one_merged_tensor_table ... ok
+test split_tests::any_shard_is_a_valid_entry_point ... ok
+test split_tests::tensor_file_range_is_relative_to_the_owning_shard ... ok
+test split_tests::single_file_gguf_is_unchanged_one_shard ... ok
+test split_tests::a_non_gguf_file_is_an_error_not_a_panic ... ok
+test hf_mapping::tests::fp8_blk_v_reorder_is_exact ... ok
+test source::f8_block128::block128_dequant_bit_exact ... ok
+test safetensors::tests::real_qwen3_17b_header ... ok
+test source::f8_block128::qwen_official_fp8_find_q8_0_roundtrip ... ok
+test micro_gguf::tests::micro_fixture_parse_and_tensor_audit ... ok
+test micro_gguf::tests::micro_fixture_kv_b_split_convention ... ok
+test source::nv27b_twin_parity::nvidia_27b_vs_gguf_twin_f32_parity ... ok
+test source::nv27b_probe::nvidia_27b_dtype_routing ... ok
+test source::nv27b_probe::nvidia_27b_mtp_mapping ... ok
+
+test result: ok. 78 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 20.73s
+

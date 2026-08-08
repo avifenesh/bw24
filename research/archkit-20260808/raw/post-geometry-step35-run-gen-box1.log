@@ -1,0 +1,29 @@
+candidate_tree=89d1d368af7db1d0fbfc6097026c8447a1437213
+2026-08-08T13:07:49+00:00
+0, NVIDIA RTX PRO 6000 Blackwell Server Edition, 0 MiB, 0 %
+1, NVIDIA RTX PRO 6000 Blackwell Server Edition, 0 MiB, 0 %
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 trunk layers; optional MTP skipped)
+prompt text: "The storage-to-compute pipeline moves expert weights from NVMe through pinned host buffers over PCIe into device memory, where quantized matvec kernels consume them. Each stage is measured together with the others, because a faster kernel can hide a data-movement regression. Describe, step by step, how a mixture-of-experts decoder selects and executes its experts for a single token, and explain which stage dominates latency when the expert bank exceeds device memory.\n"
+prompt tokens: [0, 671, 8412, 6005, 15246, 39105, 28499, 14712, 8739, 23997, 538, 60944, 9130, 1407, 83119, 5908, 84152, 1060, 63310, 71, 1055, 5291, 6464, 14, 1479, 5059, 1766, 1781, 8086, 87375, 28907, 1066, 16, 8829, 6632, 344, 9720, 3672, 418, 270, 3628, 14, 1754, 260, 13058, 29009, 588, 20118, 260, 1499, 2641, 105209, 18103, 16, 39843, 14, 3132, 513, 3132, 14, 1192, 260, 13376, 9934, 86473, 1648, 67940, 63203, 305, 74638, 1009, 13523, 362, 260, 4031, 17840, 14, 305, 8470, 778, 6632, 81252, 52636, 1082, 270, 8739, 6939, 38504, 5291, 6464, 603]
+prefill argmax=128799  decode argmax=128799  logit maxdiff=1.983e0  MATCH
+batched-prime argmax=128799  tokenwise argmax=128799  logit maxdiff=1.945e0  MATCH
+prefill 91 tok in 1.0926s = 83.3 tok/s (pp91)
+generated 32 tokens in 0.819s = 39.05 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.421s) [stop: MaxNew]
+tokens: [128799, 201, 795, 8850, 10531, 75405, 30872, 73815, 295, 260, 21857, 10672, 9934, 15, 123047, 343, 28608, 39, 11, 5629, 14880, 271, 19, 16, 2619, 14907, 99761, 666, 2143, 262, 565, 455]
+MoE cache: 15346 slots | cumulative hits=141384 misses=9312 (hit-rate=93.8%) | Stage-1 baseline = 2678 MB/decode-token (every block, every layer, every token)
+MoE cache STEADY-STATE (32 tokens after warmup): hit-rate=0.0% | 0.0 MB/decode-token (vs 2678 MB/token Stage-1 => infx less PCIe)
+OUTPUT TEXT: "</think>\n### Step-by-Step Expert Execution in a Mixture-of-Experts (MoE) Decoder\n\n1. **Token Routing**  \n   - The"
+--- generated text ---
+</think>
+### Step-by-Step Expert Execution in a Mixture-of-Experts (MoE) Decoder
+
+1. **Token Routing**  
+   - The
+0, NVIDIA RTX PRO 6000 Blackwell Server Edition, 0 MiB, 39 %
+1, NVIDIA RTX PRO 6000 Blackwell Server Edition, 0 MiB, 41 %
+run_gen_rc=0
+2026-08-08T13:08:41+00:00

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Generated architecture gate wrapper. Re-run tools/generate-arch-gates.py to change it.
+set -uo pipefail
+
+GATE_NAME={{GATE_NAME}}
+ARTIFACT_ENV={{ARTIFACT_ENV}}
+DEFAULT_ARTIFACT={{DEFAULT_ARTIFACT}}
+MODEL="${!ARTIFACT_ENV:-}"
+[ -n "$MODEL" ] || MODEL="$DEFAULT_ARTIFACT"
+[ -f "$MODEL" ] || {
+  echo "$GATE_NAME: SKIP (no artifact at $MODEL; set $ARTIFACT_ENV)"
+  exit 0
+}
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$HERE"
+while [ "$ROOT" != / ] && [ ! -x "$ROOT/tools/tick-invariance-gate.sh" ]; do
+  ROOT="$(dirname "$ROOT")"
+done
+[ -x "$ROOT/tools/tick-invariance-gate.sh" ] || {
+  echo "$GATE_NAME: FAIL (cannot locate tools/tick-invariance-gate.sh)"
+  exit 1
+}
+cd "$ROOT" || exit 1
+ARGS=(
+  --label {{LABEL}}
+  --prompts {{PROMPTS}}
+  --budgets {{BUDGETS}}
+  --seam {{SEAM}}
+  --steps {{STEPS}}
+)
+SPLITS={{SPLITS}}
+[ -n "$SPLITS" ] && ARGS+=(--splits "$SPLITS")
+exec tools/tick-invariance-gate.sh "$MODEL" "${ARGS[@]}" "$@"
