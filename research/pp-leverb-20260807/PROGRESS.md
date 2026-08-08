@@ -280,3 +280,53 @@ Ranges are disjoint (B's max 137.2 < A's min 140.4 < C's overlap with A). Therma
 3. Decode side effect (single-run, not a claim): G3 gen-only 18.74 tok/s (A) vs 16.12 (B).
    The slab arm can only help decode (no lock, no miss on stage-0 layers); a real decode
    receipt needs its own interleaved N=5 — deferred until after the walker.
+
+### The provenance bit-cmp (follow-up to the G3cmp harness bug; `raw/inc2-bitcmp-20260808T013715Z.log`)
+
+The battery's cmp slot compared a MISSING file (its run-gen invocation lacked
+`MEMRA_PP_ONLY`, the mode that writes `MEMRA_PP_LOGITS`) — harness bug, fixed by a focused
+4-arm rerun over the pp4096 prompt: naked vs `MEMRA_MOE_SLAB=0` (dispatch-class pair) AND
+`MEMRA_MOE_GDEC=0` x both (the true provenance-only pair, identical per-expert kernels).
+**All three comparisons: 0 differing bytes** — slab-vs-SLRU provenance exact, fused-pair vs
+per-expert qmatvec exact, class pair exact at this prompt.
+
+## Increment 3 — THE PRIME STAGE SPLIT (walker commit `564fb04d`), gate GREEN, 141 → 266 tok/s
+
+What landed: `prime_layers` extracted from `prime_chunk` to the `decode_layers_eager(lo,hi)`
+contract (range-local add+norm fusion; the S-glue capture path gated to the full range);
+per-device prime slabs (HashMap on engine ordinal); shared `prime_chunk_epilogue` on the
+last stage; `prime_chunk_ppn` — the decode/verify split structure verbatim (stage 0 embed +
+range + tx; middle rx/range/tx; last rx + range + epilogue), with `fence_stages_behind` at
+entry (#87), per-stage `pos_d`, `publish_to` at exit, and the `PRIME_SPLIT_CHUNKS` liveness
+bump. `ppprime` now builds `pp::new_cache` caches (the wrong-card-KV harness class).
+
+### Battery (`raw/inc3-battery-20260808T023006Z.log`, one flock hold)
+
+| gate | verdict |
+|---|---|
+| G4 prime-split-gate | **GREEN**: `SPLIT BIT-IDENTICAL + LIVE (T=4883, chunks=4096,513, 8 decode steps)` — logits/h_seed/[T,n_embd] hiddens/teacher-forced decode all 0 differing bits, liveness counter advanced |
+| G4c ppsplitc canary | **teeth proven**: forced-unsplit flips the verdict RED |
+| G2/G2c chunkinv35 + canary | **PASS / teeth** (split prime live — chunk-invariance composes with the split) |
+| G1 kernel-check FULL | **ALL GREEN** |
+| G3 run-gen PP-2 | **MATCH** (argmax 6776, batched-prime MATCH) |
+| G5 run-spec K=1..8 | **8/8 PASS**, acceptance digit-for-digit at the pin (82.4% K=1, flat-15) |
+
+### Perf: pp4096, split vs unsplit, N=5 rep-major interleaved, one hold
+
+| arm | pp4096 tok/s (5 reps) | median |
+|---|---|---|
+| S split (naked default) | 265.6, 266.3, 266.1, 266.4, 266.1 | **266.1** |
+| U unsplit (`MEMRA_PRIME_PP=0`) | 141.5, 141.6, 141.5, 141.8, 141.4 | **141.4** |
+
+**141 → 266 tok/s = 1.88x, spread 0.3%, ranges disjoint by 124 tok/s.** Thermal 30-37C,
+2325-2400 MHz, cards 0 MiB before/after. The U arm reproduces the Lever-A baseline
+(141.4 vs 141.1-141.5 across receipts) — same-binary, same-hold control.
+
+Against the A+B projection (~420-450): the walker alone lands at 266 — the projection's
+remaining share was (a) the residency flip's staging kill (measured ~nothing at pp4096 —
+already overlapped; the slab arm's win shows up as stage-locality now that stage-1 MoE
+dispatch runs on dev1's engine with its own SLRU/slabs) and (b) CHUNK PIPELINING
+(stage-0 chunk N+1 under stage-1 chunk N — step 6, explicitly cut-to-follow-up material).
+At 266 tok/s serial-split, the two stages are ~balanced (22+23 layers), so pipelining's
+ceiling is ~2x → the 400-500 class is exactly its territory, consistent with the original
+projection arithmetic.
