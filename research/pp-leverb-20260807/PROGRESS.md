@@ -363,11 +363,17 @@ arc across the two lanes: **38.2 s (floor) → 32.0 s (Lever A) → 15.5 s (Leve
   default landed (~14:00Z): a verdict calibrated on the old kernel class, exactly the
   re-sweep law from the H100 lane. **Hypothesis CONFIRMED**
   (`raw/tickinvc-floor-20260808T034539Z.log`): floor-arm canary BREAKS the assertion
-  (teeth), floor-arm naked still PASSes (the tick-seg fix holds on both classes). Gate
-  fix: the CALLLOCAL canary now pins the floor class (`MEMRA_STEP35_SWA_FA=0` joins the
-  injection env when the seam is MEMRA_PRIME_CALLLOCAL) — the naked gate stays on the
-  shipping default; only the injection arm changes class. T1c re-run green
-  (`raw/tickinvc-refix-*.log`).
+  (teeth), floor-arm naked still PASSes (the tick-seg fix holds on both classes).
+  **Collision + resolution:** lane/v072-blockers found the same inert canary in the v0.72
+  battery and fixed it in the ENGINE (`73c65c91`, merged at `d8363ccd`):
+  `MEMRA_PRIME_CALLLOCAL=1` now restores BOTH halves of the pre-fix arithmetic (per-call
+  predicate + the raw unaligned SWA view offset), which bites on the SHIPPED FA default —
+  the stronger contract than this lane's floor-class pin (`MEMRA_STEP35_SWA_FA=0` in the
+  canary env). Rebased onto `d8363ccd`, the gate-script class pin is DROPPED in favor of
+  the engine fix; this lane's floor-arm receipts stand as the complementary evidence that
+  the tick-seg fix holds on both numeric classes, and the canary-history + re-sweep law
+  note is recorded in the gate script. The interim class-pin canary run also passed
+  (`raw/tickinvc-refix-20260808T040644Z.log`) but is superseded.
 - **G7 pp512/pp2048 split-vs-unsplit N=5 interleaved** (STOP-bar check — no small-prompt
   regression allowed):
 

@@ -89,27 +89,25 @@ LOG=$(mktemp /tmp/tickinv-gate-XXXXXX.log)
 # restores the per-call seq_end (the pre-fix arithmetic, tick-variant by construction), so a
 # working gate must report FAIL on the canary run.
 #
-# CANARY CLASS PIN (lane/pp-leverb 2026-08-08 — the THIRD vacuous-canary find on this arch):
-# after Lever A made windowed FA the SWA default, MEMRA_PRIME_CALLLOCAL=1 alone became
-# bitwise INERT: a tick whose call-local seq_end is <= win covers only positions < win, whose
-# views hold no maskable key, and on such views the windowed and unwindowed FA kernels agree
-# bit-for-bit (the battery-2 G2c identity) — so the injected "break" broke nothing and the
-# canary matched (receipt: research/pp-leverb-20260807/raw/inc3b-battery-*, T1c). The canary
-# therefore ALSO pins the floor class (MEMRA_STEP35_SWA_FA=0), where the per-call predicate
-# selects between genuinely different numeric classes (windowed f32 floor vs FA) and the
-# CALLLOCAL mechanism has teeth — measured: floor-arm canary breaks the assertion, floor-arm
-# naked still PASSes (raw/tickinvc-floor-20260808T*.log, both receipts). The naked gate stays
-# on the shipping default; only the injection arm pins the class. This is the H100 re-sweep
-# law: this canary was calibrated 2026-08-07 02:20Z, BEFORE the FA default (~14:00Z) moved
-# the kernels under it.
+# CANARY HISTORY (the THIRD vacuous-canary find on this arch, found independently by
+# lane/pp-leverb and the v072 battery on 2026-08-08): after Lever A made windowed FA the
+# SWA default, a predicate-only MEMRA_PRIME_CALLLOCAL=1 became bitwise INERT — a tick whose
+# call-local seq_end is <= win covers only positions < win, whose views hold no maskable
+# key, and on such views windowed==unwindowed FA bit-for-bit (the battery-2 G2c identity).
+# FIXED IN THE ENGINE (lane/v072-blockers, 73c65c91): the seam now restores BOTH halves of
+# the pre-fix arithmetic — the per-call predicate AND the raw (unaligned) SWA view offset,
+# whose tile-grid regrouping is the live segmentation-variant mechanism ON THE SHIPPED FA
+# DEFAULT — so this script needs no class-pinning env. Independent floor-class receipts
+# (lane/pp-leverb, raw/tickinvc-floor-20260808T*.log): the floor arm's canary bites and its
+# naked run PASSes, so the tick-seg fix holds on BOTH numeric classes. THE LAW this find
+# re-teaches (H100 lane, rounds 35-36): canaries are calibrated against a kernel class —
+# re-sweep them when the class under them moves (this one was calibrated 2026-08-07 02:20Z,
+# the FA default landed ~14:00Z the same day).
 WANT="$EXPECT"
 LEGACY=off
 [ "$CANARY" = 1 ] && LEGACY=on
 ENVX=()
 [ "$LEGACY" = on ] && ENVX=("$SEAM=1")
-if [ "$CANARY" = 1 ] && [ "$SEAM" = MEMRA_PRIME_CALLLOCAL ]; then
-    ENVX+=("MEMRA_STEP35_SWA_FA=0")
-fi
 
 rc_all=0
 saw_variant=0
