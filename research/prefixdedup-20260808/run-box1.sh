@@ -85,24 +85,36 @@ run_arm() {
   thermal
 }
 
+locked_run() {
+  trap stop_server EXIT
+  thermal
+  run_arm dedup-off 0 cold || return 1
+  run_arm dedup-on 1 dedup || return 1
+}
+
 {
   echo "=== prefix fanout TTFT ts=$TS commit=$(git rev-parse HEAD)"
   echo "binary=$BIN sha256=$(sha256sum "$BIN" | awk '{print $1}')"
   echo "model=$MODEL bytes=$(stat -c %s "$MODEL")"
   echo "protocol=one warmup plus one N=$N barrier burst per arm; K=$K suffix=$SUFFIX"
-  (
-    flock -w 14400 9 || {
-      echo "LOCK TIMEOUT"
-      exit 75
-    }
-    trap stop_server EXIT
-    echo "lock acquired $(date -u +%FT%TZ)"
-    thermal
-    run_arm dedup-off 0 cold || exit 1
-    run_arm dedup-on 1 dedup || exit 1
-    echo "lock released $(date -u +%FT%TZ)"
-  ) 9>/tmp/memra-gpu.lock
-  rc=$?
+  if [[ ${MEMRA_GPU_LOCK_HELD:-0} == 1 ]]; then
+    echo "using caller-held GPU lock $(date -u +%FT%TZ)"
+    locked_run
+    rc=$?
+  else
+    (
+      flock -w 14400 9 || {
+        echo "LOCK TIMEOUT"
+        exit 75
+      }
+      echo "lock acquired $(date -u +%FT%TZ)"
+      locked_run
+      rc=$?
+      echo "lock released $(date -u +%FT%TZ)"
+      exit "$rc"
+    ) 9>/tmp/memra-gpu.lock
+    rc=$?
+  fi
   echo "=== prefix fanout TTFT rc=$rc"
   echo "results=$RESULTS"
   echo "=== done $(date -u +%FT%TZ)"
