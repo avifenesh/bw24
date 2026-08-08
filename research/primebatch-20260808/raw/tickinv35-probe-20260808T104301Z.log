@@ -1,0 +1,17 @@
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+tickinv: T=4883 chat=false budgets=[0, 1024, 513, 512, 256, 64] splits=[64, 256, 512] steps=24 PRIME_MIN_T=16 (budget 0 = single monolithic call)
+ref budget=0 calls=1 argmax=128799
+ budget | calls | logits | first_div_row | maxdiff   | argmax | stream_div
+   1024 |     5 | EXACT |            -1 | 0.000e0 | - | identical
+    513 |    10 | EXACT |            -1 | 0.000e0 | - | identical
+    512 |    10 | EXACT |            -1 | 0.000e0 | - | identical
+    256 |    20 | EXACT |            -1 | 0.000e0 | - | identical
+     64 |    77 | EXACT |            -1 | 0.000e0 | - | identical
+   sp64 |     2 | EXACT |            -1 | 0.000e0 | - | identical
+  sp256 |     2 | EXACT |            -1 | 0.000e0 | - | identical
+  sp512 |     2 | EXACT |            -1 | 0.000e0 | - | identical
+tickinv verdict: TICK-INVARIANT — prefill logits bit-identical at every per-tick prefill budget

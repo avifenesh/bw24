@@ -1,0 +1,27 @@
+=== step35-b2-geometry-gate tag=naked ts=20260808T115711Z model=/home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf draft=/home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf ===
+lock acquired 2026-08-08T11:57:11Z
+0, 0 MiB
+1, 0 MiB
+--- c=1 reference (greedy) ---
+{"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+--- c=2 concurrent identical requests ---
+{"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+{"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+--- c=4 concurrent identical requests ---
+{"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+{"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+{"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+{"reasoning": "Got it, let's tackle this. First, the first eight primes: let's list them out. 2, 3, 5, 7, 11, 13, 17, 19. Right, that", "content": ""}
+0, 0 MiB
+1, 0 MiB
+lock released 2026-08-08T11:57:56Z
+c2[1] == ref
+c2[2] == ref
+c4[1] == ref
+c4[2] == ref
+c4[3] == ref
+c4[4] == ref
+chunk cap 8 >= 2 OK
+batched-walk evidence OK: [step35-batch] first B>1 batched step35 walk: B=2 layers=[0,22)
+server log: research/step35-batch-20260808/raw/b2geo35-server-naked-20260808T115711Z.log
+VERDICT: PASS (c=2/c=4 byte-identical to c=1, batched ticks proven)
