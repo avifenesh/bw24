@@ -1295,6 +1295,149 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                      std::env::var("MEMRA_PRIME_CALLLOCAL").unwrap_or_else(|_| "0".into()));
         }
 
+        // PRIME PIPELINE THROUGHPUT (lane/cx-pipeline-prime, 2026-08-08). Compare the
+        // serial and pipelined stage walkers over one sharded model load. Each repetition
+        // runs both arms, with order alternated to control clock drift. Liveness is part of
+        // the measurement contract: both arms must split, SERIAL must not overlap, and PIPE
+        // must overlap every adjacent internal chunk pair.
+        //   pppipeperf <model> pppipeperf --prompt-a <txt|@f> [--reps 5] [--warmup 1]
+        "pppipeperf" => {
+            let pa = text_arg(&rest, "--prompt-a").expect("--prompt-a");
+            let reps: usize = arg(&rest, "--reps").and_then(|v| v.parse().ok()).unwrap_or(5);
+            let warmup: usize = arg(&rest, "--warmup").and_then(|v| v.parse().ok()).unwrap_or(1);
+            assert!(reps > 0, "pppipeperf --reps must be at least 1");
+            let ids = cx.tok.encode(&pa, true);
+            let t = ids.len();
+            let min_t = memra_engine::hybrid_forward::PRIME_MIN_T;
+            let chunk_s =
+                std::env::var("MEMRA_PRIME_CHUNK").unwrap_or_else(|_| "4096".into());
+            let chunk: usize = chunk_s.parse().expect("MEMRA_PRIME_CHUNK must be an integer");
+            let expected = if chunk == 0 || t <= chunk {
+                1
+            } else {
+                let (mut n, mut start) = (0usize, 0usize);
+                while start < t {
+                    let mut end = (start + chunk).min(t);
+                    if t - end > 0 && t - end < min_t {
+                        end = t;
+                    }
+                    n += 1;
+                    start = end;
+                }
+                n
+            };
+            let expected_overlaps = expected.saturating_sub(1);
+            assert!(
+                memra_engine::pp::pp_cuts(cx.model.layers.len()).is_some(),
+                "pppipeperf requires an open PP door"
+            );
+            assert!(
+                expected >= 2,
+                "pppipeperf requires at least two internal chunks (T={t}, chunk={chunk})"
+            );
+            println!(
+                "pppipeperf: T={t} chunk={chunk} chunks={expected} expected_overlaps={} \
+                 reps={reps} warmup={warmup} devices={}",
+                expected_overlaps,
+                std::env::var("MEMRA_PP_DEVICES").unwrap_or_else(|_| "unset".into()),
+            );
+
+            let run_arm = |pipe: bool|
+                           -> Result<(f64, usize, usize), Box<dyn std::error::Error>> {
+                unsafe {
+                    std::env::remove_var("MEMRA_PRIME_PP");
+                    if pipe {
+                        std::env::remove_var("MEMRA_PRIME_PIPE");
+                    } else {
+                        std::env::set_var("MEMRA_PRIME_PIPE", "0");
+                    }
+                }
+                let split0 = memra_engine::pp::prime_split_chunks();
+                let overlap0 = memra_engine::pp::prime_pipe_overlaps();
+                let mut c = memra_engine::pp::new_cache(&cx.e, &cx.model.cfg, t + 8)?;
+                let t0 = std::time::Instant::now();
+                let _ = cx.model.prime_cache(&cx.e, &ids, &mut c, 0)?;
+                cx.e.stream().synchronize()?;
+                let dt = t0.elapsed().as_secs_f64();
+                Ok((
+                    dt,
+                    memra_engine::pp::prime_split_chunks() - split0,
+                    memra_engine::pp::prime_pipe_overlaps() - overlap0,
+                ))
+            };
+            let validate = |name: &str, split: usize, overlaps: usize| {
+                let live = split >= expected
+                    && if name == "PIPE" {
+                        overlaps >= expected_overlaps
+                    } else {
+                        overlaps == 0
+                    };
+                assert!(
+                    live,
+                    "{name} not live: split={split} overlaps={overlaps}, \
+                     need split>={expected} and overlaps{}",
+                    if name == "PIPE" {
+                        format!(">={expected_overlaps}")
+                    } else {
+                        "=0".into()
+                    }
+                );
+            };
+
+            for w in 0..warmup {
+                for (name, pipe) in [("SERIAL", false), ("PIPE", true)] {
+                    let (dt, split, overlaps) = run_arm(pipe)?;
+                    validate(name, split, overlaps);
+                    println!(
+                        "  warmup {} arm={name}: {t} tok in {dt:.4}s = {:.1} tok/s \
+                         split={split} overlaps={overlaps}",
+                        w + 1,
+                        t as f64 / dt,
+                    );
+                }
+            }
+
+            let mut serial_times = Vec::with_capacity(reps);
+            let mut pipe_times = Vec::with_capacity(reps);
+            for rep in 1..=reps {
+                let order = if rep % 2 == 1 {
+                    [("SERIAL", false), ("PIPE", true)]
+                } else {
+                    [("PIPE", true), ("SERIAL", false)]
+                };
+                for (name, pipe) in order {
+                    let (dt, split, overlaps) = run_arm(pipe)?;
+                    validate(name, split, overlaps);
+                    println!(
+                        "  rep {rep} arm={name}: {t} tok in {dt:.4}s = {:.1} tok/s \
+                         split={split} overlaps={overlaps}",
+                        t as f64 / dt,
+                    );
+                    if pipe {
+                        pipe_times.push(dt);
+                    } else {
+                        serial_times.push(dt);
+                    }
+                }
+            }
+            unsafe {
+                std::env::remove_var("MEMRA_PRIME_PP");
+                std::env::remove_var("MEMRA_PRIME_PIPE");
+            }
+            serial_times.sort_by(f64::total_cmp);
+            pipe_times.sort_by(f64::total_cmp);
+            let serial_med = serial_times[serial_times.len() / 2];
+            let pipe_med = pipe_times[pipe_times.len() / 2];
+            println!(
+                "pppipeperf MEDIAN: SERIAL {:.1} tok/s ({serial_med:.4}s) | \
+                 PIPE {:.1} tok/s ({pipe_med:.4}s) | speedup {:.3}x | N={reps} \
+                 alternating order, chunk={chunk}, chunks={expected}",
+                t as f64 / serial_med,
+                t as f64 / pipe_med,
+                serial_med / pipe_med,
+            );
+        }
+
         // PRIME PP SCHEDULE BIT-IDENTITY (lane/pp-leverb + lane/cx-pipeline-prime,
         // 2026-08-08). Three arms in ONE process
         // over the SAME sharded load (the door must be open BEFORE the probe starts — the
