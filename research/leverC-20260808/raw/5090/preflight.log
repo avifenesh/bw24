@@ -1,0 +1,11 @@
+=== Lever C local 5090 rig snapshot ===
+recorded_utc=2026-08-08T13:48:30Z
+branch=lane/cx-moe-grouped-prefill
+head=3a491bcfcafc66e6283b02a244ab0944fdfdca4a
+power_profile=performance
+--- gpu ---
+0, NVIDIA GeForce RTX 5090 Laptop GPU, 52, 0 %, 430 MiB, 24463 MiB, 172 MHz, P8
+--- compute apps ---
+7600, /home/avifenesh/projects/hermes-agent/.venv/bin/python, 394 MiB
+gpu5090_lock=available
+lock_probe_rc=0

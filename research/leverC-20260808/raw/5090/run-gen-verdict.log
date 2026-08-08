@@ -1,0 +1,34 @@
+=== Lever C local 5090 run-gen verdict ===
+source_commit=3a491bcfcafc66e6283b02a244ab0944fdfdca4a
+prompt_sha256=dc91551b1e83414616ebb8d65ee88d1af1fc8792dadffe0208b732d094adfc0d
+protocol=explicit MEMRA_MOE_GROUPED=1; require both run-gen argmax MATCH lines on each requested local model; require grouped dispatch evidence for the qwen-class grouped dispatch set
+
+kat:
+  raw=run-gen-kat.log
+  process_rc=0
+  prefill_argmax=271 decode_argmax=271 verdict=MATCH
+  batched_prime_argmax=271 tokenwise_argmax=271 verdict=MATCH
+  grouped_dispatch_lines=200 dispatch=resident-q8-rows
+  oom_lines=0
+  assertion=PASS
+
+gemma26b:
+  raw=run-gen-gemma26b.log
+  process_rc=0
+  prefill_argmax=236786 decode_argmax=236786 verdict=MATCH
+  batched_prime_argmax=236786 tokenwise_argmax=236786 verdict=MATCH
+  grouped_dispatch_lines=0 note=Gemma uses its separate GELU MoE entry point; this gate requires its two run-gen MATCH lines
+  oom_lines=0
+  assertion=PASS
+
+q35:
+  raw=run-gen-q35.log
+  process_rc=0
+  prefill_argmax=8160 decode_argmax=8160 verdict=MATCH
+  batched_prime_argmax=8160 tokenwise_argmax=8160 verdict=MATCH
+  grouped_dispatch_lines=200 dispatch=resident-q8-rows
+  oom_lines=0
+  assertion=PASS
+
+battery_rc=0
+run_gen_assertion=PASS

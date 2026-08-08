@@ -1,0 +1,14 @@
+=== Lever C post-rollback release build ===
+started_utc=2026-08-08T13:48:45Z
+source_commit=3a491bcfcafc66e6283b02a244ab0944fdfdca4a
+dirty_diff_sha256=a0c5c9400c41f5e467fdc721a54ae631e00ffad20af424d6dd3382f282c6943c
+rustc=rustc 1.97.1 (8bab26f4f 2026-07-14)
+cargo=cargo 1.97.1 (c980f4866 2026-06-30)
+nvcc=Build cuda_13.1.r13.1/compiler.37061995_0
+warning: memra-engine@0.72.0: nvcc from $CUDA_HOME: /usr/local/cuda-13.1/bin/nvcc
+warning: memra-engine@0.72.0: MEMRA_CUDA_ARCH auto-detected 120a (compute_cap 12.0); set MEMRA_CUDA_ARCH to override
+   Compiling memra-engine v0.72.0 (/home/avifenesh/projects/wt-cx-leverC/crates/memra-engine)
+   Compiling memra-server v0.72.0 (/home/avifenesh/projects/wt-cx-leverC/crates/memra-server)
+    Finished `release` profile [optimized] target(s) in 29.92s
+build_rc=0
+finished_utc=2026-08-08T13:49:15Z

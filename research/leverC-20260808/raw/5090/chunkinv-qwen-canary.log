@@ -1,0 +1,8 @@
+chunk-invariance-gate: label=qwen-grain assert=invariant seam=MEMRA_PRIME_F32CHUNK0 legacy-seam=on got=variant canary=1 chunks=2048,64,32 model=Qwen3.5-9B-NVFP4-MTP-GGUF.gguf
+         64 | DIFFER |            64 | 5.269e-1 | - | identical
+         32 | DIFFER |            32 | 6.375e-1 | - | step 18
+    chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+         64 | DIFFER |            64 | 3.909e-1 | - | step 47
+         32 | DIFFER |            32 | 5.041e-1 | - | step 16
+    chunkinv verdict: *** CHUNK-DEPENDENT: prefill logits move with MEMRA_PRIME_CHUNK ***
+chunk-invariance-gate: PASS (canary broke the assertion as required — gate has teeth; log research/leverC-20260808/raw/5090/chunkinv-qwen-canary-probe.log)

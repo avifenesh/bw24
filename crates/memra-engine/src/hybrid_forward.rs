@@ -179,13 +179,13 @@ fn moe_slab_enabled() -> bool {
     std::env::var("MEMRA_MOE_SLAB").as_deref() != Ok("0")
 }
 
-/// Expert-grouped dispatch is the Step35 prefill default. The env remains a live per-call seam:
-/// `=0` restores the sequential oracle, while any other explicit value preserves the historical
-/// opt-in for non-Step35/non-prefill callers.
-fn moe_grouped_enabled(cfg: &ModelConfig, prefill: bool) -> bool {
+/// Expert-grouped dispatch remains opt-in after the local 5090 transfer gate rejected the
+/// default flip. `=0` selects the established path, while any other explicit value enables the
+/// grouped research arm for the current call.
+fn moe_grouped_enabled(_cfg: &ModelConfig, _prefill: bool) -> bool {
     std::env::var("MEMRA_MOE_GROUPED")
         .map(|value| value != "0")
-        .unwrap_or(prefill && cfg.step35.is_some())
+        .unwrap_or(false)
 }
 
 /// Deterministic in-token expert prefetch. `MEMRA_MOE_PREFETCH=1` overlaps memory-source H2D on the
@@ -2655,8 +2655,8 @@ impl HybridModel {
                 Ok(())
             })?;
         }
-        // Expert-grouped dispatch for prefill (T>1). Step35 prefill defaults here; the live
-        // MEMRA_MOE_GROUPED seam can restore sequential or opt other callers in explicitly.
+        // Expert-grouped dispatch for prefill (T>1). MEMRA_MOE_GROUPED explicitly opts the
+        // current caller into this research arm; the naked default stays on the established path.
         if t > 1 && moe_grouped_enabled(cfg, prefill) {
             let grouped_out = Self::moe_ffn_grouped(e, m, z, t, cfg, il, max_block)?;
             // MEMRA_MOE_GATE: byte-identity comparison vs sequential path.

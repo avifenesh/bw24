@@ -264,3 +264,54 @@ was started after reading it.
 
 Raw logs, prompts, results, transfer provenance, and checksums are retained in
 `research/leverC-20260808/raw/perf-41f0af6f/`.
+
+## Increment 7 - local RTX 5090 proof gate rejects the default flip
+
+The final proof-rig battery ran commit `3a491bcf` on the local RTX 5090 Laptop under
+`/tmp/gpu5090.lock`. The entry snapshot showed the expected resident Hermes embedder only:
+394 MiB of compute memory, 0% GPU utilization. The desktop stayed on the `performance` profile,
+and every throughput process ran sequentially at `nice -n 10`.
+
+Step35 is box-only, so its Box2 byte-oracle and model receipts remain authoritative for that
+artifact. The local dispatch/correctness set was the available IQ/MoE set from the k32 receipts:
+KAT-Coder, Gemma 4 26B-A4B, and Qwen 3.6 35B-A3B.
+
+| Gate | Local 5090 verdict |
+|---|---|
+| release build | PASS: CUDA 13.1, auto-detected sm_120a |
+| model-backed `kernel-check` on KAT | PASS: `ALL GREEN` |
+| KAT `run-gen`, explicit grouped path | PASS: prefill/decode argmax `271` MATCH; batched-prime/tokenwise `271` MATCH; resident-q8-rows dispatch observed |
+| Gemma 26B `run-gen` | PASS: prefill/decode argmax `236786` MATCH; batched-prime/tokenwise `236786` MATCH |
+| Qwen 35B `run-gen`, explicit grouped path | PASS: prefill/decode argmax `8160` MATCH; batched-prime/tokenwise `8160` MATCH; resident-q8-rows dispatch observed |
+| qwen `chunkinv` | PASS: both pinned prompts bit-identical at chunks `2048,64,32` |
+| qwen `chunkinv` canary | PASS: legacy seam restored chunk-dependent output on both prompts |
+| post-rejection rollback rebuild and naked-default probe | PASS: release rebuild green; unset `MEMRA_MOE_GROUPED` produced both MATCH lines, zero `moe-grouped` records, and zero OOMs |
+
+KAT was the largest requested local model that both fit resident and entered the explicit grouped
+path. Peak VRAM was sampled every 100 ms across model load, one warmup, and one timed pp2048
+prime:
+
+| arm | peak VRAM | headroom on 24,463 MiB | OOM |
+|---|---:|---:|---|
+| rollback (`MEMRA_MOE_GROUPED=0`) | 19,606 MiB | 4,857 MiB | no |
+| grouped (`MEMRA_MOE_GROUPED=1`) | 19,542 MiB | 4,921 MiB | no |
+
+The required throughput transfer gate was red. Five independent processes per arm ran as adjacent
+interleaved pairs in one lock hold, with alternating order and one warmup per process:
+
+| local model / shape | rollback median, N=5 | grouped median, N=5 | grouped vs rollback | pairwise |
+|---|---:|---:|---:|---:|
+| KAT-Coder pp2048 | **4027.1 tok/s** | 992.7 tok/s | **-75.3%** | 0/5 wins |
+
+All ten processes exited zero. The measured thermal window was 57 to 63 C and observed SM clocks
+were 1590 to 1597 MHz. This is a performance rejection, not an OOM or correctness failure.
+
+By the proof-rig rule, the Box2 win remains research evidence but cannot flip the runtime default.
+`MEMRA_MOE_GROUPED` therefore returns to default-off; explicit `=1` preserves the grouped research
+arm and explicit `=0` selects the established path. The rollback-default edit was rebuilt in
+release mode, then a short locked KAT probe with `MEMRA_MOE_GROUPED` removed from the environment
+confirmed that the naked command takes the established path. No merge, tag, release, or origin
+push is made.
+
+Raw logs, 100 ms memory samples, the N=5 TSV, and checksums are retained in
+`research/leverC-20260808/raw/5090/`.

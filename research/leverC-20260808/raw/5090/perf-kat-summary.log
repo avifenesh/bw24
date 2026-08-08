@@ -1,0 +1,83 @@
+=== Lever C local 5090 grouped-vs-rollback throughput gate ===
+started_utc=2026-08-08T13:42:17Z
+commit=3a491bcfcafc66e6283b02a244ab0944fdfdca4a
+model=/data/ai-ml/hf-models/kat-coder-v25-dev-gguf/Kwaipilot_KAT-Coder-V2.5-Dev-IQ4_XS.gguf size=18806446496
+prompt=/home/avifenesh/projects/wt-cx-leverC/research/depth-decode-20260802/depth-2048-kat.txt prompt_sha256=dc91551b1e83414616ebb8d65ee88d1af1fc8792dadffe0208b732d094adfc0d
+protocol=N=5 independent processes per arm; adjacent interleaved pairs; order alternated; one warmup plus one timed prime per process; one flock hold
+cpu_discipline=nice -n 10; sequential processes; desktop profile=performance
+lock_acquired_utc=2026-08-08T13:42:17Z
+0, NVIDIA GeForce RTX 5090 Laptop GPU, 55, 0 %, 430 MiB, 24463 MiB, 180 MHz, P8
+7600, /home/avifenesh/projects/hermes-agent/.venv/bin/python, 394 MiB
+--- rep=1 arm=rollback order=1 started=2026-08-08T13:42:18Z ---
+awk: cmd. line:1: {print \1}
+awk: cmd. line:1:        ^ backslash not last character on line
+ppprime MEDIAN: 2048 tok in 0.5060s = 4047.3 tok/s (budget=0 chunk=4096(default) calllocal=0)
+rep=1 arm=rollback order=1 rc=0 temp_c=57 clock_mhz=1590 load1= oom_lines=0
+--- rep=1 arm=grouped order=2 started=2026-08-08T13:42:26Z ---
+awk: cmd. line:1: {print \1}
+awk: cmd. line:1:        ^ backslash not last character on line
+ppprime MEDIAN: 2048 tok in 2.0537s = 997.2 tok/s (budget=0 chunk=4096(default) calllocal=0)
+rep=1 arm=grouped order=2 rc=0 temp_c=60 clock_mhz=1590 load1= oom_lines=0
+--- rep=2 arm=grouped order=3 started=2026-08-08T13:42:37Z ---
+awk: cmd. line:1: {print \2}
+awk: cmd. line:1:        ^ backslash not last character on line
+ppprime MEDIAN: 2048 tok in 2.0631s = 992.7 tok/s (budget=0 chunk=4096(default) calllocal=0)
+rep=2 arm=grouped order=3 rc=0 temp_c=62 clock_mhz=1590 load1= oom_lines=0
+--- rep=2 arm=rollback order=4 started=2026-08-08T13:42:48Z ---
+awk: cmd. line:1: {print \2}
+awk: cmd. line:1:        ^ backslash not last character on line
+ppprime MEDIAN: 2048 tok in 0.5088s = 4025.2 tok/s (budget=0 chunk=4096(default) calllocal=0)
+rep=2 arm=rollback order=4 rc=0 temp_c=61 clock_mhz=1590 load1= oom_lines=0
+--- rep=3 arm=rollback order=5 started=2026-08-08T13:42:55Z ---
+awk: cmd. line:1: {print \3}
+awk: cmd. line:1:        ^ backslash not last character on line
+ppprime MEDIAN: 2048 tok in 0.5080s = 4031.4 tok/s (budget=0 chunk=4096(default) calllocal=0)
+rep=3 arm=rollback order=5 rc=0 temp_c=61 clock_mhz=1590 load1= oom_lines=0
+--- rep=3 arm=grouped order=6 started=2026-08-08T13:43:03Z ---
+awk: cmd. line:1: {print \3}
+awk: cmd. line:1:        ^ backslash not last character on line
+ppprime MEDIAN: 2048 tok in 2.0638s = 992.3 tok/s (budget=0 chunk=4096(default) calllocal=0)
+rep=3 arm=grouped order=6 rc=0 temp_c=62 clock_mhz=1590 load1= oom_lines=0
+--- rep=4 arm=grouped order=7 started=2026-08-08T13:43:14Z ---
+awk: cmd. line:1: {print \4}
+awk: cmd. line:1:        ^ backslash not last character on line
+ppprime MEDIAN: 2048 tok in 2.0648s = 991.9 tok/s (budget=0 chunk=4096(default) calllocal=0)
+rep=4 arm=grouped order=7 rc=0 temp_c=63 clock_mhz=1597 load1= oom_lines=0
+--- rep=4 arm=rollback order=8 started=2026-08-08T13:43:25Z ---
+awk: cmd. line:1: {print \4}
+awk: cmd. line:1:        ^ backslash not last character on line
+ppprime MEDIAN: 2048 tok in 0.5110s = 4007.5 tok/s (budget=0 chunk=4096(default) calllocal=0)
+rep=4 arm=rollback order=8 rc=0 temp_c=62 clock_mhz=1597 load1= oom_lines=0
+--- rep=5 arm=rollback order=9 started=2026-08-08T13:43:33Z ---
+awk: cmd. line:1: {print \5}
+awk: cmd. line:1:        ^ backslash not last character on line
+ppprime MEDIAN: 2048 tok in 0.5086s = 4027.1 tok/s (budget=0 chunk=4096(default) calllocal=0)
+rep=5 arm=rollback order=9 rc=0 temp_c=61 clock_mhz=1590 load1= oom_lines=0
+--- rep=5 arm=grouped order=10 started=2026-08-08T13:43:41Z ---
+awk: cmd. line:1: {print \5}
+awk: cmd. line:1:        ^ backslash not last character on line
+ppprime MEDIAN: 2048 tok in 2.0628s = 992.8 tok/s (budget=0 chunk=4096(default) calllocal=0)
+rep=5 arm=grouped order=10 rc=0 temp_c=62 clock_mhz=1590 load1= oom_lines=0
+0, 62, 1 %, 430 MiB, 24463 MiB, 1590 MHz, P0
+7600, /home/avifenesh/projects/hermes-agent/.venv/bin/python, 394 MiB
+lock_released_utc=2026-08-08T13:43:52Z
+=== raw results ===
+rep	arm	order	tokens	seconds	tok_s	temp_c	clock_mhz	load1	rc
+1	rollback	1	2048	0.5060	4047.3	57	1590		0
+1	grouped	2	2048	2.0537	997.2	60	1590		0
+2	grouped	3	2048	2.0631	992.7	62	1590		0
+2	rollback	4	2048	0.5088	4025.2	61	1590		0
+3	rollback	5	2048	0.5080	4031.4	61	1590		0
+3	grouped	6	2048	2.0638	992.3	62	1590		0
+4	grouped	7	2048	2.0648	991.9	63	1597		0
+4	rollback	8	2048	0.5110	4007.5	62	1597		0
+5	rollback	9	2048	0.5086	4027.1	61	1590		0
+5	grouped	10	2048	2.0628	992.8	62	1590		0
+rollback_median_tok_s=4027.1 N=5
+grouped_median_tok_s=992.7 N=5
+grouped_vs_rollback_pct=-75.3
+grouped_pairwise_wins=0/5
+thermal_regime_c=57..63 clock_mhz=1590..1597
+throughput_assertion=FAIL grouped_slower_or_run_failed
+battery_rc=1
+finished_utc=2026-08-08T13:43:52Z
