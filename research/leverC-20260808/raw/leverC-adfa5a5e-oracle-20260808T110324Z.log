@@ -1,0 +1,649 @@
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 trunk layers; optional MTP skipped)
+prompt text: "Write a short paragraph explaining how a CPU pipeline improves instruction throughput, and mention one hazard."
+prompt tokens: [0, 21750, 260, 3107, 15363, 26131, 1192, 260, 25454, 28499, 28232, 12740, 62027, 14, 305, 6731, 834, 23616, 16]
+moe-grouped il=3 t=19 dispatch=resident-q8-rows active=90/288 m_e: min=1 median=1 mean=1.7 max=17
+moe-stats il=3 t=19 assignments=152 active=90/288 entropy=5.991b (max 8.170b) mean_tok_per_active=1.69 max_tok_per_expert=17
+moe-gate il=3 t=19 BYTE-IDENTICAL
+moe-grouped il=4 t=19 dispatch=resident-q8-rows active=65/288 m_e: min=1 median=1 mean=2.3 max=13
+moe-stats il=4 t=19 assignments=152 active=65/288 entropy=5.392b (max 8.170b) mean_tok_per_active=2.34 max_tok_per_expert=13
+moe-gate il=4 t=19 BYTE-IDENTICAL
+moe-grouped il=5 t=19 dispatch=resident-q8-rows active=75/288 m_e: min=1 median=2 mean=2.0 max=17
+moe-stats il=5 t=19 assignments=152 active=75/288 entropy=5.825b (max 8.170b) mean_tok_per_active=2.03 max_tok_per_expert=17
+moe-gate il=5 t=19 BYTE-IDENTICAL
+moe-grouped il=6 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=1 mean=2.2 max=11
+moe-stats il=6 t=19 assignments=152 active=70/288 entropy=5.667b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=11
+moe-gate il=6 t=19 BYTE-IDENTICAL
+moe-grouped il=7 t=19 dispatch=resident-q8-rows active=74/288 m_e: min=1 median=1 mean=2.1 max=15
+moe-stats il=7 t=19 assignments=152 active=74/288 entropy=5.700b (max 8.170b) mean_tok_per_active=2.05 max_tok_per_expert=15
+moe-gate il=7 t=19 BYTE-IDENTICAL
+moe-grouped il=8 t=19 dispatch=resident-q8-rows active=75/288 m_e: min=1 median=1 mean=2.0 max=9
+moe-stats il=8 t=19 assignments=152 active=75/288 entropy=5.901b (max 8.170b) mean_tok_per_active=2.03 max_tok_per_expert=9
+moe-gate il=8 t=19 BYTE-IDENTICAL
+moe-grouped il=9 t=19 dispatch=resident-q8-rows active=64/288 m_e: min=1 median=2 mean=2.4 max=16
+moe-stats il=9 t=19 assignments=152 active=64/288 entropy=5.477b (max 8.170b) mean_tok_per_active=2.38 max_tok_per_expert=16
+moe-gate il=9 t=19 BYTE-IDENTICAL
+moe-grouped il=10 t=19 dispatch=resident-q8-rows active=66/288 m_e: min=1 median=1 mean=2.3 max=14
+moe-stats il=10 t=19 assignments=152 active=66/288 entropy=5.423b (max 8.170b) mean_tok_per_active=2.30 max_tok_per_expert=14
+moe-gate il=10 t=19 BYTE-IDENTICAL
+moe-grouped il=11 t=19 dispatch=resident-q8-rows active=66/288 m_e: min=1 median=2 mean=2.3 max=11
+moe-stats il=11 t=19 assignments=152 active=66/288 entropy=5.656b (max 8.170b) mean_tok_per_active=2.30 max_tok_per_expert=11
+moe-gate il=11 t=19 BYTE-IDENTICAL
+moe-grouped il=12 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=1 mean=2.2 max=8
+moe-stats il=12 t=19 assignments=152 active=70/288 entropy=5.770b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=8
+moe-gate il=12 t=19 BYTE-IDENTICAL
+moe-grouped il=13 t=19 dispatch=resident-q8-rows active=59/288 m_e: min=1 median=2 mean=2.6 max=13
+moe-stats il=13 t=19 assignments=152 active=59/288 entropy=5.364b (max 8.170b) mean_tok_per_active=2.58 max_tok_per_expert=13
+moe-gate il=13 t=19 BYTE-IDENTICAL
+moe-grouped il=14 t=19 dispatch=resident-q8-rows active=59/288 m_e: min=1 median=2 mean=2.6 max=10
+moe-stats il=14 t=19 assignments=152 active=59/288 entropy=5.567b (max 8.170b) mean_tok_per_active=2.58 max_tok_per_expert=10
+moe-gate il=14 t=19 BYTE-IDENTICAL
+moe-grouped il=15 t=19 dispatch=resident-q8-rows active=58/288 m_e: min=1 median=2 mean=2.6 max=16
+moe-stats il=15 t=19 assignments=152 active=58/288 entropy=5.330b (max 8.170b) mean_tok_per_active=2.62 max_tok_per_expert=16
+moe-gate il=15 t=19 BYTE-IDENTICAL
+moe-grouped il=16 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=1 mean=2.2 max=15
+moe-stats il=16 t=19 assignments=152 active=70/288 entropy=5.565b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=15
+moe-gate il=16 t=19 BYTE-IDENTICAL
+moe-grouped il=17 t=19 dispatch=resident-q8-rows active=69/288 m_e: min=1 median=1 mean=2.2 max=16
+moe-stats il=17 t=19 assignments=152 active=69/288 entropy=5.503b (max 8.170b) mean_tok_per_active=2.20 max_tok_per_expert=16
+moe-gate il=17 t=19 BYTE-IDENTICAL
+moe-grouped il=18 t=19 dispatch=resident-q8-rows active=66/288 m_e: min=1 median=1 mean=2.3 max=17
+moe-stats il=18 t=19 assignments=152 active=66/288 entropy=5.438b (max 8.170b) mean_tok_per_active=2.30 max_tok_per_expert=17
+moe-gate il=18 t=19 BYTE-IDENTICAL
+moe-grouped il=19 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=2 mean=2.2 max=17
+moe-stats il=19 t=19 assignments=152 active=70/288 entropy=5.639b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=17
+moe-gate il=19 t=19 BYTE-IDENTICAL
+moe-grouped il=20 t=19 dispatch=resident-q8-rows active=61/288 m_e: min=1 median=1 mean=2.5 max=17
+moe-stats il=20 t=19 assignments=152 active=61/288 entropy=5.292b (max 8.170b) mean_tok_per_active=2.49 max_tok_per_expert=17
+moe-gate il=20 t=19 BYTE-IDENTICAL
+moe-grouped il=21 t=19 dispatch=resident-q8-rows active=71/288 m_e: min=1 median=1 mean=2.1 max=17
+moe-stats il=21 t=19 assignments=152 active=71/288 entropy=5.630b (max 8.170b) mean_tok_per_active=2.14 max_tok_per_expert=17
+moe-gate il=21 t=19 BYTE-IDENTICAL
+moe-grouped il=22 t=19 active=71/288 m_e: min=1 median=2 mean=2.1 max=11 above_gemm_threshold(>=16)=0/71
+moe-stats il=22 t=19 assignments=152 active=71/288 entropy=5.755b (max 8.170b) mean_tok_per_active=2.14 max_tok_per_expert=11
+moe-gate il=22 t=19 BYTE-IDENTICAL
+moe-grouped il=23 t=19 active=73/288 m_e: min=1 median=1 mean=2.1 max=15 above_gemm_threshold(>=16)=0/73
+moe-stats il=23 t=19 assignments=152 active=73/288 entropy=5.700b (max 8.170b) mean_tok_per_active=2.08 max_tok_per_expert=15
+moe-gate il=23 t=19 BYTE-IDENTICAL
+moe-grouped il=24 t=19 active=80/288 m_e: min=1 median=1 mean=1.9 max=9 above_gemm_threshold(>=16)=0/80
+moe-stats il=24 t=19 assignments=152 active=80/288 entropy=5.995b (max 8.170b) mean_tok_per_active=1.90 max_tok_per_expert=9
+moe-gate il=24 t=19 BYTE-IDENTICAL
+moe-grouped il=25 t=19 active=71/288 m_e: min=1 median=2 mean=2.1 max=10 above_gemm_threshold(>=16)=0/71
+moe-stats il=25 t=19 assignments=152 active=71/288 entropy=5.818b (max 8.170b) mean_tok_per_active=2.14 max_tok_per_expert=10
+moe-gate il=25 t=19 BYTE-IDENTICAL
+moe-grouped il=26 t=19 active=67/288 m_e: min=1 median=2 mean=2.3 max=10 above_gemm_threshold(>=16)=0/67
+moe-stats il=26 t=19 assignments=152 active=67/288 entropy=5.681b (max 8.170b) mean_tok_per_active=2.27 max_tok_per_expert=10
+moe-gate il=26 t=19 BYTE-IDENTICAL
+moe-grouped il=27 t=19 active=61/288 m_e: min=1 median=1 mean=2.5 max=17 above_gemm_threshold(>=16)=1/61
+moe-stats il=27 t=19 assignments=152 active=61/288 entropy=5.395b (max 8.170b) mean_tok_per_active=2.49 max_tok_per_expert=17
+moe-gate il=27 t=19 BYTE-IDENTICAL
+moe-grouped il=28 t=19 active=67/288 m_e: min=1 median=2 mean=2.3 max=8 above_gemm_threshold(>=16)=0/67
+moe-stats il=28 t=19 assignments=152 active=67/288 entropy=5.710b (max 8.170b) mean_tok_per_active=2.27 max_tok_per_expert=8
+moe-gate il=28 t=19 BYTE-IDENTICAL
+moe-grouped il=29 t=19 active=75/288 m_e: min=1 median=1 mean=2.0 max=10 above_gemm_threshold(>=16)=0/75
+moe-stats il=29 t=19 assignments=152 active=75/288 entropy=5.914b (max 8.170b) mean_tok_per_active=2.03 max_tok_per_expert=10
+moe-gate il=29 t=19 BYTE-IDENTICAL
+moe-grouped il=30 t=19 active=70/288 m_e: min=1 median=1 mean=2.2 max=16 above_gemm_threshold(>=16)=1/70
+moe-stats il=30 t=19 assignments=152 active=70/288 entropy=5.483b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=16
+moe-gate il=30 t=19 BYTE-IDENTICAL
+moe-grouped il=31 t=19 active=68/288 m_e: min=1 median=1 mean=2.2 max=9 above_gemm_threshold(>=16)=0/68
+moe-stats il=31 t=19 assignments=152 active=68/288 entropy=5.641b (max 8.170b) mean_tok_per_active=2.24 max_tok_per_expert=9
+moe-gate il=31 t=19 BYTE-IDENTICAL
+moe-grouped il=32 t=19 active=67/288 m_e: min=1 median=1 mean=2.3 max=11 above_gemm_threshold(>=16)=0/67
+moe-stats il=32 t=19 assignments=152 active=67/288 entropy=5.598b (max 8.170b) mean_tok_per_active=2.27 max_tok_per_expert=11
+moe-gate il=32 t=19 BYTE-IDENTICAL
+moe-grouped il=33 t=19 active=68/288 m_e: min=1 median=2 mean=2.2 max=15 above_gemm_threshold(>=16)=0/68
+moe-stats il=33 t=19 assignments=152 active=68/288 entropy=5.605b (max 8.170b) mean_tok_per_active=2.24 max_tok_per_expert=15
+moe-gate il=33 t=19 BYTE-IDENTICAL
+moe-grouped il=34 t=19 active=70/288 m_e: min=1 median=1 mean=2.2 max=12 above_gemm_threshold(>=16)=0/70
+moe-stats il=34 t=19 assignments=152 active=70/288 entropy=5.725b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=12
+moe-gate il=34 t=19 BYTE-IDENTICAL
+moe-grouped il=35 t=19 active=78/288 m_e: min=1 median=1 mean=1.9 max=14 above_gemm_threshold(>=16)=0/78
+moe-stats il=35 t=19 assignments=152 active=78/288 entropy=5.850b (max 8.170b) mean_tok_per_active=1.95 max_tok_per_expert=14
+moe-gate il=35 t=19 BYTE-IDENTICAL
+moe-grouped il=36 t=19 active=79/288 m_e: min=1 median=1 mean=1.9 max=9 above_gemm_threshold(>=16)=0/79
+moe-stats il=36 t=19 assignments=152 active=79/288 entropy=5.996b (max 8.170b) mean_tok_per_active=1.92 max_tok_per_expert=9
+moe-gate il=36 t=19 BYTE-IDENTICAL
+moe-grouped il=37 t=19 active=88/288 m_e: min=1 median=1 mean=1.7 max=5 above_gemm_threshold(>=16)=0/88
+moe-stats il=37 t=19 assignments=152 active=88/288 entropy=6.218b (max 8.170b) mean_tok_per_active=1.73 max_tok_per_expert=5
+moe-gate il=37 t=19 BYTE-IDENTICAL
+moe-grouped il=38 t=19 active=81/288 m_e: min=1 median=1 mean=1.9 max=9 above_gemm_threshold(>=16)=0/81
+moe-stats il=38 t=19 assignments=152 active=81/288 entropy=6.032b (max 8.170b) mean_tok_per_active=1.88 max_tok_per_expert=9
+moe-gate il=38 t=19 BYTE-IDENTICAL
+moe-grouped il=39 t=19 active=83/288 m_e: min=1 median=1 mean=1.8 max=11 above_gemm_threshold(>=16)=0/83
+moe-stats il=39 t=19 assignments=152 active=83/288 entropy=5.986b (max 8.170b) mean_tok_per_active=1.83 max_tok_per_expert=11
+moe-gate il=39 t=19 BYTE-IDENTICAL
+moe-grouped il=40 t=19 active=89/288 m_e: min=1 median=1 mean=1.7 max=7 above_gemm_threshold(>=16)=0/89
+moe-stats il=40 t=19 assignments=152 active=89/288 entropy=6.191b (max 8.170b) mean_tok_per_active=1.71 max_tok_per_expert=7
+moe-gate il=40 t=19 BYTE-IDENTICAL
+moe-grouped il=41 t=19 active=87/288 m_e: min=1 median=1 mean=1.7 max=9 above_gemm_threshold(>=16)=0/87
+moe-stats il=41 t=19 assignments=152 active=87/288 entropy=6.109b (max 8.170b) mean_tok_per_active=1.75 max_tok_per_expert=9
+moe-gate il=41 t=19 BYTE-IDENTICAL
+moe-grouped il=42 t=19 active=84/288 m_e: min=1 median=1 mean=1.8 max=6 above_gemm_threshold(>=16)=0/84
+moe-stats il=42 t=19 assignments=152 active=84/288 entropy=6.163b (max 8.170b) mean_tok_per_active=1.81 max_tok_per_expert=6
+moe-gate il=42 t=19 BYTE-IDENTICAL
+moe-grouped il=43 t=19 active=73/288 m_e: min=1 median=1 mean=2.1 max=18 above_gemm_threshold(>=16)=1/73
+moe-stats il=43 t=19 assignments=152 active=73/288 entropy=5.715b (max 8.170b) mean_tok_per_active=2.08 max_tok_per_expert=18
+moe-gate il=43 t=19 BYTE-IDENTICAL
+moe-grouped il=44 t=19 active=87/288 m_e: min=1 median=1 mean=1.7 max=9 above_gemm_threshold(>=16)=0/87
+moe-stats il=44 t=19 assignments=152 active=87/288 entropy=6.216b (max 8.170b) mean_tok_per_active=1.75 max_tok_per_expert=9
+moe-gate il=44 t=19 BYTE-IDENTICAL
+prefill argmax=6776  decode argmax=6776  logit maxdiff=8.228e-1  MATCH
+moe-grouped il=3 t=19 dispatch=resident-q8-rows active=90/288 m_e: min=1 median=1 mean=1.7 max=17
+moe-stats il=3 t=19 assignments=152 active=90/288 entropy=5.996b (max 8.170b) mean_tok_per_active=1.69 max_tok_per_expert=17
+moe-gate il=3 t=19 BYTE-IDENTICAL
+moe-grouped il=4 t=19 dispatch=resident-q8-rows active=62/288 m_e: min=1 median=1 mean=2.5 max=13
+moe-stats il=4 t=19 assignments=152 active=62/288 entropy=5.359b (max 8.170b) mean_tok_per_active=2.45 max_tok_per_expert=13
+moe-gate il=4 t=19 BYTE-IDENTICAL
+moe-grouped il=5 t=19 dispatch=resident-q8-rows active=73/288 m_e: min=1 median=2 mean=2.1 max=17
+moe-stats il=5 t=19 assignments=152 active=73/288 entropy=5.803b (max 8.170b) mean_tok_per_active=2.08 max_tok_per_expert=17
+moe-gate il=5 t=19 BYTE-IDENTICAL
+moe-grouped il=6 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=1 mean=2.2 max=11
+moe-stats il=6 t=19 assignments=152 active=70/288 entropy=5.673b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=11
+moe-gate il=6 t=19 BYTE-IDENTICAL
+moe-grouped il=7 t=19 dispatch=resident-q8-rows active=72/288 m_e: min=1 median=1 mean=2.1 max=14
+moe-stats il=7 t=19 assignments=152 active=72/288 entropy=5.691b (max 8.170b) mean_tok_per_active=2.11 max_tok_per_expert=14
+moe-gate il=7 t=19 BYTE-IDENTICAL
+moe-grouped il=8 t=19 dispatch=resident-q8-rows active=75/288 m_e: min=1 median=1 mean=2.0 max=9
+moe-stats il=8 t=19 assignments=152 active=75/288 entropy=5.896b (max 8.170b) mean_tok_per_active=2.03 max_tok_per_expert=9
+moe-gate il=8 t=19 BYTE-IDENTICAL
+moe-grouped il=9 t=19 dispatch=resident-q8-rows active=66/288 m_e: min=1 median=2 mean=2.3 max=16
+moe-stats il=9 t=19 assignments=152 active=66/288 entropy=5.528b (max 8.170b) mean_tok_per_active=2.30 max_tok_per_expert=16
+moe-gate il=9 t=19 BYTE-IDENTICAL
+moe-grouped il=10 t=19 dispatch=resident-q8-rows active=65/288 m_e: min=1 median=1 mean=2.3 max=14
+moe-stats il=10 t=19 assignments=152 active=65/288 entropy=5.409b (max 8.170b) mean_tok_per_active=2.34 max_tok_per_expert=14
+moe-gate il=10 t=19 BYTE-IDENTICAL
+moe-grouped il=11 t=19 dispatch=resident-q8-rows active=67/288 m_e: min=1 median=2 mean=2.3 max=10
+moe-stats il=11 t=19 assignments=152 active=67/288 entropy=5.701b (max 8.170b) mean_tok_per_active=2.27 max_tok_per_expert=10
+moe-gate il=11 t=19 BYTE-IDENTICAL
+moe-grouped il=12 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=1 mean=2.2 max=8
+moe-stats il=12 t=19 assignments=152 active=70/288 entropy=5.776b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=8
+moe-gate il=12 t=19 BYTE-IDENTICAL
+moe-grouped il=13 t=19 dispatch=resident-q8-rows active=61/288 m_e: min=1 median=2 mean=2.5 max=13
+moe-stats il=13 t=19 assignments=152 active=61/288 entropy=5.410b (max 8.170b) mean_tok_per_active=2.49 max_tok_per_expert=13
+moe-gate il=13 t=19 BYTE-IDENTICAL
+moe-grouped il=14 t=19 dispatch=resident-q8-rows active=60/288 m_e: min=1 median=2 mean=2.5 max=10
+moe-stats il=14 t=19 assignments=152 active=60/288 entropy=5.591b (max 8.170b) mean_tok_per_active=2.53 max_tok_per_expert=10
+moe-gate il=14 t=19 BYTE-IDENTICAL
+moe-grouped il=15 t=19 dispatch=resident-q8-rows active=59/288 m_e: min=1 median=2 mean=2.6 max=16
+moe-stats il=15 t=19 assignments=152 active=59/288 entropy=5.342b (max 8.170b) mean_tok_per_active=2.58 max_tok_per_expert=16
+moe-gate il=15 t=19 BYTE-IDENTICAL
+moe-grouped il=16 t=19 dispatch=resident-q8-rows active=69/288 m_e: min=1 median=1 mean=2.2 max=13
+moe-stats il=16 t=19 assignments=152 active=69/288 entropy=5.565b (max 8.170b) mean_tok_per_active=2.20 max_tok_per_expert=13
+moe-gate il=16 t=19 BYTE-IDENTICAL
+moe-grouped il=17 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=1 mean=2.2 max=16
+moe-stats il=17 t=19 assignments=152 active=70/288 entropy=5.503b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=16
+moe-gate il=17 t=19 BYTE-IDENTICAL
+moe-grouped il=18 t=19 dispatch=resident-q8-rows active=66/288 m_e: min=1 median=1 mean=2.3 max=17
+moe-stats il=18 t=19 assignments=152 active=66/288 entropy=5.425b (max 8.170b) mean_tok_per_active=2.30 max_tok_per_expert=17
+moe-gate il=18 t=19 BYTE-IDENTICAL
+moe-grouped il=19 t=19 dispatch=resident-q8-rows active=68/288 m_e: min=1 median=2 mean=2.2 max=17
+moe-stats il=19 t=19 assignments=152 active=68/288 entropy=5.592b (max 8.170b) mean_tok_per_active=2.24 max_tok_per_expert=17
+moe-gate il=19 t=19 BYTE-IDENTICAL
+moe-grouped il=20 t=19 dispatch=resident-q8-rows active=61/288 m_e: min=1 median=1 mean=2.5 max=17
+moe-stats il=20 t=19 assignments=152 active=61/288 entropy=5.292b (max 8.170b) mean_tok_per_active=2.49 max_tok_per_expert=17
+moe-gate il=20 t=19 BYTE-IDENTICAL
+moe-grouped il=21 t=19 dispatch=resident-q8-rows active=73/288 m_e: min=1 median=1 mean=2.1 max=17
+moe-stats il=21 t=19 assignments=152 active=73/288 entropy=5.665b (max 8.170b) mean_tok_per_active=2.08 max_tok_per_expert=17
+moe-gate il=21 t=19 BYTE-IDENTICAL
+moe-grouped il=22 t=19 dispatch=resident-q8-rows active=72/288 m_e: min=1 median=1 mean=2.1 max=10
+moe-stats il=22 t=19 assignments=152 active=72/288 entropy=5.761b (max 8.170b) mean_tok_per_active=2.11 max_tok_per_expert=10
+moe-gate il=22 t=19 BYTE-IDENTICAL
+moe-grouped il=23 t=19 dispatch=resident-q8-rows active=73/288 m_e: min=1 median=1 mean=2.1 max=16
+moe-stats il=23 t=19 assignments=152 active=73/288 entropy=5.679b (max 8.170b) mean_tok_per_active=2.08 max_tok_per_expert=16
+moe-gate il=23 t=19 BYTE-IDENTICAL
+moe-grouped il=24 t=19 dispatch=resident-q8-rows active=79/288 m_e: min=1 median=1 mean=1.9 max=9
+moe-stats il=24 t=19 assignments=152 active=79/288 entropy=5.976b (max 8.170b) mean_tok_per_active=1.92 max_tok_per_expert=9
+moe-gate il=24 t=19 BYTE-IDENTICAL
+moe-grouped il=25 t=19 dispatch=resident-q8-rows active=71/288 m_e: min=1 median=2 mean=2.1 max=10
+moe-stats il=25 t=19 assignments=152 active=71/288 entropy=5.822b (max 8.170b) mean_tok_per_active=2.14 max_tok_per_expert=10
+moe-gate il=25 t=19 BYTE-IDENTICAL
+moe-grouped il=26 t=19 dispatch=resident-q8-rows active=66/288 m_e: min=1 median=2 mean=2.3 max=11
+moe-stats il=26 t=19 assignments=152 active=66/288 entropy=5.649b (max 8.170b) mean_tok_per_active=2.30 max_tok_per_expert=11
+moe-gate il=26 t=19 BYTE-IDENTICAL
+moe-grouped il=27 t=19 dispatch=resident-q8-rows active=61/288 m_e: min=1 median=1 mean=2.5 max=17
+moe-stats il=27 t=19 assignments=152 active=61/288 entropy=5.403b (max 8.170b) mean_tok_per_active=2.49 max_tok_per_expert=17
+moe-gate il=27 t=19 BYTE-IDENTICAL
+moe-grouped il=28 t=19 dispatch=resident-q8-rows active=69/288 m_e: min=1 median=2 mean=2.2 max=8
+moe-stats il=28 t=19 assignments=152 active=69/288 entropy=5.766b (max 8.170b) mean_tok_per_active=2.20 max_tok_per_expert=8
+moe-gate il=28 t=19 BYTE-IDENTICAL
+moe-grouped il=29 t=19 dispatch=resident-q8-rows active=76/288 m_e: min=1 median=1 mean=2.0 max=9
+moe-stats il=29 t=19 assignments=152 active=76/288 entropy=5.956b (max 8.170b) mean_tok_per_active=2.00 max_tok_per_expert=9
+moe-gate il=29 t=19 BYTE-IDENTICAL
+moe-grouped il=30 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=1 mean=2.2 max=16
+moe-stats il=30 t=19 assignments=152 active=70/288 entropy=5.492b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=16
+moe-gate il=30 t=19 BYTE-IDENTICAL
+moe-grouped il=31 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=1 mean=2.2 max=8
+moe-stats il=31 t=19 assignments=152 active=70/288 entropy=5.684b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=8
+moe-gate il=31 t=19 BYTE-IDENTICAL
+moe-grouped il=32 t=19 dispatch=resident-q8-rows active=67/288 m_e: min=1 median=1 mean=2.3 max=10
+moe-stats il=32 t=19 assignments=152 active=67/288 entropy=5.599b (max 8.170b) mean_tok_per_active=2.27 max_tok_per_expert=10
+moe-gate il=32 t=19 BYTE-IDENTICAL
+moe-grouped il=33 t=19 dispatch=resident-q8-rows active=69/288 m_e: min=1 median=1 mean=2.2 max=15
+moe-stats il=33 t=19 assignments=152 active=69/288 entropy=5.626b (max 8.170b) mean_tok_per_active=2.20 max_tok_per_expert=15
+moe-gate il=33 t=19 BYTE-IDENTICAL
+moe-grouped il=34 t=19 dispatch=resident-q8-rows active=69/288 m_e: min=1 median=1 mean=2.2 max=12
+moe-stats il=34 t=19 assignments=152 active=69/288 entropy=5.714b (max 8.170b) mean_tok_per_active=2.20 max_tok_per_expert=12
+moe-gate il=34 t=19 BYTE-IDENTICAL
+moe-grouped il=35 t=19 dispatch=resident-q8-rows active=78/288 m_e: min=1 median=1 mean=1.9 max=14
+moe-stats il=35 t=19 assignments=152 active=78/288 entropy=5.852b (max 8.170b) mean_tok_per_active=1.95 max_tok_per_expert=14
+moe-gate il=35 t=19 BYTE-IDENTICAL
+moe-grouped il=36 t=19 dispatch=resident-q8-rows active=79/288 m_e: min=1 median=1 mean=1.9 max=9
+moe-stats il=36 t=19 assignments=152 active=79/288 entropy=5.992b (max 8.170b) mean_tok_per_active=1.92 max_tok_per_expert=9
+moe-gate il=36 t=19 BYTE-IDENTICAL
+moe-grouped il=37 t=19 dispatch=resident-q8-rows active=89/288 m_e: min=1 median=1 mean=1.7 max=5
+moe-stats il=37 t=19 assignments=152 active=89/288 entropy=6.256b (max 8.170b) mean_tok_per_active=1.71 max_tok_per_expert=5
+moe-gate il=37 t=19 BYTE-IDENTICAL
+moe-grouped il=38 t=19 dispatch=resident-q8-rows active=83/288 m_e: min=1 median=1 mean=1.8 max=9
+moe-stats il=38 t=19 assignments=152 active=83/288 entropy=6.058b (max 8.170b) mean_tok_per_active=1.83 max_tok_per_expert=9
+moe-gate il=38 t=19 BYTE-IDENTICAL
+moe-grouped il=39 t=19 dispatch=resident-q8-rows active=81/288 m_e: min=1 median=1 mean=1.9 max=11
+moe-stats il=39 t=19 assignments=152 active=81/288 entropy=5.976b (max 8.170b) mean_tok_per_active=1.88 max_tok_per_expert=11
+moe-gate il=39 t=19 BYTE-IDENTICAL
+moe-grouped il=40 t=19 dispatch=resident-q8-rows active=91/288 m_e: min=1 median=1 mean=1.7 max=7
+moe-stats il=40 t=19 assignments=152 active=91/288 entropy=6.219b (max 8.170b) mean_tok_per_active=1.67 max_tok_per_expert=7
+moe-gate il=40 t=19 BYTE-IDENTICAL
+moe-grouped il=41 t=19 dispatch=resident-q8-rows active=87/288 m_e: min=1 median=1 mean=1.7 max=9
+moe-stats il=41 t=19 assignments=152 active=87/288 entropy=6.127b (max 8.170b) mean_tok_per_active=1.75 max_tok_per_expert=9
+moe-gate il=41 t=19 BYTE-IDENTICAL
+moe-grouped il=42 t=19 dispatch=resident-q8-rows active=83/288 m_e: min=1 median=1 mean=1.8 max=6
+moe-stats il=42 t=19 assignments=152 active=83/288 entropy=6.124b (max 8.170b) mean_tok_per_active=1.83 max_tok_per_expert=6
+moe-gate il=42 t=19 BYTE-IDENTICAL
+moe-grouped il=43 t=19 dispatch=resident-q8-clamped-pairs active=75/288 m_e: min=1 median=1 mean=2.0 max=18
+moe-stats il=43 t=19 assignments=152 active=75/288 entropy=5.736b (max 8.170b) mean_tok_per_active=2.03 max_tok_per_expert=18
+moe-gate il=43 t=19 BYTE-IDENTICAL
+moe-grouped il=44 t=19 dispatch=resident-q8-clamped-pairs active=90/288 m_e: min=1 median=1 mean=1.7 max=9
+moe-stats il=44 t=19 assignments=152 active=90/288 entropy=6.252b (max 8.170b) mean_tok_per_active=1.69 max_tok_per_expert=9
+moe-gate il=44 t=19 BYTE-IDENTICAL
+batched-prime argmax=6776  tokenwise argmax=6776  logit maxdiff=7.178e-1  MATCH
+moe-grouped il=3 t=19 dispatch=resident-q8-rows active=90/288 m_e: min=1 median=1 mean=1.7 max=17
+moe-stats il=3 t=19 assignments=152 active=90/288 entropy=5.991b (max 8.170b) mean_tok_per_active=1.69 max_tok_per_expert=17
+moe-gate il=3 t=19 BYTE-IDENTICAL
+moe-grouped il=4 t=19 dispatch=resident-q8-rows active=65/288 m_e: min=1 median=1 mean=2.3 max=13
+moe-stats il=4 t=19 assignments=152 active=65/288 entropy=5.392b (max 8.170b) mean_tok_per_active=2.34 max_tok_per_expert=13
+moe-gate il=4 t=19 BYTE-IDENTICAL
+moe-grouped il=5 t=19 dispatch=resident-q8-rows active=75/288 m_e: min=1 median=2 mean=2.0 max=17
+moe-stats il=5 t=19 assignments=152 active=75/288 entropy=5.825b (max 8.170b) mean_tok_per_active=2.03 max_tok_per_expert=17
+moe-gate il=5 t=19 BYTE-IDENTICAL
+moe-grouped il=6 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=1 mean=2.2 max=11
+moe-stats il=6 t=19 assignments=152 active=70/288 entropy=5.667b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=11
+moe-gate il=6 t=19 BYTE-IDENTICAL
+moe-grouped il=7 t=19 dispatch=resident-q8-rows active=74/288 m_e: min=1 median=1 mean=2.1 max=15
+moe-stats il=7 t=19 assignments=152 active=74/288 entropy=5.700b (max 8.170b) mean_tok_per_active=2.05 max_tok_per_expert=15
+moe-gate il=7 t=19 BYTE-IDENTICAL
+moe-grouped il=8 t=19 dispatch=resident-q8-rows active=75/288 m_e: min=1 median=1 mean=2.0 max=9
+moe-stats il=8 t=19 assignments=152 active=75/288 entropy=5.901b (max 8.170b) mean_tok_per_active=2.03 max_tok_per_expert=9
+moe-gate il=8 t=19 BYTE-IDENTICAL
+moe-grouped il=9 t=19 dispatch=resident-q8-rows active=64/288 m_e: min=1 median=2 mean=2.4 max=16
+moe-stats il=9 t=19 assignments=152 active=64/288 entropy=5.477b (max 8.170b) mean_tok_per_active=2.38 max_tok_per_expert=16
+moe-gate il=9 t=19 BYTE-IDENTICAL
+moe-grouped il=10 t=19 dispatch=resident-q8-rows active=66/288 m_e: min=1 median=1 mean=2.3 max=14
+moe-stats il=10 t=19 assignments=152 active=66/288 entropy=5.423b (max 8.170b) mean_tok_per_active=2.30 max_tok_per_expert=14
+moe-gate il=10 t=19 BYTE-IDENTICAL
+moe-grouped il=11 t=19 dispatch=resident-q8-rows active=66/288 m_e: min=1 median=2 mean=2.3 max=11
+moe-stats il=11 t=19 assignments=152 active=66/288 entropy=5.656b (max 8.170b) mean_tok_per_active=2.30 max_tok_per_expert=11
+moe-gate il=11 t=19 BYTE-IDENTICAL
+moe-grouped il=12 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=1 mean=2.2 max=8
+moe-stats il=12 t=19 assignments=152 active=70/288 entropy=5.770b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=8
+moe-gate il=12 t=19 BYTE-IDENTICAL
+moe-grouped il=13 t=19 dispatch=resident-q8-rows active=59/288 m_e: min=1 median=2 mean=2.6 max=13
+moe-stats il=13 t=19 assignments=152 active=59/288 entropy=5.364b (max 8.170b) mean_tok_per_active=2.58 max_tok_per_expert=13
+moe-gate il=13 t=19 BYTE-IDENTICAL
+moe-grouped il=14 t=19 dispatch=resident-q8-rows active=59/288 m_e: min=1 median=2 mean=2.6 max=10
+moe-stats il=14 t=19 assignments=152 active=59/288 entropy=5.567b (max 8.170b) mean_tok_per_active=2.58 max_tok_per_expert=10
+moe-gate il=14 t=19 BYTE-IDENTICAL
+moe-grouped il=15 t=19 dispatch=resident-q8-rows active=58/288 m_e: min=1 median=2 mean=2.6 max=16
+moe-stats il=15 t=19 assignments=152 active=58/288 entropy=5.330b (max 8.170b) mean_tok_per_active=2.62 max_tok_per_expert=16
+moe-gate il=15 t=19 BYTE-IDENTICAL
+moe-grouped il=16 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=1 mean=2.2 max=15
+moe-stats il=16 t=19 assignments=152 active=70/288 entropy=5.565b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=15
+moe-gate il=16 t=19 BYTE-IDENTICAL
+moe-grouped il=17 t=19 dispatch=resident-q8-rows active=69/288 m_e: min=1 median=1 mean=2.2 max=16
+moe-stats il=17 t=19 assignments=152 active=69/288 entropy=5.503b (max 8.170b) mean_tok_per_active=2.20 max_tok_per_expert=16
+moe-gate il=17 t=19 BYTE-IDENTICAL
+moe-grouped il=18 t=19 dispatch=resident-q8-rows active=66/288 m_e: min=1 median=1 mean=2.3 max=17
+moe-stats il=18 t=19 assignments=152 active=66/288 entropy=5.438b (max 8.170b) mean_tok_per_active=2.30 max_tok_per_expert=17
+moe-gate il=18 t=19 BYTE-IDENTICAL
+moe-grouped il=19 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=2 mean=2.2 max=17
+moe-stats il=19 t=19 assignments=152 active=70/288 entropy=5.639b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=17
+moe-gate il=19 t=19 BYTE-IDENTICAL
+moe-grouped il=20 t=19 dispatch=resident-q8-rows active=61/288 m_e: min=1 median=1 mean=2.5 max=17
+moe-stats il=20 t=19 assignments=152 active=61/288 entropy=5.292b (max 8.170b) mean_tok_per_active=2.49 max_tok_per_expert=17
+moe-gate il=20 t=19 BYTE-IDENTICAL
+moe-grouped il=21 t=19 dispatch=resident-q8-rows active=71/288 m_e: min=1 median=1 mean=2.1 max=17
+moe-stats il=21 t=19 assignments=152 active=71/288 entropy=5.630b (max 8.170b) mean_tok_per_active=2.14 max_tok_per_expert=17
+moe-gate il=21 t=19 BYTE-IDENTICAL
+moe-grouped il=22 t=19 active=71/288 m_e: min=1 median=2 mean=2.1 max=11 above_gemm_threshold(>=16)=0/71
+moe-stats il=22 t=19 assignments=152 active=71/288 entropy=5.755b (max 8.170b) mean_tok_per_active=2.14 max_tok_per_expert=11
+moe-gate il=22 t=19 BYTE-IDENTICAL
+moe-grouped il=23 t=19 active=73/288 m_e: min=1 median=1 mean=2.1 max=15 above_gemm_threshold(>=16)=0/73
+moe-stats il=23 t=19 assignments=152 active=73/288 entropy=5.700b (max 8.170b) mean_tok_per_active=2.08 max_tok_per_expert=15
+moe-gate il=23 t=19 BYTE-IDENTICAL
+moe-grouped il=24 t=19 active=80/288 m_e: min=1 median=1 mean=1.9 max=9 above_gemm_threshold(>=16)=0/80
+moe-stats il=24 t=19 assignments=152 active=80/288 entropy=5.995b (max 8.170b) mean_tok_per_active=1.90 max_tok_per_expert=9
+moe-gate il=24 t=19 BYTE-IDENTICAL
+moe-grouped il=25 t=19 active=71/288 m_e: min=1 median=2 mean=2.1 max=10 above_gemm_threshold(>=16)=0/71
+moe-stats il=25 t=19 assignments=152 active=71/288 entropy=5.818b (max 8.170b) mean_tok_per_active=2.14 max_tok_per_expert=10
+moe-gate il=25 t=19 BYTE-IDENTICAL
+moe-grouped il=26 t=19 active=67/288 m_e: min=1 median=2 mean=2.3 max=10 above_gemm_threshold(>=16)=0/67
+moe-stats il=26 t=19 assignments=152 active=67/288 entropy=5.681b (max 8.170b) mean_tok_per_active=2.27 max_tok_per_expert=10
+moe-gate il=26 t=19 BYTE-IDENTICAL
+moe-grouped il=27 t=19 active=61/288 m_e: min=1 median=1 mean=2.5 max=17 above_gemm_threshold(>=16)=1/61
+moe-stats il=27 t=19 assignments=152 active=61/288 entropy=5.395b (max 8.170b) mean_tok_per_active=2.49 max_tok_per_expert=17
+moe-gate il=27 t=19 BYTE-IDENTICAL
+moe-grouped il=28 t=19 active=67/288 m_e: min=1 median=2 mean=2.3 max=8 above_gemm_threshold(>=16)=0/67
+moe-stats il=28 t=19 assignments=152 active=67/288 entropy=5.710b (max 8.170b) mean_tok_per_active=2.27 max_tok_per_expert=8
+moe-gate il=28 t=19 BYTE-IDENTICAL
+moe-grouped il=29 t=19 active=75/288 m_e: min=1 median=1 mean=2.0 max=10 above_gemm_threshold(>=16)=0/75
+moe-stats il=29 t=19 assignments=152 active=75/288 entropy=5.914b (max 8.170b) mean_tok_per_active=2.03 max_tok_per_expert=10
+moe-gate il=29 t=19 BYTE-IDENTICAL
+moe-grouped il=30 t=19 active=70/288 m_e: min=1 median=1 mean=2.2 max=16 above_gemm_threshold(>=16)=1/70
+moe-stats il=30 t=19 assignments=152 active=70/288 entropy=5.483b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=16
+moe-gate il=30 t=19 BYTE-IDENTICAL
+moe-grouped il=31 t=19 active=68/288 m_e: min=1 median=1 mean=2.2 max=9 above_gemm_threshold(>=16)=0/68
+moe-stats il=31 t=19 assignments=152 active=68/288 entropy=5.641b (max 8.170b) mean_tok_per_active=2.24 max_tok_per_expert=9
+moe-gate il=31 t=19 BYTE-IDENTICAL
+moe-grouped il=32 t=19 active=67/288 m_e: min=1 median=1 mean=2.3 max=11 above_gemm_threshold(>=16)=0/67
+moe-stats il=32 t=19 assignments=152 active=67/288 entropy=5.598b (max 8.170b) mean_tok_per_active=2.27 max_tok_per_expert=11
+moe-gate il=32 t=19 BYTE-IDENTICAL
+moe-grouped il=33 t=19 active=68/288 m_e: min=1 median=2 mean=2.2 max=15 above_gemm_threshold(>=16)=0/68
+moe-stats il=33 t=19 assignments=152 active=68/288 entropy=5.605b (max 8.170b) mean_tok_per_active=2.24 max_tok_per_expert=15
+moe-gate il=33 t=19 BYTE-IDENTICAL
+moe-grouped il=34 t=19 active=70/288 m_e: min=1 median=1 mean=2.2 max=12 above_gemm_threshold(>=16)=0/70
+moe-stats il=34 t=19 assignments=152 active=70/288 entropy=5.725b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=12
+moe-gate il=34 t=19 BYTE-IDENTICAL
+moe-grouped il=35 t=19 active=78/288 m_e: min=1 median=1 mean=1.9 max=14 above_gemm_threshold(>=16)=0/78
+moe-stats il=35 t=19 assignments=152 active=78/288 entropy=5.850b (max 8.170b) mean_tok_per_active=1.95 max_tok_per_expert=14
+moe-gate il=35 t=19 BYTE-IDENTICAL
+moe-grouped il=36 t=19 active=79/288 m_e: min=1 median=1 mean=1.9 max=9 above_gemm_threshold(>=16)=0/79
+moe-stats il=36 t=19 assignments=152 active=79/288 entropy=5.996b (max 8.170b) mean_tok_per_active=1.92 max_tok_per_expert=9
+moe-gate il=36 t=19 BYTE-IDENTICAL
+moe-grouped il=37 t=19 active=88/288 m_e: min=1 median=1 mean=1.7 max=5 above_gemm_threshold(>=16)=0/88
+moe-stats il=37 t=19 assignments=152 active=88/288 entropy=6.218b (max 8.170b) mean_tok_per_active=1.73 max_tok_per_expert=5
+moe-gate il=37 t=19 BYTE-IDENTICAL
+moe-grouped il=38 t=19 active=81/288 m_e: min=1 median=1 mean=1.9 max=9 above_gemm_threshold(>=16)=0/81
+moe-stats il=38 t=19 assignments=152 active=81/288 entropy=6.032b (max 8.170b) mean_tok_per_active=1.88 max_tok_per_expert=9
+moe-gate il=38 t=19 BYTE-IDENTICAL
+moe-grouped il=39 t=19 active=83/288 m_e: min=1 median=1 mean=1.8 max=11 above_gemm_threshold(>=16)=0/83
+moe-stats il=39 t=19 assignments=152 active=83/288 entropy=5.986b (max 8.170b) mean_tok_per_active=1.83 max_tok_per_expert=11
+moe-gate il=39 t=19 BYTE-IDENTICAL
+moe-grouped il=40 t=19 active=89/288 m_e: min=1 median=1 mean=1.7 max=7 above_gemm_threshold(>=16)=0/89
+moe-stats il=40 t=19 assignments=152 active=89/288 entropy=6.191b (max 8.170b) mean_tok_per_active=1.71 max_tok_per_expert=7
+moe-gate il=40 t=19 BYTE-IDENTICAL
+moe-grouped il=41 t=19 active=87/288 m_e: min=1 median=1 mean=1.7 max=9 above_gemm_threshold(>=16)=0/87
+moe-stats il=41 t=19 assignments=152 active=87/288 entropy=6.109b (max 8.170b) mean_tok_per_active=1.75 max_tok_per_expert=9
+moe-gate il=41 t=19 BYTE-IDENTICAL
+moe-grouped il=42 t=19 active=84/288 m_e: min=1 median=1 mean=1.8 max=6 above_gemm_threshold(>=16)=0/84
+moe-stats il=42 t=19 assignments=152 active=84/288 entropy=6.163b (max 8.170b) mean_tok_per_active=1.81 max_tok_per_expert=6
+moe-gate il=42 t=19 BYTE-IDENTICAL
+moe-grouped il=43 t=19 active=73/288 m_e: min=1 median=1 mean=2.1 max=18 above_gemm_threshold(>=16)=1/73
+moe-stats il=43 t=19 assignments=152 active=73/288 entropy=5.715b (max 8.170b) mean_tok_per_active=2.08 max_tok_per_expert=18
+moe-gate il=43 t=19 BYTE-IDENTICAL
+moe-grouped il=44 t=19 active=87/288 m_e: min=1 median=1 mean=1.7 max=9 above_gemm_threshold(>=16)=0/87
+moe-stats il=44 t=19 assignments=152 active=87/288 entropy=6.216b (max 8.170b) mean_tok_per_active=1.75 max_tok_per_expert=9
+moe-gate il=44 t=19 BYTE-IDENTICAL
+moe-grouped il=3 t=19 dispatch=resident-q8-rows active=90/288 m_e: min=1 median=1 mean=1.7 max=17
+moe-stats il=3 t=19 assignments=152 active=90/288 entropy=5.991b (max 8.170b) mean_tok_per_active=1.69 max_tok_per_expert=17
+moe-gate il=3 t=19 BYTE-IDENTICAL
+moe-grouped il=4 t=19 dispatch=resident-q8-rows active=65/288 m_e: min=1 median=1 mean=2.3 max=13
+moe-stats il=4 t=19 assignments=152 active=65/288 entropy=5.392b (max 8.170b) mean_tok_per_active=2.34 max_tok_per_expert=13
+moe-gate il=4 t=19 BYTE-IDENTICAL
+moe-grouped il=5 t=19 dispatch=resident-q8-rows active=75/288 m_e: min=1 median=2 mean=2.0 max=17
+moe-stats il=5 t=19 assignments=152 active=75/288 entropy=5.825b (max 8.170b) mean_tok_per_active=2.03 max_tok_per_expert=17
+moe-gate il=5 t=19 BYTE-IDENTICAL
+moe-grouped il=6 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=1 mean=2.2 max=11
+moe-stats il=6 t=19 assignments=152 active=70/288 entropy=5.667b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=11
+moe-gate il=6 t=19 BYTE-IDENTICAL
+moe-grouped il=7 t=19 dispatch=resident-q8-rows active=74/288 m_e: min=1 median=1 mean=2.1 max=15
+moe-stats il=7 t=19 assignments=152 active=74/288 entropy=5.700b (max 8.170b) mean_tok_per_active=2.05 max_tok_per_expert=15
+moe-gate il=7 t=19 BYTE-IDENTICAL
+moe-grouped il=8 t=19 dispatch=resident-q8-rows active=75/288 m_e: min=1 median=1 mean=2.0 max=9
+moe-stats il=8 t=19 assignments=152 active=75/288 entropy=5.901b (max 8.170b) mean_tok_per_active=2.03 max_tok_per_expert=9
+moe-gate il=8 t=19 BYTE-IDENTICAL
+moe-grouped il=9 t=19 dispatch=resident-q8-rows active=64/288 m_e: min=1 median=2 mean=2.4 max=16
+moe-stats il=9 t=19 assignments=152 active=64/288 entropy=5.477b (max 8.170b) mean_tok_per_active=2.38 max_tok_per_expert=16
+moe-gate il=9 t=19 BYTE-IDENTICAL
+moe-grouped il=10 t=19 dispatch=resident-q8-rows active=66/288 m_e: min=1 median=1 mean=2.3 max=14
+moe-stats il=10 t=19 assignments=152 active=66/288 entropy=5.423b (max 8.170b) mean_tok_per_active=2.30 max_tok_per_expert=14
+moe-gate il=10 t=19 BYTE-IDENTICAL
+moe-grouped il=11 t=19 dispatch=resident-q8-rows active=66/288 m_e: min=1 median=2 mean=2.3 max=11
+moe-stats il=11 t=19 assignments=152 active=66/288 entropy=5.656b (max 8.170b) mean_tok_per_active=2.30 max_tok_per_expert=11
+moe-gate il=11 t=19 BYTE-IDENTICAL
+moe-grouped il=12 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=1 mean=2.2 max=8
+moe-stats il=12 t=19 assignments=152 active=70/288 entropy=5.770b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=8
+moe-gate il=12 t=19 BYTE-IDENTICAL
+moe-grouped il=13 t=19 dispatch=resident-q8-rows active=59/288 m_e: min=1 median=2 mean=2.6 max=13
+moe-stats il=13 t=19 assignments=152 active=59/288 entropy=5.364b (max 8.170b) mean_tok_per_active=2.58 max_tok_per_expert=13
+moe-gate il=13 t=19 BYTE-IDENTICAL
+moe-grouped il=14 t=19 dispatch=resident-q8-rows active=59/288 m_e: min=1 median=2 mean=2.6 max=10
+moe-stats il=14 t=19 assignments=152 active=59/288 entropy=5.567b (max 8.170b) mean_tok_per_active=2.58 max_tok_per_expert=10
+moe-gate il=14 t=19 BYTE-IDENTICAL
+moe-grouped il=15 t=19 dispatch=resident-q8-rows active=58/288 m_e: min=1 median=2 mean=2.6 max=16
+moe-stats il=15 t=19 assignments=152 active=58/288 entropy=5.330b (max 8.170b) mean_tok_per_active=2.62 max_tok_per_expert=16
+moe-gate il=15 t=19 BYTE-IDENTICAL
+moe-grouped il=16 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=1 mean=2.2 max=15
+moe-stats il=16 t=19 assignments=152 active=70/288 entropy=5.565b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=15
+moe-gate il=16 t=19 BYTE-IDENTICAL
+moe-grouped il=17 t=19 dispatch=resident-q8-rows active=69/288 m_e: min=1 median=1 mean=2.2 max=16
+moe-stats il=17 t=19 assignments=152 active=69/288 entropy=5.503b (max 8.170b) mean_tok_per_active=2.20 max_tok_per_expert=16
+moe-gate il=17 t=19 BYTE-IDENTICAL
+moe-grouped il=18 t=19 dispatch=resident-q8-rows active=66/288 m_e: min=1 median=1 mean=2.3 max=17
+moe-stats il=18 t=19 assignments=152 active=66/288 entropy=5.438b (max 8.170b) mean_tok_per_active=2.30 max_tok_per_expert=17
+moe-gate il=18 t=19 BYTE-IDENTICAL
+moe-grouped il=19 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=2 mean=2.2 max=17
+moe-stats il=19 t=19 assignments=152 active=70/288 entropy=5.639b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=17
+moe-gate il=19 t=19 BYTE-IDENTICAL
+moe-grouped il=20 t=19 dispatch=resident-q8-rows active=61/288 m_e: min=1 median=1 mean=2.5 max=17
+moe-stats il=20 t=19 assignments=152 active=61/288 entropy=5.292b (max 8.170b) mean_tok_per_active=2.49 max_tok_per_expert=17
+moe-gate il=20 t=19 BYTE-IDENTICAL
+moe-grouped il=21 t=19 dispatch=resident-q8-rows active=71/288 m_e: min=1 median=1 mean=2.1 max=17
+moe-stats il=21 t=19 assignments=152 active=71/288 entropy=5.630b (max 8.170b) mean_tok_per_active=2.14 max_tok_per_expert=17
+moe-gate il=21 t=19 BYTE-IDENTICAL
+moe-grouped il=22 t=19 active=71/288 m_e: min=1 median=2 mean=2.1 max=11 above_gemm_threshold(>=16)=0/71
+moe-stats il=22 t=19 assignments=152 active=71/288 entropy=5.755b (max 8.170b) mean_tok_per_active=2.14 max_tok_per_expert=11
+moe-gate il=22 t=19 BYTE-IDENTICAL
+moe-grouped il=23 t=19 active=73/288 m_e: min=1 median=1 mean=2.1 max=15 above_gemm_threshold(>=16)=0/73
+moe-stats il=23 t=19 assignments=152 active=73/288 entropy=5.700b (max 8.170b) mean_tok_per_active=2.08 max_tok_per_expert=15
+moe-gate il=23 t=19 BYTE-IDENTICAL
+moe-grouped il=24 t=19 active=80/288 m_e: min=1 median=1 mean=1.9 max=9 above_gemm_threshold(>=16)=0/80
+moe-stats il=24 t=19 assignments=152 active=80/288 entropy=5.995b (max 8.170b) mean_tok_per_active=1.90 max_tok_per_expert=9
+moe-gate il=24 t=19 BYTE-IDENTICAL
+moe-grouped il=25 t=19 active=71/288 m_e: min=1 median=2 mean=2.1 max=10 above_gemm_threshold(>=16)=0/71
+moe-stats il=25 t=19 assignments=152 active=71/288 entropy=5.818b (max 8.170b) mean_tok_per_active=2.14 max_tok_per_expert=10
+moe-gate il=25 t=19 BYTE-IDENTICAL
+moe-grouped il=26 t=19 active=67/288 m_e: min=1 median=2 mean=2.3 max=10 above_gemm_threshold(>=16)=0/67
+moe-stats il=26 t=19 assignments=152 active=67/288 entropy=5.681b (max 8.170b) mean_tok_per_active=2.27 max_tok_per_expert=10
+moe-gate il=26 t=19 BYTE-IDENTICAL
+moe-grouped il=27 t=19 active=61/288 m_e: min=1 median=1 mean=2.5 max=17 above_gemm_threshold(>=16)=1/61
+moe-stats il=27 t=19 assignments=152 active=61/288 entropy=5.395b (max 8.170b) mean_tok_per_active=2.49 max_tok_per_expert=17
+moe-gate il=27 t=19 BYTE-IDENTICAL
+moe-grouped il=28 t=19 active=67/288 m_e: min=1 median=2 mean=2.3 max=8 above_gemm_threshold(>=16)=0/67
+moe-stats il=28 t=19 assignments=152 active=67/288 entropy=5.710b (max 8.170b) mean_tok_per_active=2.27 max_tok_per_expert=8
+moe-gate il=28 t=19 BYTE-IDENTICAL
+moe-grouped il=29 t=19 active=75/288 m_e: min=1 median=1 mean=2.0 max=10 above_gemm_threshold(>=16)=0/75
+moe-stats il=29 t=19 assignments=152 active=75/288 entropy=5.914b (max 8.170b) mean_tok_per_active=2.03 max_tok_per_expert=10
+moe-gate il=29 t=19 BYTE-IDENTICAL
+moe-grouped il=30 t=19 active=70/288 m_e: min=1 median=1 mean=2.2 max=16 above_gemm_threshold(>=16)=1/70
+moe-stats il=30 t=19 assignments=152 active=70/288 entropy=5.483b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=16
+moe-gate il=30 t=19 BYTE-IDENTICAL
+moe-grouped il=31 t=19 active=68/288 m_e: min=1 median=1 mean=2.2 max=9 above_gemm_threshold(>=16)=0/68
+moe-stats il=31 t=19 assignments=152 active=68/288 entropy=5.641b (max 8.170b) mean_tok_per_active=2.24 max_tok_per_expert=9
+moe-gate il=31 t=19 BYTE-IDENTICAL
+moe-grouped il=32 t=19 active=67/288 m_e: min=1 median=1 mean=2.3 max=11 above_gemm_threshold(>=16)=0/67
+moe-stats il=32 t=19 assignments=152 active=67/288 entropy=5.598b (max 8.170b) mean_tok_per_active=2.27 max_tok_per_expert=11
+moe-gate il=32 t=19 BYTE-IDENTICAL
+moe-grouped il=33 t=19 active=68/288 m_e: min=1 median=2 mean=2.2 max=15 above_gemm_threshold(>=16)=0/68
+moe-stats il=33 t=19 assignments=152 active=68/288 entropy=5.605b (max 8.170b) mean_tok_per_active=2.24 max_tok_per_expert=15
+moe-gate il=33 t=19 BYTE-IDENTICAL
+moe-grouped il=34 t=19 active=70/288 m_e: min=1 median=1 mean=2.2 max=12 above_gemm_threshold(>=16)=0/70
+moe-stats il=34 t=19 assignments=152 active=70/288 entropy=5.725b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=12
+moe-gate il=34 t=19 BYTE-IDENTICAL
+moe-grouped il=35 t=19 active=78/288 m_e: min=1 median=1 mean=1.9 max=14 above_gemm_threshold(>=16)=0/78
+moe-stats il=35 t=19 assignments=152 active=78/288 entropy=5.850b (max 8.170b) mean_tok_per_active=1.95 max_tok_per_expert=14
+moe-gate il=35 t=19 BYTE-IDENTICAL
+moe-grouped il=36 t=19 active=79/288 m_e: min=1 median=1 mean=1.9 max=9 above_gemm_threshold(>=16)=0/79
+moe-stats il=36 t=19 assignments=152 active=79/288 entropy=5.996b (max 8.170b) mean_tok_per_active=1.92 max_tok_per_expert=9
+moe-gate il=36 t=19 BYTE-IDENTICAL
+moe-grouped il=37 t=19 active=88/288 m_e: min=1 median=1 mean=1.7 max=5 above_gemm_threshold(>=16)=0/88
+moe-stats il=37 t=19 assignments=152 active=88/288 entropy=6.218b (max 8.170b) mean_tok_per_active=1.73 max_tok_per_expert=5
+moe-gate il=37 t=19 BYTE-IDENTICAL
+moe-grouped il=38 t=19 active=81/288 m_e: min=1 median=1 mean=1.9 max=9 above_gemm_threshold(>=16)=0/81
+moe-stats il=38 t=19 assignments=152 active=81/288 entropy=6.032b (max 8.170b) mean_tok_per_active=1.88 max_tok_per_expert=9
+moe-gate il=38 t=19 BYTE-IDENTICAL
+moe-grouped il=39 t=19 active=83/288 m_e: min=1 median=1 mean=1.8 max=11 above_gemm_threshold(>=16)=0/83
+moe-stats il=39 t=19 assignments=152 active=83/288 entropy=5.986b (max 8.170b) mean_tok_per_active=1.83 max_tok_per_expert=11
+moe-gate il=39 t=19 BYTE-IDENTICAL
+moe-grouped il=40 t=19 active=89/288 m_e: min=1 median=1 mean=1.7 max=7 above_gemm_threshold(>=16)=0/89
+moe-stats il=40 t=19 assignments=152 active=89/288 entropy=6.191b (max 8.170b) mean_tok_per_active=1.71 max_tok_per_expert=7
+moe-gate il=40 t=19 BYTE-IDENTICAL
+moe-grouped il=41 t=19 active=87/288 m_e: min=1 median=1 mean=1.7 max=9 above_gemm_threshold(>=16)=0/87
+moe-stats il=41 t=19 assignments=152 active=87/288 entropy=6.109b (max 8.170b) mean_tok_per_active=1.75 max_tok_per_expert=9
+moe-gate il=41 t=19 BYTE-IDENTICAL
+moe-grouped il=42 t=19 active=84/288 m_e: min=1 median=1 mean=1.8 max=6 above_gemm_threshold(>=16)=0/84
+moe-stats il=42 t=19 assignments=152 active=84/288 entropy=6.163b (max 8.170b) mean_tok_per_active=1.81 max_tok_per_expert=6
+moe-gate il=42 t=19 BYTE-IDENTICAL
+moe-grouped il=43 t=19 active=73/288 m_e: min=1 median=1 mean=2.1 max=18 above_gemm_threshold(>=16)=1/73
+moe-stats il=43 t=19 assignments=152 active=73/288 entropy=5.715b (max 8.170b) mean_tok_per_active=2.08 max_tok_per_expert=18
+moe-gate il=43 t=19 BYTE-IDENTICAL
+moe-grouped il=44 t=19 active=87/288 m_e: min=1 median=1 mean=1.7 max=9 above_gemm_threshold(>=16)=0/87
+moe-stats il=44 t=19 assignments=152 active=87/288 entropy=6.216b (max 8.170b) mean_tok_per_active=1.75 max_tok_per_expert=9
+moe-gate il=44 t=19 BYTE-IDENTICAL
+prefill 19 tok in 0.6813s = 27.9 tok/s (pp19)
+moe-grouped il=3 t=19 dispatch=resident-q8-rows active=90/288 m_e: min=1 median=1 mean=1.7 max=17
+moe-stats il=3 t=19 assignments=152 active=90/288 entropy=5.996b (max 8.170b) mean_tok_per_active=1.69 max_tok_per_expert=17
+moe-gate il=3 t=19 BYTE-IDENTICAL
+moe-grouped il=4 t=19 dispatch=resident-q8-rows active=62/288 m_e: min=1 median=1 mean=2.5 max=13
+moe-stats il=4 t=19 assignments=152 active=62/288 entropy=5.359b (max 8.170b) mean_tok_per_active=2.45 max_tok_per_expert=13
+moe-gate il=4 t=19 BYTE-IDENTICAL
+moe-grouped il=5 t=19 dispatch=resident-q8-rows active=73/288 m_e: min=1 median=2 mean=2.1 max=17
+moe-stats il=5 t=19 assignments=152 active=73/288 entropy=5.803b (max 8.170b) mean_tok_per_active=2.08 max_tok_per_expert=17
+moe-gate il=5 t=19 BYTE-IDENTICAL
+moe-grouped il=6 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=1 mean=2.2 max=11
+moe-stats il=6 t=19 assignments=152 active=70/288 entropy=5.673b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=11
+moe-gate il=6 t=19 BYTE-IDENTICAL
+moe-grouped il=7 t=19 dispatch=resident-q8-rows active=72/288 m_e: min=1 median=1 mean=2.1 max=14
+moe-stats il=7 t=19 assignments=152 active=72/288 entropy=5.691b (max 8.170b) mean_tok_per_active=2.11 max_tok_per_expert=14
+moe-gate il=7 t=19 BYTE-IDENTICAL
+moe-grouped il=8 t=19 dispatch=resident-q8-rows active=75/288 m_e: min=1 median=1 mean=2.0 max=9
+moe-stats il=8 t=19 assignments=152 active=75/288 entropy=5.896b (max 8.170b) mean_tok_per_active=2.03 max_tok_per_expert=9
+moe-gate il=8 t=19 BYTE-IDENTICAL
+moe-grouped il=9 t=19 dispatch=resident-q8-rows active=66/288 m_e: min=1 median=2 mean=2.3 max=16
+moe-stats il=9 t=19 assignments=152 active=66/288 entropy=5.528b (max 8.170b) mean_tok_per_active=2.30 max_tok_per_expert=16
+moe-gate il=9 t=19 BYTE-IDENTICAL
+moe-grouped il=10 t=19 dispatch=resident-q8-rows active=65/288 m_e: min=1 median=1 mean=2.3 max=14
+moe-stats il=10 t=19 assignments=152 active=65/288 entropy=5.409b (max 8.170b) mean_tok_per_active=2.34 max_tok_per_expert=14
+moe-gate il=10 t=19 BYTE-IDENTICAL
+moe-grouped il=11 t=19 dispatch=resident-q8-rows active=67/288 m_e: min=1 median=2 mean=2.3 max=10
+moe-stats il=11 t=19 assignments=152 active=67/288 entropy=5.701b (max 8.170b) mean_tok_per_active=2.27 max_tok_per_expert=10
+moe-gate il=11 t=19 BYTE-IDENTICAL
+moe-grouped il=12 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=1 mean=2.2 max=8
+moe-stats il=12 t=19 assignments=152 active=70/288 entropy=5.776b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=8
+moe-gate il=12 t=19 BYTE-IDENTICAL
+moe-grouped il=13 t=19 dispatch=resident-q8-rows active=61/288 m_e: min=1 median=2 mean=2.5 max=13
+moe-stats il=13 t=19 assignments=152 active=61/288 entropy=5.410b (max 8.170b) mean_tok_per_active=2.49 max_tok_per_expert=13
+moe-gate il=13 t=19 BYTE-IDENTICAL
+moe-grouped il=14 t=19 dispatch=resident-q8-rows active=60/288 m_e: min=1 median=2 mean=2.5 max=10
+moe-stats il=14 t=19 assignments=152 active=60/288 entropy=5.591b (max 8.170b) mean_tok_per_active=2.53 max_tok_per_expert=10
+moe-gate il=14 t=19 BYTE-IDENTICAL
+moe-grouped il=15 t=19 dispatch=resident-q8-rows active=59/288 m_e: min=1 median=2 mean=2.6 max=16
+moe-stats il=15 t=19 assignments=152 active=59/288 entropy=5.342b (max 8.170b) mean_tok_per_active=2.58 max_tok_per_expert=16
+moe-gate il=15 t=19 BYTE-IDENTICAL
+moe-grouped il=16 t=19 dispatch=resident-q8-rows active=69/288 m_e: min=1 median=1 mean=2.2 max=13
+moe-stats il=16 t=19 assignments=152 active=69/288 entropy=5.565b (max 8.170b) mean_tok_per_active=2.20 max_tok_per_expert=13
+moe-gate il=16 t=19 BYTE-IDENTICAL
+moe-grouped il=17 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=1 mean=2.2 max=16
+moe-stats il=17 t=19 assignments=152 active=70/288 entropy=5.503b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=16
+moe-gate il=17 t=19 BYTE-IDENTICAL
+moe-grouped il=18 t=19 dispatch=resident-q8-rows active=66/288 m_e: min=1 median=1 mean=2.3 max=17
+moe-stats il=18 t=19 assignments=152 active=66/288 entropy=5.425b (max 8.170b) mean_tok_per_active=2.30 max_tok_per_expert=17
+moe-gate il=18 t=19 BYTE-IDENTICAL
+moe-grouped il=19 t=19 dispatch=resident-q8-rows active=68/288 m_e: min=1 median=2 mean=2.2 max=17
+moe-stats il=19 t=19 assignments=152 active=68/288 entropy=5.592b (max 8.170b) mean_tok_per_active=2.24 max_tok_per_expert=17
+moe-gate il=19 t=19 BYTE-IDENTICAL
+moe-grouped il=20 t=19 dispatch=resident-q8-rows active=61/288 m_e: min=1 median=1 mean=2.5 max=17
+moe-stats il=20 t=19 assignments=152 active=61/288 entropy=5.292b (max 8.170b) mean_tok_per_active=2.49 max_tok_per_expert=17
+moe-gate il=20 t=19 BYTE-IDENTICAL
+moe-grouped il=21 t=19 dispatch=resident-q8-rows active=73/288 m_e: min=1 median=1 mean=2.1 max=17
+moe-stats il=21 t=19 assignments=152 active=73/288 entropy=5.665b (max 8.170b) mean_tok_per_active=2.08 max_tok_per_expert=17
+moe-gate il=21 t=19 BYTE-IDENTICAL
+moe-grouped il=22 t=19 dispatch=resident-q8-rows active=72/288 m_e: min=1 median=1 mean=2.1 max=10
+moe-stats il=22 t=19 assignments=152 active=72/288 entropy=5.761b (max 8.170b) mean_tok_per_active=2.11 max_tok_per_expert=10
+moe-gate il=22 t=19 BYTE-IDENTICAL
+moe-grouped il=23 t=19 dispatch=resident-q8-rows active=73/288 m_e: min=1 median=1 mean=2.1 max=16
+moe-stats il=23 t=19 assignments=152 active=73/288 entropy=5.679b (max 8.170b) mean_tok_per_active=2.08 max_tok_per_expert=16
+moe-gate il=23 t=19 BYTE-IDENTICAL
+moe-grouped il=24 t=19 dispatch=resident-q8-rows active=79/288 m_e: min=1 median=1 mean=1.9 max=9
+moe-stats il=24 t=19 assignments=152 active=79/288 entropy=5.976b (max 8.170b) mean_tok_per_active=1.92 max_tok_per_expert=9
+moe-gate il=24 t=19 BYTE-IDENTICAL
+moe-grouped il=25 t=19 dispatch=resident-q8-rows active=71/288 m_e: min=1 median=2 mean=2.1 max=10
+moe-stats il=25 t=19 assignments=152 active=71/288 entropy=5.822b (max 8.170b) mean_tok_per_active=2.14 max_tok_per_expert=10
+moe-gate il=25 t=19 BYTE-IDENTICAL
+moe-grouped il=26 t=19 dispatch=resident-q8-rows active=66/288 m_e: min=1 median=2 mean=2.3 max=11
+moe-stats il=26 t=19 assignments=152 active=66/288 entropy=5.649b (max 8.170b) mean_tok_per_active=2.30 max_tok_per_expert=11
+moe-gate il=26 t=19 BYTE-IDENTICAL
+moe-grouped il=27 t=19 dispatch=resident-q8-rows active=61/288 m_e: min=1 median=1 mean=2.5 max=17
+moe-stats il=27 t=19 assignments=152 active=61/288 entropy=5.403b (max 8.170b) mean_tok_per_active=2.49 max_tok_per_expert=17
+moe-gate il=27 t=19 BYTE-IDENTICAL
+moe-grouped il=28 t=19 dispatch=resident-q8-rows active=69/288 m_e: min=1 median=2 mean=2.2 max=8
+moe-stats il=28 t=19 assignments=152 active=69/288 entropy=5.766b (max 8.170b) mean_tok_per_active=2.20 max_tok_per_expert=8
+moe-gate il=28 t=19 BYTE-IDENTICAL
+moe-grouped il=29 t=19 dispatch=resident-q8-rows active=76/288 m_e: min=1 median=1 mean=2.0 max=9
+moe-stats il=29 t=19 assignments=152 active=76/288 entropy=5.956b (max 8.170b) mean_tok_per_active=2.00 max_tok_per_expert=9
+moe-gate il=29 t=19 BYTE-IDENTICAL
+moe-grouped il=30 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=1 mean=2.2 max=16
+moe-stats il=30 t=19 assignments=152 active=70/288 entropy=5.492b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=16
+moe-gate il=30 t=19 BYTE-IDENTICAL
+moe-grouped il=31 t=19 dispatch=resident-q8-rows active=70/288 m_e: min=1 median=1 mean=2.2 max=8
+moe-stats il=31 t=19 assignments=152 active=70/288 entropy=5.684b (max 8.170b) mean_tok_per_active=2.17 max_tok_per_expert=8
+moe-gate il=31 t=19 BYTE-IDENTICAL
+moe-grouped il=32 t=19 dispatch=resident-q8-rows active=67/288 m_e: min=1 median=1 mean=2.3 max=10
+moe-stats il=32 t=19 assignments=152 active=67/288 entropy=5.599b (max 8.170b) mean_tok_per_active=2.27 max_tok_per_expert=10
+moe-gate il=32 t=19 BYTE-IDENTICAL
+moe-grouped il=33 t=19 dispatch=resident-q8-rows active=69/288 m_e: min=1 median=1 mean=2.2 max=15
+moe-stats il=33 t=19 assignments=152 active=69/288 entropy=5.626b (max 8.170b) mean_tok_per_active=2.20 max_tok_per_expert=15
+moe-gate il=33 t=19 BYTE-IDENTICAL
+moe-grouped il=34 t=19 dispatch=resident-q8-rows active=69/288 m_e: min=1 median=1 mean=2.2 max=12
+moe-stats il=34 t=19 assignments=152 active=69/288 entropy=5.714b (max 8.170b) mean_tok_per_active=2.20 max_tok_per_expert=12
+moe-gate il=34 t=19 BYTE-IDENTICAL
+moe-grouped il=35 t=19 dispatch=resident-q8-rows active=78/288 m_e: min=1 median=1 mean=1.9 max=14
+moe-stats il=35 t=19 assignments=152 active=78/288 entropy=5.852b (max 8.170b) mean_tok_per_active=1.95 max_tok_per_expert=14
+moe-gate il=35 t=19 BYTE-IDENTICAL
+moe-grouped il=36 t=19 dispatch=resident-q8-rows active=79/288 m_e: min=1 median=1 mean=1.9 max=9
+moe-stats il=36 t=19 assignments=152 active=79/288 entropy=5.992b (max 8.170b) mean_tok_per_active=1.92 max_tok_per_expert=9
+moe-gate il=36 t=19 BYTE-IDENTICAL
+moe-grouped il=37 t=19 dispatch=resident-q8-rows active=89/288 m_e: min=1 median=1 mean=1.7 max=5
+moe-stats il=37 t=19 assignments=152 active=89/288 entropy=6.256b (max 8.170b) mean_tok_per_active=1.71 max_tok_per_expert=5
+moe-gate il=37 t=19 BYTE-IDENTICAL
+moe-grouped il=38 t=19 dispatch=resident-q8-rows active=83/288 m_e: min=1 median=1 mean=1.8 max=9
+moe-stats il=38 t=19 assignments=152 active=83/288 entropy=6.058b (max 8.170b) mean_tok_per_active=1.83 max_tok_per_expert=9
+moe-gate il=38 t=19 BYTE-IDENTICAL
+moe-grouped il=39 t=19 dispatch=resident-q8-rows active=81/288 m_e: min=1 median=1 mean=1.9 max=11
+moe-stats il=39 t=19 assignments=152 active=81/288 entropy=5.976b (max 8.170b) mean_tok_per_active=1.88 max_tok_per_expert=11
+moe-gate il=39 t=19 BYTE-IDENTICAL
+moe-grouped il=40 t=19 dispatch=resident-q8-rows active=91/288 m_e: min=1 median=1 mean=1.7 max=7
+moe-stats il=40 t=19 assignments=152 active=91/288 entropy=6.219b (max 8.170b) mean_tok_per_active=1.67 max_tok_per_expert=7
+moe-gate il=40 t=19 BYTE-IDENTICAL
+moe-grouped il=41 t=19 dispatch=resident-q8-rows active=87/288 m_e: min=1 median=1 mean=1.7 max=9
+moe-stats il=41 t=19 assignments=152 active=87/288 entropy=6.127b (max 8.170b) mean_tok_per_active=1.75 max_tok_per_expert=9
+moe-gate il=41 t=19 BYTE-IDENTICAL
+moe-grouped il=42 t=19 dispatch=resident-q8-rows active=83/288 m_e: min=1 median=1 mean=1.8 max=6
+moe-stats il=42 t=19 assignments=152 active=83/288 entropy=6.124b (max 8.170b) mean_tok_per_active=1.83 max_tok_per_expert=6
+moe-gate il=42 t=19 BYTE-IDENTICAL
+moe-grouped il=43 t=19 dispatch=resident-q8-clamped-pairs active=75/288 m_e: min=1 median=1 mean=2.0 max=18
+moe-stats il=43 t=19 assignments=152 active=75/288 entropy=5.736b (max 8.170b) mean_tok_per_active=2.03 max_tok_per_expert=18
+moe-gate il=43 t=19 BYTE-IDENTICAL
+moe-grouped il=44 t=19 dispatch=resident-q8-clamped-pairs active=90/288 m_e: min=1 median=1 mean=1.7 max=9
+moe-stats il=44 t=19 assignments=152 active=90/288 entropy=6.252b (max 8.170b) mean_tok_per_active=1.69 max_tok_per_expert=9
+moe-gate il=44 t=19 BYTE-IDENTICAL
+generated 1 tokens in 0.033s = 30.58 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.232s) [stop: MaxNew]
+tokens: [6776]
+MoE cache: 15356 slots | cumulative hits=41886 misses=5211 (hit-rate=88.9%) | Stage-1 baseline = 2678 MB/decode-token (every block, every layer, every token)
+MoE cache STEADY-STATE (32 tokens after warmup): hit-rate=0.0% | 0.0 MB/decode-token (vs 2678 MB/token Stage-1 => infx less PCIe)
+OUTPUT TEXT: "  \n\n"
+--- generated text ---
+  
+
+

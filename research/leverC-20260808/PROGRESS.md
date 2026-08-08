@@ -169,3 +169,20 @@ the same host sigmoid routes, clamp kernel, batched row quantization, and slot-o
 but uses the pair-major `moe_pairs_matvec_q8` body for gate, up, and down. That kernel is the
 literal `qmatvec_expert_q8` row program with a pair-indexed weight pointer, matching the
 sequential clamped oracle without relying on the decode-once extractor's claimed equivalence.
+
+## Increment 4 - model-backed byte oracle green
+
+Commit `adfa5a5e` was rebuilt from the pinned Box2 worktree and rerun with
+`MEMRA_MOE_GATE=1 MEMRA_MOE_STATS=1`. The short `run-gen` protocol performs several prefill
+comparisons internally; all 210 grouped layer comparisons were byte-identical and the log
+contains zero `MISMATCH` rows.
+
+| Layer class | Live dispatch | Oracle verdict |
+|---|---|---|
+| unclamped Step35 MoE | `resident-q8-rows` | `BYTE-IDENTICAL` |
+| clamped Step35 MoE | `resident-q8-clamped-pairs` | `BYTE-IDENTICAL` |
+| process result | model-backed `run-gen`, PP-2 | exit 0 |
+
+The grouped dispatch now stays entirely inside the Step35-legal family: routing and weights come
+from the m-invariant host sigmoid oracle; the rows and pair-batched kernels consume those fixed
+routes and never invoke the softmax device router.
