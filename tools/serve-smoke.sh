@@ -310,7 +310,11 @@ else:  # replay: same prompts, rebuilt from the RECORDED history
 PY
   # Both arms resume (MEMRA_AFFINITY=1): this is a REPEATABILITY test of the resume path,
   # not a resume-vs-cold test (see above for why the latter is not a property of the engine).
+  # Affinity is owned by parked spec sessions. PP-2 deliberately defaults spec admission OFF,
+  # so force the documented always-spec seam here; otherwise this arm only tests prefix-cache
+  # determinism and can never exercise a rewind.
   export MEMRA_AFFINITY=1
+  export MEMRA_SPEC_GATE=0
   if start_server "smoke=$MODEL+$DRAFT"; then
     python3 $AFFPY 8177 record /tmp/serve-smoke-affinity.json 2>/dev/null
     # NB: `grep -c` already prints 0 on no-match (and exits 1), so a `|| echo 0` fallback
@@ -346,7 +350,7 @@ PY
   else
     FAIL "affinity arm did not start"
   fi
-  unset MEMRA_AFFINITY
+  unset MEMRA_AFFINITY MEMRA_SPEC_GATE
 else
   echo "== serve-smoke: spec arm SKIP (no draft at $DRAFT)"
 fi

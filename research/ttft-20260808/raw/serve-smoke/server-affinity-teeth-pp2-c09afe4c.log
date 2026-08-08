@@ -1,0 +1,32 @@
+[server] starting; models config = [("smoke", "/home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf", Some("/home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf"))]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (device=1, MEMRA_FAST=true)
+[spec-gate] policy disabled by MEMRA_SPEC_GATE=0: always-spec
+[worker] loading model "smoke" <- /home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.72GB (expert budget 94.80GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+[mtp-draft] step35 MTP geometry blk.45: n_head=96 n_head_kv=8 n_rot=128 rope_base=10000 swa=true window=512
+[mtp-draft] external draft head: blk.45, source=nextn.shared_head_head.weight, head_vocab=128896 (full)
+[worker] smoke: regime draft attached (/home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf)
+[worker]   loaded "smoke": 45 layers, eos=128007
+[worker] smoke: template caps tools=true think=true think_switch=false chat_ok=true effort_levels=true gemma_think=false ctx=262144 tok="deepseek-v3" instruct=Some("chatml")
+[worker] smoke: decode chunk cap 8
+[prefix-cache] on: budget 268MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["smoke"]
+[server] listening on http://127.0.0.1:8177
+[meter] admit id=cmpl-d9d3a92ba81f88b042a64d1fd88632d1 tenant=default lane=interactive model="smoke"
+[worker] observed session VRAM cost for "smoke": 369MB (admission gate = 2x)
+[spec-acc] ctx=49 burst=15/48 cum=15/48=0.312
+[meter] admit id=cmpl-76beb297cb43fc10eae2308431259ce3 tenant=default lane=interactive model="smoke"
+[spec-acc] ctx=74 burst=18/48 cum=18/48=0.375
+[spec-acc] ctx=109 burst=7/18 cum=25/66=0.379
+[meter] admit id=cmpl-e23dc7d421d61fc5e0bf7956302bf300 tenant=default lane=interactive model="smoke"
+[spec-acc] ctx=118 burst=15/48 cum=15/48=0.312
+[spec-acc] ctx=150 burst=10/21 cum=25/69=0.362
+[meter] admit id=cmpl-6f6d98edffc94ec0a5b1468a57b07778 tenant=default lane=interactive model="smoke"
+[spec-acc] ctx=165 burst=17/42 cum=17/42=0.405
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

@@ -1,0 +1,12 @@
+=== affinity liveness teeth PP-2 2026-08-08T14:26:57Z ===
+placement=MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1
+control=MEMRA_SPEC_GATE=0 MEMRA_AFFINITY=0
+expect=spec work live, zero rewinds, arm liveness condition RED
+pp_cross_device_lines=1
+policy_always_spec_lines=1
+spec_acc_lines=6
+rewinds=0
+failed_rewinds=0
+EXPECTED FAIL: affinity never rewound — the resume path was not exercised
+teeth_verdict=PASS (the fixed arm still turns red when affinity is disabled)
+=== teeth done 2026-08-08T14:27:38Z ===

@@ -1,0 +1,65 @@
+=== serve-smoke fixed PP-2 validation 2026-08-08T14:23:22Z ===
+commit=c09afe4c33e10a79c0aa4f9a9b6884ee7792111d
+binary_sha256=842cbe6084cdf3332205caf09967f60a72aa316cc354dde1656375a9b5a8ebc2
+placement=MEMRA_PP_STAGES=2 MEMRA_PP_DEVICES=0,1
+model=/home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+draft=/home/ubuntu/step37/models/step-3.7-flash/Step3.7-flash-mtp-Q8_0.gguf
+lock acquired
+0, NVIDIA RTX PRO 6000 Blackwell Server Edition, 41, 2400 MHz, 0 MiB, 78 %
+1, NVIDIA RTX PRO 6000 Blackwell Server Edition, 44, 2422 MHz, 0 MiB, 93 %
+== serve-smoke: plain serving ==
+  ok: /models lists the model
+  ok: chat non-stream (text + usage + finish_reason)
+  ok: chat stream (SSE chunks + [DONE])
+  ok: /v1/completions
+  ok: greedy determinism (2 runs identical)
+  ok: 3 concurrent chats
+  ok: long generation (>=100 tok)
+== serve-smoke: cache-metering exactness ==
+  ok: A-req1 cached_tokens == 0
+  ok: A-req1 prompt_tokens == 272
+  ok: A-req2 cached_tokens == 0
+  ok: A-req2 prompt_tokens == 272
+  ok: A-req3 cached_tokens == 256
+  ok: A-req3 prompt_tokens == 272
+  ok: A-req4 cached_tokens == 256
+  ok: A-req4 prompt_tokens == 272
+  ok: A-req5 cached_tokens == 256
+  ok: A-req5 prompt_tokens == 272
+  ok: B-req1 cached_tokens == 0 (cross-salt blindness)
+  ok: prompt_tokens_in == 1632
+  ok: cached_tokens_in == 768
+  ok: computed_tokens_in == prompt - cached
+  ok: cache_hit_token_ratio matches arithmetic
+  ok: prefix_cache_hits == N-2
+  ok: prefix_cache_misses == 3
+  ok: prefix_cache_inserts == 3 (A seed + A split + B seed)
+  ok: prefix_cache_hit_tokens == 768
+  ok: lcp_histogram: 6 probes total
+  ok: lcp_histogram: 2 cold probes in bucket [0]
+  ok: lcp_histogram: 4 probes in K's bucket (edge 256)
+  ok: tick-seg [64,512) window carries the shared-prefix probes
+  ok: tenants[meter-A] split exact
+  ok: tenants[meter-B] split exact (0 cached)
+  ok: economics revenue_multiplier == 1.8889 (factor 1.0)
+cache-meter-gate: 0 failed
+  ok: cache-metering accounting exact (per-request + /metrics + economics)
+== serve-smoke: spec serving (draft attached) ==
+  ok: spec == plain greedy text (serving exactness)
+== serve-smoke: sampled truncation matrix (spec server) ==
+  (immune baseline: untruncated t0.8 seed=7, bangs=0)
+  ok: trunc top_k=40 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc top_p=0.95 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc min_p=0.05 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc llama-default k40+p0.95+m0.05 (reproducible, bangs=0 <= baseline 0)
+== serve-smoke: session-affinity resume exactness ==
+  ok: affinity resume is deterministic across servers (4 rewritten turns)
+  ok: replay arm resumed too (3 rewind(s))
+  ok: affinity fired (3 rewind(s) on a rewritten history)
+  ok: no failed rewinds
+== serve-smoke: gemma4 arm SKIP (no model at /data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf)
+serve-smoke: 0 failed
+0, NVIDIA RTX PRO 6000 Blackwell Server Edition, 31, 2370 MHz, 0 MiB, 0 %
+1, NVIDIA RTX PRO 6000 Blackwell Server Edition, 31, 390 MHz, 0 MiB, 0 %
+serve_smoke_rc=0
+=== full done 2026-08-08T14:26:57Z ===

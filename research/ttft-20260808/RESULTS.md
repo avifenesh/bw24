@@ -7,9 +7,12 @@ The TTFT performance targets pass on the integrated PP-2 train:
 - 228-token short turn: **0.589 s p50**, N=8 (target <0.8 s).
 - 4107-token rendered 4k turn: **5.992 s p50**, N=5 (target <=7.5 s).
 
-The lane is nevertheless **STOPPED, not releasable**. The final `serve-smoke` battery ended
-with `2 failed`: the session-affinity replay was deterministic, but only one arm exercised a
-rewind. Per the owner stop bar, no further GPU experiments, merge, tag, or push followed.
+The lane's final blocker is resolved and the branch is **releasable**. The two
+session-affinity failures were a smoke-harness precondition bug, not a product regression:
+the PP-2 placement default disables spec admission, so the old arm could not create the parked
+spec session that owns affinity rewind. Check 10 now forces the documented always-spec seam
+for its two servers only. The full PP-2 `serve-smoke` rerun ended with `0 failed`, with three
+rewinds in each affinity arm and no failed restore.
 
 ## Rig and protocol
 
@@ -85,8 +88,39 @@ than stranded on tokenwise prefill.
 | model-backed `kernel-check` | ALL GREEN |
 | PP-2 `run-gen` | prefill/decode and batched-prime/tokenwise argmax 6776 MATCH |
 | PP-2 `run-spec` K=1..8 | 8/8 self-consistency PASS; pinned acceptance pattern retained |
-| `serve-smoke` | **FAIL: 2 failed**; affinity replay did not exercise the required rewind |
-| overall | **STOP** |
+| `serve-smoke` | **PASS: 0 failed**; record/replay arms each logged 3 affinity rewinds |
+| affinity liveness teeth | **PASS**; forced-spec PP-2 with `MEMRA_AFFINITY=0` had live spec work and 0 rewinds, reproducing the arm's expected RED condition |
+| overall | **PASS — releasable** |
+
+## Serve-smoke blocker resolution
+
+The failing arm printed:
+
+```text
+FAIL: replay arm never rewound — only one arm exercised the resume path
+FAIL: affinity never rewound — the resume path was not exercised
+```
+
+Both rewind counters were actually zero. The retained server log explains why:
+
+```text
+[spec-gate] policy placement=pp2-cross-device LOW=0 HIGH=1 source=placement-default spec-admission=off
+```
+
+With no spec session to park, later turns used prefix-cache hits and the affinity probe never
+ran. This was not caused by the solo-prefill change:
+
+- PP-2's `LOW=0` policy landed in `0ddff8f4`, already an ancestor of `c09afe4c^`.
+- `c09afe4c` did not change `tools/serve-smoke.sh` or the affinity/spec engine code.
+- Its widened prefill loop explicitly skips `s.spec.is_some()` sessions, so it cannot alter
+  affinity rewind behavior.
+
+The harness fix exports `MEMRA_SPEC_GATE=0` around check 10 and unsets it afterward. On the
+same `c09afe4c` binary and PP-2 placement, the full battery then passed with three explicit
+rewinds in both arms. The teeth control kept forced spec but set `MEMRA_AFFINITY=0`: the log
+contained cross-device transport plus six `[spec-acc]` rows, zero rewinds, and the expected
+`affinity never rewound` failure condition. The arm therefore remains able to catch an inert
+affinity path.
 
 ## Commits
 
@@ -105,5 +139,11 @@ than stranded on tokenwise prefill.
 - `raw/prefill-tick8192/`: geometry control and full phase trace.
 - `raw/solo-prefill-after/`: committed default-after N=8/N=5 receipt and full phase trace.
 - `raw/exactness/`: kernel-check, run-gen, and run-spec raw logs plus combined summary.
-- `raw/serve-smoke/`: final red smoke stdout and retained final server log.
+- `raw/serve-smoke/serve-smoke-c09afe4c.log`: original two-failure smoke stdout.
+- `raw/serve-smoke/server-final-c09afe4c.log`: original replay server showing PP-2 spec
+  admission off and prefix-cache fallback.
+- `raw/serve-smoke/serve-smoke-fixed-pp2-c09afe4c.log`: full fixed PP-2 battery, 0 failed.
+- `raw/serve-smoke/server-final-fixed-pp2-c09afe4c.log`: fixed replay server, three rewinds.
+- `raw/serve-smoke/affinity-teeth-pp2-c09afe4c.log` and
+  `server-affinity-teeth-pp2-c09afe4c.log`: affinity-off negative control.
 - `raw/box2-unavailable.log`: final timeout and account-inventory recheck for the requested rig.
