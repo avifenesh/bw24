@@ -122,6 +122,33 @@ Local GPU-free checks:
 - `python3 tools/update-perf-board.py --check`: up to date;
 - `git diff --check`: clean.
 
+## Gate attempt 1
+
+Receipt: `gates/20260808T104600Z/`, exact source commit `b6afdcc7`.
+
+The live checks all completed:
+
+- run-spec K=1..8: 8/8 on single-card, PP-2 dev10, and PP-2 dev01;
+- naked PP-2: LOW=0/HIGH=1 logged, 4/4 complete, no `[spec-acc]`;
+- naked single-card: LOW=2/HIGH=4 logged, 4/4 complete, spec live;
+- #87 quick forced-spec sequence: c=2 8/8, c=4 16/16, recovery c=1
+  4/4, no illegal-address or argmax-sentinel line;
+- `tools/serve-smoke.sh`: 0 failed (optional Gemma arm skipped because that
+  artifact is absent on box2).
+
+The first receipt is not the final clean gate. Immediately after
+`[server] drain complete in 0.0s; exiting`, its forced-spec server logged:
+
+```
+[worker] spec pending flush failed (DriverError(CUDA_ERROR_DEINITIALIZED, "<Failure when calling cuGetErrorString()>")); dropping session
+```
+
+All load rows, including recovery, had already completed, but evidence
+discipline does not discard a captured error because it followed SIGTERM. The
+gate now waits for `serve_idle_seconds >= 0.5` before shutdown and rejects
+`CUDA_ERROR_DEINITIALIZED` or `spec pending flush failed`; a full rerun is
+required.
+
 ## Measurement protocol
 
 - One exclusive `/tmp/memra-gpu.lock` hold per sweep.
@@ -161,3 +188,6 @@ boundary. Load points: 36, with 0 errors and 0 shed requests. Temperatures staye
   decision rule selects PP-2 default OFF and preserves the single-card gate.
 - 2026-08-08: placement-aware gate implemented and current operator docs
   synchronized; local server unit tests 119/119 green.
+- 2026-08-08: first box2 gate attempt completed every live check but exposed a
+  post-drain CUDA deinitialization line; receipt retained, verdict held pending a
+  quiesced-shutdown rerun.

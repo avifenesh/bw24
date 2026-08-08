@@ -95,6 +95,28 @@ wait_up() {
     return 1
 }
 
+wait_worker_idle() {
+    local label=$1
+    local metrics idle
+    for _ in $(seq 1 100); do
+        metrics=$(curl -sf "$BASE/metrics" 2>/dev/null || true)
+        if [[ -n "$metrics" ]] && python3 -c '
+import json
+import sys
+
+metrics = json.load(sys.stdin)
+raise SystemExit(0 if metrics.get("serve_idle_seconds", 0.0) >= 0.5 else 1)
+' <<< "$metrics"; then
+            idle=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["serve_idle_seconds"])' \
+                <<< "$metrics")
+            echo "$label worker quiesced (serve_idle_seconds=$idle)"
+            return 0
+        fi
+        sleep 0.1
+    done
+    return 1
+}
+
 port_free() {
     ! ss -tln 2>/dev/null | grep -qE "[:.]${1}[[:space:]]"
 }
@@ -152,6 +174,10 @@ launch_server() {
 }
 
 finish_server() {
+    local label=${1:-server}
+    if ! wait_worker_idle "$label"; then
+        fail "$label worker did not report 0.5s idle before shutdown"
+    fi
     stop_server "$CLEANUP_PID"
     CLEANUP_PID=
     sleep 3
@@ -299,7 +325,7 @@ if launch_server policy-pp2-default \
         MEMRA_PP_STAGES=2 \
         MEMRA_PP_DEVICES=1,0; then
     load_point policy-pp2-default-c1 1 4 1 || true
-    finish_server
+    finish_server policy-pp2-default
     check_point policy-pp2-default-c1 4
     pp2_log=$OUT/policy-pp2-default-server.log
     if grep -q '\[spec-gate\] policy placement=pp2-cross-device LOW=0 HIGH=1 source=placement-default spec-admission=off' "$pp2_log"; then
@@ -321,7 +347,7 @@ fi
 
 if launch_server policy-single-default CUDA_VISIBLE_DEVICES=0; then
     load_point policy-single-default-c1 1 4 1 || true
-    finish_server
+    finish_server policy-single-default
     check_point policy-single-default-c1 4
     single_log=$OUT/policy-single-default-server.log
     if grep -q '\[spec-gate\] policy placement=single-or-non-pp2 LOW=2 HIGH=4 source=placement-default spec-admission=on' "$single_log"; then
@@ -344,7 +370,7 @@ if launch_server crash-pp2-forced-spec \
     load_point crash-c2 2 8 1 || true
     load_point crash-c4 4 16 0 || true
     load_point crash-recovery-c1 1 4 0 || true
-    finish_server
+    finish_server crash-pp2-forced-spec
     check_point crash-c2 8
     check_point crash-c4 16
     check_point crash-recovery-c1 4
@@ -359,10 +385,10 @@ if launch_server crash-pp2-forced-spec \
     else
         fail "#87 gate never ran spec"
     fi
-    if grep -Eiq 'CUDA_ERROR_ILLEGAL_ADDRESS|#87 trap|argmax sentinel|Xid 31|FAULT_(PDE|PTE)|abort' "$crash_log"; then
-        fail "#87 gate saw a fatal/sentinel signature"
+    if grep -Eiq 'CUDA_ERROR_(ILLEGAL_ADDRESS|DEINITIALIZED)|#87 trap|argmax sentinel|spec pending flush failed|Xid 31|FAULT_(PDE|PTE)|abort' "$crash_log"; then
+        fail "#87 gate saw a fatal/sentinel/teardown-error signature"
     else
-        pass "#87 gate fatal/sentinel scan clean"
+        pass "#87 gate fatal/sentinel/teardown-error scan clean"
     fi
 fi
 
