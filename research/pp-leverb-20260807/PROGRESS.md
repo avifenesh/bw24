@@ -361,9 +361,13 @@ arc across the two lanes: **38.2 s (floor) → 32.0 s (Lever A) → 15.5 s (Leve
   have no maskable key — the same identity that made battery-2's predicate-only seam
   inert). The tickinv canary was calibrated 2026-08-07 02:20Z — BEFORE Lever A's FA
   default landed (~14:00Z): a verdict calibrated on the old kernel class, exactly the
-  re-sweep law from the H100 lane. Check running: canary + naked on the FLOOR arm
-  (`MEMRA_STEP35_SWA_FA=0`), where the predicate selects between genuinely different
-  numeric classes. `raw/tickinvc-floor-*.log`.
+  re-sweep law from the H100 lane. **Hypothesis CONFIRMED**
+  (`raw/tickinvc-floor-20260808T034539Z.log`): floor-arm canary BREAKS the assertion
+  (teeth), floor-arm naked still PASSes (the tick-seg fix holds on both classes). Gate
+  fix: the CALLLOCAL canary now pins the floor class (`MEMRA_STEP35_SWA_FA=0` joins the
+  injection env when the seam is MEMRA_PRIME_CALLLOCAL) — the naked gate stays on the
+  shipping default; only the injection arm changes class. T1c re-run green
+  (`raw/tickinvc-refix-*.log`).
 - **G7 pp512/pp2048 split-vs-unsplit N=5 interleaved** (STOP-bar check — no small-prompt
   regression allowed):
 
