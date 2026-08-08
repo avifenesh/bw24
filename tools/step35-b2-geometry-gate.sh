@@ -120,8 +120,11 @@ else:
 
   for C in 2 4; do
     echo "--- c=$C concurrent identical requests ---"
-    for i in $(seq 1 $C); do ask > /tmp/b2geo35-c$C-$i.txt & done
-    wait
+    # wait ONLY for the curl PIDs — a bare `wait` also waits on the server background
+    # job, which never exits (found live: the gate hung after a fully-correct c=2 round).
+    CURL_PIDS=()
+    for i in $(seq 1 $C); do ask > /tmp/b2geo35-c$C-$i.txt & CURL_PIDS+=($!); done
+    wait "${CURL_PIDS[@]}"
     cat /tmp/b2geo35-c$C-*.txt
   done
 
