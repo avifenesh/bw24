@@ -411,3 +411,31 @@ Receipts:
 
 - `raw/soak-summary-20260808T085213Z.log`
 - `raw/soak-raw-20260808T085213Z.log`
+
+## Increment 13 - final interleaved prefill performance
+
+Final naked-auto medians on box2, N=5 with one warmup, alternating SERIAL/PIPE order
+inside each process and one GPU-lock hold across all three shapes:
+
+| shape | auto geometry | serial, same geometry | PIPE | schedule speedup | prior Lever-B naked baseline | gain vs Lever B |
+|---|---|---:|---:|---:|---:|---:|
+| pp512-class, T=461 | chunk 128, 4 chunks | 223.4 tok/s | **330.0 tok/s** | 1.477x | 248.3 tok/s | 1.329x |
+| pp2048-class, T=1833 | chunk 230, 8 chunks | 247.7 tok/s | **401.8 tok/s** | 1.622x | 263.2 tok/s | 1.527x |
+| pp4096, T=4096 | chunk 512, 8 chunks | 258.6 tok/s | **417.6 tok/s** | 1.615x | 266.1 tok/s | **1.569x** |
+
+Every PIPE warmup and timed repetition reported exactly `chunks - 1` concurrent
+active-walker overlaps; every SERIAL sample reported zero. The pp4096 result is in the
+requested 400-500 tok/s class. The same-geometry serial arm is the schedule-only oracle;
+its additional microchunk epilogues explain why it is slightly below Lever B's prior
+single-chunk 266.1 tok/s baseline.
+
+The hold started cold at 30/30 C and ended at 43/44 C, 2370/2422 MHz, with both cards
+back at 0 MiB. All reported values are medians of five timed repetitions, not single
+runs.
+
+Receipts:
+
+- `raw/perf-summary-20260808T092952Z.log`
+- `raw/pp512-raw-20260808T092952Z.log`
+- `raw/pp2048-raw-20260808T092952Z.log`
+- `raw/pp4096-raw-20260808T092952Z.log`

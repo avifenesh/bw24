@@ -1,0 +1,89 @@
+=== pipeprime perf 20260808T092952Z commit=61c8d2f21ee2941040e158cba91ab97e31f819e8
+prompt=/tmp/pipeprime-final-perf/prompt-pp512-20260808T092952Z.txt bytes=2800 sha256=f3a1cb67f9beb3fc398c0cde1f22e9459ef63cfc4595576c2981e38398f6af4b
+prompt=/tmp/pipeprime-final-perf/prompt-pp2048-20260808T092952Z.txt bytes=11200 sha256=14e61d63268d5ea3d62b4ac5db1b4a110e4f4743ba2efa1030ff79371b08f5a2
+prompt=/tmp/pipeprime-prompt-pp4096.txt bytes=25036 sha256=23c1d8384a16c7c0bcb7736b412d43e64c0b4d8e238703864e928565f824ae11
+lock acquired 2026-08-08T09:29:52Z
+0, 30, 180 MHz, 0 MiB
+1, 30, 180 MHz, 0 MiB
+########## pp512 naked auto geometry ##########
+0, 30, 180 MHz, 0 MiB
+1, 30, 180 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+pppipeperf: T=461 chunk=128 chunks=4 expected_overlaps=3 reps=5 warmup=1 devices=0,1
+  warmup 1 arm=SERIAL: 461 tok in 2.1424s = 215.2 tok/s split=4 overlaps=0
+  warmup 1 arm=PIPE: 461 tok in 1.4456s = 318.9 tok/s split=4 overlaps=3
+  rep 1 arm=SERIAL: 461 tok in 2.1036s = 219.1 tok/s split=4 overlaps=0
+  rep 1 arm=PIPE: 461 tok in 1.4206s = 324.5 tok/s split=4 overlaps=3
+  rep 2 arm=PIPE: 461 tok in 1.4097s = 327.0 tok/s split=4 overlaps=3
+  rep 2 arm=SERIAL: 461 tok in 2.0764s = 222.0 tok/s split=4 overlaps=0
+  rep 3 arm=SERIAL: 461 tok in 2.0634s = 223.4 tok/s split=4 overlaps=0
+  rep 3 arm=PIPE: 461 tok in 1.3873s = 332.3 tok/s split=4 overlaps=3
+  rep 4 arm=PIPE: 461 tok in 1.3822s = 333.5 tok/s split=4 overlaps=3
+  rep 4 arm=SERIAL: 461 tok in 2.0492s = 225.0 tok/s split=4 overlaps=0
+  rep 5 arm=SERIAL: 461 tok in 2.0411s = 225.9 tok/s split=4 overlaps=0
+  rep 5 arm=PIPE: 461 tok in 1.3969s = 330.0 tok/s split=4 overlaps=3
+pppipeperf MEDIAN: SERIAL 223.4 tok/s (2.0634s) | PIPE 330.0 tok/s (1.3969s) | speedup 1.477x | N=5 alternating order, chunk=128, chunks=4
+pp512 exit=0 raw=/tmp/pipeprime-final-perf/pp512-raw-20260808T092952Z.log
+0, 39, 2370 MHz, 0 MiB
+1, 39, 2272 MHz, 0 MiB
+########## pp2048 naked auto geometry ##########
+0, 39, 2370 MHz, 0 MiB
+1, 39, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+pppipeperf: T=1833 chunk=230 chunks=8 expected_overlaps=7 reps=5 warmup=1 devices=0,1
+  warmup 1 arm=SERIAL: 1833 tok in 7.6388s = 240.0 tok/s split=8 overlaps=0
+  warmup 1 arm=PIPE: 1833 tok in 4.6164s = 397.1 tok/s split=8 overlaps=7
+  rep 1 arm=SERIAL: 1833 tok in 7.4019s = 247.6 tok/s split=8 overlaps=0
+  rep 1 arm=PIPE: 1833 tok in 4.5577s = 402.2 tok/s split=8 overlaps=7
+  rep 2 arm=PIPE: 1833 tok in 4.5704s = 401.1 tok/s split=8 overlaps=7
+  rep 2 arm=SERIAL: 1833 tok in 7.3917s = 248.0 tok/s split=8 overlaps=0
+  rep 3 arm=SERIAL: 1833 tok in 7.3914s = 248.0 tok/s split=8 overlaps=0
+  rep 3 arm=PIPE: 1833 tok in 4.5771s = 400.5 tok/s split=8 overlaps=7
+  rep 4 arm=PIPE: 1833 tok in 4.5615s = 401.8 tok/s split=8 overlaps=7
+  rep 4 arm=SERIAL: 1833 tok in 7.3994s = 247.7 tok/s split=8 overlaps=0
+  rep 5 arm=SERIAL: 1833 tok in 7.4217s = 247.0 tok/s split=8 overlaps=0
+  rep 5 arm=PIPE: 1833 tok in 4.5560s = 402.3 tok/s split=8 overlaps=7
+pppipeperf MEDIAN: SERIAL 247.7 tok/s (7.3994s) | PIPE 401.8 tok/s (4.5615s) | speedup 1.622x | N=5 alternating order, chunk=230, chunks=8
+pp2048 exit=0 raw=/tmp/pipeprime-final-perf/pp2048-raw-20260808T092952Z.log
+0, 42, 2370 MHz, 0 MiB
+1, 43, 2272 MHz, 0 MiB
+########## pp4096 naked auto geometry ##########
+0, 42, 2370 MHz, 0 MiB
+1, 43, 2272 MHz, 0 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 layers)
+pppipeperf: T=4096 chunk=512 chunks=8 expected_overlaps=7 reps=5 warmup=1 devices=0,1
+  warmup 1 arm=SERIAL: 4096 tok in 15.9954s = 256.1 tok/s split=8 overlaps=0
+  warmup 1 arm=PIPE: 4096 tok in 9.8125s = 417.4 tok/s split=8 overlaps=7
+  rep 1 arm=SERIAL: 4096 tok in 15.8368s = 258.6 tok/s split=8 overlaps=0
+  rep 1 arm=PIPE: 4096 tok in 9.8294s = 416.7 tok/s split=8 overlaps=7
+  rep 2 arm=PIPE: 4096 tok in 9.8103s = 417.5 tok/s split=8 overlaps=7
+  rep 2 arm=SERIAL: 4096 tok in 15.8328s = 258.7 tok/s split=8 overlaps=0
+  rep 3 arm=SERIAL: 4096 tok in 15.8158s = 259.0 tok/s split=8 overlaps=0
+  rep 3 arm=PIPE: 4096 tok in 9.8080s = 417.6 tok/s split=8 overlaps=7
+  rep 4 arm=PIPE: 4096 tok in 9.8046s = 417.8 tok/s split=8 overlaps=7
+  rep 4 arm=SERIAL: 4096 tok in 15.9816s = 256.3 tok/s split=8 overlaps=0
+  rep 5 arm=SERIAL: 4096 tok in 15.9676s = 256.5 tok/s split=8 overlaps=0
+  rep 5 arm=PIPE: 4096 tok in 9.8074s = 417.6 tok/s split=8 overlaps=7
+pppipeperf MEDIAN: SERIAL 258.6 tok/s (15.8368s) | PIPE 417.6 tok/s (9.8080s) | speedup 1.615x | N=5 alternating order, chunk=512, chunks=8
+pp4096 exit=0 raw=/tmp/pipeprime-final-perf/pp4096-raw-20260808T092952Z.log
+0, 43, 2370 MHz, 0 MiB
+1, 44, 2422 MHz, 0 MiB
+lock released 2026-08-08T09:36:11Z
+=== perf rc=0
+=== medians ===
+pppipeperf MEDIAN: SERIAL 247.7 tok/s (7.3994s) | PIPE 401.8 tok/s (4.5615s) | speedup 1.622x | N=5 alternating order, chunk=230, chunks=8
+pppipeperf MEDIAN: SERIAL 258.6 tok/s (15.8368s) | PIPE 417.6 tok/s (9.8080s) | speedup 1.615x | N=5 alternating order, chunk=512, chunks=8
+pppipeperf MEDIAN: SERIAL 223.4 tok/s (2.0634s) | PIPE 330.0 tok/s (1.3969s) | speedup 1.477x | N=5 alternating order, chunk=128, chunks=4
+=== done 2026-08-08T09:36:11Z
