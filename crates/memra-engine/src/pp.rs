@@ -347,6 +347,7 @@ impl Drop for PrimePipeStageGuard {
         let active = PRIME_PIPE_ACTIVE_STAGES.fetch_sub(1, Ordering::AcqRel);
         debug_assert!(active > 0, "prime pipeline active-stage counter underflow");
     }
+}
 
 /// Step35 cross-request prime liveness counters (lane/cx-prime-batch, 2026-08-08).
 /// The exactness gate requires BOTH to advance: a successful step35 batch alone is not
