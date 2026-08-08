@@ -209,20 +209,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // --bench T: N=5 medians, B x T-token prompts, sequential vs batched wall time
+    // --bench T: N=5 paired medians, B x T-token prompts, sequential vs batched wall time.
+    // Alternate arm order so a fixed warmup/thermal trend cannot favor the same arm in every
+    // pair, and print every raw pair before the summary median.
     if let Some(bt) = rest.iter().position(|a| a == "--bench")
         .and_then(|i| rest.get(i + 1)).and_then(|v| v.parse::<usize>().ok()) {
         let bp: Vec<Vec<u32>> = (0..b).map(|i| (0..bt as u32).map(|j| 55 + i as u32 * 97 + j * 31).collect()).collect();
         let mut seq_times = Vec::new();
         let mut bat_times = Vec::new();
-        for _ in 0..5 {
+        let run_seq = || -> Result<f64, Box<dyn std::error::Error>> {
             let t0 = std::time::Instant::now();
             for p in &bp {
                 let mut c = memra_engine::pp::new_cache(&e, &model.cfg, bt + 64)?;
                 let _ = model.prime_cache(&e, p, &mut c, 0)?;
             }
             e.stream().synchronize()?;
-            seq_times.push(t0.elapsed().as_secs_f64());
+            Ok(t0.elapsed().as_secs_f64())
+        };
+        let run_batch = || -> Result<f64, Box<dyn std::error::Error>> {
             let mut cs: Vec<Cache> = (0..b)
                 .map(|_| memra_engine::pp::new_cache(&e, &model.cfg, bt + 64))
                 .collect::<Result<_, _>>()?;
@@ -231,14 +235,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let t0 = std::time::Instant::now();
             let _ = model.prime_cache_batch(&e, &pr, &mut cr)?;
             e.stream().synchronize()?;
-            bat_times.push(t0.elapsed().as_secs_f64());
+            Ok(t0.elapsed().as_secs_f64())
+        };
+        for rep in 0..5 {
+            let (order, st, bt) = if rep % 2 == 0 {
+                ("serial,batch", run_seq()?, run_batch()?)
+            } else {
+                let bt = run_batch()?;
+                ("batch,serial", run_seq()?, bt)
+            };
+            println!(
+                "bench-run B={b} T={} rep={} order={order} serial_ms={:.3} batch_ms={:.3}",
+                bp[0].len(),
+                rep + 1,
+                st * 1e3,
+                bt * 1e3,
+            );
+            seq_times.push(st);
+            bat_times.push(bt);
         }
         seq_times.sort_by(|a, c| a.partial_cmp(c).unwrap());
         bat_times.sort_by(|a, c| a.partial_cmp(c).unwrap());
         let (sm, bm) = (seq_times[2], bat_times[2]);
         let n = (b * bt) as f64;
-        println!("bench B={b} T={bt}: sequential {:.1} tok/s vs BATCHED {:.1} tok/s ({:+.1}%)",
-                 n / sm, n / bm, 100.0 * (sm / bm - 1.0));
+        println!(
+            "bench B={b} T={bt} N=5 alternating: serial_wall_ms={:.3} \
+             batch_wall_ms={:.3} sequential={:.1} tok/s batched={:.1} tok/s ({:+.1}%)",
+            sm * 1e3,
+            bm * 1e3,
+            n / sm,
+            n / bm,
+            100.0 * (sm / bm - 1.0),
+        );
     }
 
     if fails == 0 {
