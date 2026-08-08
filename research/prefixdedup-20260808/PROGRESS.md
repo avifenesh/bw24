@@ -173,3 +173,8 @@ usage, and refuses an invalid comparison:
 PP-2 placement, spec and continuation reuse disabled, a separate warmup namespace,
 thermal snapshots, raw server logs, and a single shared GPU-lock hold. The default
 receipt geometry is N=8, K=1024, suffix=16.
+
+`run-gates-box1.sh` composes the target-rig deliverables under a caller-held lock:
+release builds, the intended 9B `serve-smoke` artifact pair (including the extended
+cache-meter fanout), the API-key/PC-ISO battery, Step PP-2 `run-gen`, and the N=8 Step
+TTFT A/B. Every command writes a raw log before its verdict is parsed.
