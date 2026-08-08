@@ -45,6 +45,29 @@ pub const MAX_NEW_CTX_BOUNDED: usize = usize::MAX;
 /// latency for concurrent sessions bounded.
 const PREFILL_TICK_T: usize = 1024;
 
+/// A lone fresh interactive request can use the engine's full eight-microbatch PP geometry in
+/// one outer `prime_cache` call. Multi-session ticks retain `PREFILL_TICK_T` fairness, and an
+/// explicit `MEMRA_PREFILL_TICK` remains authoritative.
+const SOLO_PREFILL_TICK_T: usize = 8192;
+
+fn interactive_prefill_budget(
+    configured: usize,
+    configured_explicitly: bool,
+    sole_unfinished: bool,
+    fresh: bool,
+    queued: usize,
+) -> usize {
+    if configured_explicitly || !sole_unfinished || !fresh {
+        return configured;
+    }
+    let mut widened = queued.min(SOLO_PREFILL_TICK_T);
+    let tail = queued - widened;
+    if tail > 0 && tail < memra_engine::hybrid_forward::PRIME_MIN_T {
+        widened = queued;
+    }
+    configured.max(widened)
+}
+
 /// A model loaded resident on the worker thread: weights + its own tokenizer + config snapshot.
 struct LoadedModel {
     model: HybridModel,
@@ -1726,6 +1749,7 @@ pub fn run(
     // is the INTERACTIVE SLO sensor (records only ticks that advanced an interactive
     // session — on naked traffic every session is interactive, so /metrics is unchanged).
     let policy = crate::lanes::LanePolicy::from_env();
+    let prefill_tick_explicit = std::env::var_os("MEMRA_PREFILL_TICK").is_some();
     let mut step_stats = StepStats::new(
         std::env::var("MEMRA_LANE_WINDOW_S").ok().and_then(|v| v.parse().ok()).unwrap_or(30.0));
     let mut n_admitted = 0u64;
@@ -2528,13 +2552,28 @@ pub fn run(
                 if fired { continue 'pb; }
                 break 'pb (cand, held);
             };
+            let sole_unfinished = queue.is_empty()
+                && requeue_oom.is_empty()
+                && active.iter().enumerate()
+                    .filter(|(i, _)| !finished.contains(i))
+                    .count() == 1;
             for i in 0..active.len() {
                 if finished.contains(&i) { continue; }
                 if held && cand.first() == Some(&i) { continue; }   // batch-formation hold
                 let s = &mut active[i];
                 if s.spec.is_some() || s.prefill_done { continue; }
                 if s.lane != crate::lanes::Lane::Interactive { continue; }
-                match prefill_tick(&engine, &loaded, &mut px, s, budgets[0]) {
+                let fresh = s.fed.is_empty()
+                    && s.cache.as_ref().is_some_and(|c| c.pos == 0)
+                    && s.snapshot_at.is_none();
+                let budget = interactive_prefill_budget(
+                    budgets[0],
+                    prefill_tick_explicit,
+                    sole_unfinished,
+                    fresh,
+                    s.prefill_queue.len(),
+                );
+                match prefill_tick(&engine, &loaded, &mut px, s, budget) {
                     Ok(_) => {}
                     Err(err) => {
                         let _ = s.tx.send(Event::Error(EngineError::engine(format!("prefill error: {err}"))));
@@ -4699,12 +4738,27 @@ pub fn spawn(models: Vec<(String, String, Option<String>)>, health: crate::healt
 
 #[cfg(test)]
 mod tests {
-    use super::{summarize_confidence, utf8_delta};
+    use super::{interactive_prefill_budget, summarize_confidence, utf8_delta};
     use super::{PoolKey, PrefixCache, PrefixEntry, PREFIX_CACHE_MIN_TOKENS};
     use super::{meter_account, HashMap, METER_TENANT_CAP};
     use super::{draft_verdict, draft_verdict_message, DraftVerdict};
     use super::{resolve_spec_gate_thresholds, spec_gate_defaults};
     use super::worker_device;
+
+    #[test]
+    fn naked_solo_fresh_prefill_uses_one_bounded_outer_call() {
+        assert_eq!(interactive_prefill_budget(1024, false, true, true, 4107), 4107);
+        assert_eq!(interactive_prefill_budget(1024, false, true, true, 20_000), 8192);
+        // Do not strand a sub-PRIME_MIN_T tail on the tokenwise path.
+        assert_eq!(interactive_prefill_budget(1024, false, true, true, 8200), 8200);
+    }
+
+    #[test]
+    fn solo_prefill_widening_preserves_operator_and_fairness_caps() {
+        assert_eq!(interactive_prefill_budget(1024, true, true, true, 4107), 1024);
+        assert_eq!(interactive_prefill_budget(1024, false, false, true, 4107), 1024);
+        assert_eq!(interactive_prefill_budget(1024, false, true, false, 4107), 1024);
+    }
 
     #[test]
     fn spec_gate_defaults_follow_placement() {
