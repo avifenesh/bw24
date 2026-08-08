@@ -354,6 +354,14 @@ fn cpu_expert_profile_admit_enabled() -> bool {
 pub const PRIME_MIN_T: usize = 16;
 const PRIME_PIPE_MICROBATCHES: usize = 8;
 const PRIME_PIPE_MIN_CHUNK: usize = 128;
+const PRIME_PIPE_EDGE_MIN_CHUNK: usize = 64;
+const PRIME_PIPE_LINEAR_WORK: usize = 8;
+
+fn prime_pp2_auto_geometry(n_layers: usize) -> bool {
+    crate::pp::prime_pp_on()
+        && !crate::pp::pp2_streams_off()
+        && crate::pp::pp_cuts(n_layers).is_some_and(|cuts| cuts.len() == 3)
+}
 
 /// Effective internal prime chunk. An explicit MEMRA_PRIME_CHUNK is authoritative.
 /// Naked PP-2 primes use the measured pipeline geometry: up to eight microchunks, never
@@ -363,16 +371,95 @@ pub fn prime_chunk_tokens(t: usize, n_layers: usize) -> usize {
         return value.parse().unwrap_or(4096);
     }
     let chunk = 4096usize;
-    let pp2 = crate::pp::prime_pp_on()
-        && !crate::pp::pp2_streams_off()
-        && crate::pp::pp_cuts(n_layers).is_some_and(|cuts| cuts.len() == 3);
-    if pp2 && t >= 2 * PRIME_PIPE_MIN_CHUNK {
+    if prime_pp2_auto_geometry(n_layers) && t >= 2 * PRIME_PIPE_MIN_CHUNK {
         chunk.min(
             t.div_ceil(PRIME_PIPE_MICROBATCHES)
                 .max(PRIME_PIPE_MIN_CHUNK),
         )
     } else {
         chunk
+    }
+}
+
+fn fixed_prime_chunk_ranges(t: usize, chunk: usize) -> Vec<(usize, usize)> {
+    if chunk == 0 || t <= chunk {
+        return vec![(0, t)];
+    }
+    let mut ranges = Vec::with_capacity(t.div_ceil(chunk));
+    let mut start = 0usize;
+    while start < t {
+        let mut end = (start + chunk).min(t);
+        if t - end > 0 && t - end < PRIME_MIN_T {
+            end = t;
+        }
+        ranges.push((start, end));
+        start = end;
+    }
+    ranges
+}
+
+fn prime_chunk_work(prefix: usize, total: usize) -> u128 {
+    let prefix = prefix as u128;
+    prefix * (prefix + (PRIME_PIPE_LINEAR_WORK as u128) * (total as u128))
+}
+
+fn dynamic_prime_chunk_ranges(
+    t: usize,
+    fixed_chunk: usize,
+    fixed: &[(usize, usize)],
+) -> Vec<(usize, usize)> {
+    let n = fixed.len();
+    if n < 3 {
+        return fixed.to_vec();
+    }
+
+    let max_first = t - (n - 1) * PRIME_MIN_T;
+    let first = fixed_chunk
+        .div_ceil(2)
+        .max(PRIME_PIPE_EDGE_MIN_CHUNK)
+        .min(max_first);
+    let mut ranges = Vec::with_capacity(n);
+    ranges.push((0, first));
+
+    let first_work = prime_chunk_work(first, t);
+    let work_span = prime_chunk_work(t, t) - first_work;
+    let denominator = (n - 1) as u128;
+    let mut previous = first;
+    for boundary in 1..n - 1 {
+        let target = first_work * denominator + work_span * (boundary as u128);
+        let remaining = n - 1 - boundary;
+        let mut low = previous + PRIME_MIN_T;
+        let mut high = t - remaining * PRIME_MIN_T;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            if prime_chunk_work(mid, t) * denominator >= target {
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
+        }
+        ranges.push((previous, low));
+        previous = low;
+    }
+    ranges.push((previous, t));
+    ranges
+}
+
+/// Internal prime ranges. The naked PP-2 pipeline defaults to a short-fill,
+/// equal-modeled-time schedule; MEMRA_PRIME_CHUNK_SCHED=fixed restores the measured
+/// equal-token ranges. An explicit MEMRA_PRIME_CHUNK always retains fixed semantics.
+pub fn prime_chunk_ranges(t: usize, n_layers: usize) -> Vec<(usize, usize)> {
+    let explicit_chunk = std::env::var_os("MEMRA_PRIME_CHUNK").is_some();
+    let chunk = prime_chunk_tokens(t, n_layers);
+    let fixed = fixed_prime_chunk_ranges(t, chunk);
+    let dynamic = match std::env::var("MEMRA_PRIME_CHUNK_SCHED") {
+        Ok(value) => value == "dynamic",
+        Err(_) => true,
+    };
+    if explicit_chunk || !dynamic || !prime_pp2_auto_geometry(n_layers) {
+        fixed
+    } else {
+        dynamic_prime_chunk_ranges(t, chunk, &fixed)
     }
 }
 
@@ -567,7 +654,7 @@ impl HybridModel {
             // gemma4 v0: monolithic fresh-prompt prime (chunked/continuation arms later).
             return self.gemma4_prime(e, tokens, cache);
         }
-        let chunk = prime_chunk_tokens(t, self.layers.len());
+        let ranges = prime_chunk_ranges(t, self.layers.len());
         // CHUNK-ORDER INVARIANCE (lane/chunk-invariance, 2026-08-05; vLLM #38561 shape).
         // MEMRA_PRIME_CHUNK is documented as a memory-transient knob, but it also decides
         // the prefill's ARITHMETIC, so two rigs with different values produced different
@@ -610,7 +697,7 @@ impl HybridModel {
         } else {
             cache.pos + t + queued_after
         };
-        if chunk == 0 || t <= chunk {
+        if ranges.len() == 1 {
             return self.prime_chunk(e, tokens, cache, seq_end);
         }
         // PIPELINED PP-2 PRIME (lane/cx-pipeline-prime, 2026-08-08): overlap stage 0 of
@@ -632,21 +719,16 @@ impl HybridModel {
                     );
                 }
                 return self.prime_cache_pp2_pipelined(
-                    e, tokens, cache, seq_end, chunk, &fence,
+                    e, tokens, cache, seq_end, &ranges, &fence,
                 );
             }
         }
         let mut hiddens = e.uninit(t * n_embd)?;
         let mut last: Option<(Vec<f32>, CudaSlice<f32>)> = None;
-        let mut start = 0usize;
-        while start < t {
-            // keep the tail chunk >= PRIME_MIN_T (the stateful conv needs T >= d_conv-1).
-            let mut end = (start + chunk).min(t);
-            if t - end > 0 && t - end < PRIME_MIN_T { end = t; }
+        for &(start, end) in &ranges {
             let (l, hs, x) = self.prime_chunk(e, &tokens[start..end], cache, seq_end)?;
             e.copy_into(&mut hiddens, start * n_embd, &x, (end - start) * n_embd)?;
             last = Some((l, hs));
-            start = end;
         }
         let (logits, h_seed) = last.unwrap();
         Ok((logits, h_seed, hiddens))
@@ -662,28 +744,17 @@ impl HybridModel {
         tokens: &[u32],
         cache: &mut Cache,
         seq_end: usize,
-        chunk: usize,
+        ranges: &[(usize, usize)],
         fence: &[usize],
     ) -> Result<(Vec<f32>, CudaSlice<f32>, CudaSlice<f32>), Box<dyn std::error::Error>> {
         debug_assert_eq!(fence.len(), 3);
+        debug_assert!(ranges.len() >= 2);
         let rt = crate::pp::PpNRt::get(e)?;
         assert_eq!(rt.n_stages(), 2, "prime pipeline requires exactly two PP stages");
         let n_embd = self.cfg.n_embd as usize;
         let t = tokens.len();
         let initial_base = cache.pos;
         let caller_stream = e.stream();
-
-        let mut ranges = Vec::new();
-        let mut start = 0usize;
-        while start < t {
-            let mut end = (start + chunk).min(t);
-            if t - end > 0 && t - end < PRIME_MIN_T {
-                end = t;
-            }
-            ranges.push((start, end));
-            start = end;
-        }
-        debug_assert!(ranges.len() >= 2);
 
         // #87 reverse publication before any new stage allocation, then prewarm both
         // boundary slots while the stage streams are otherwise empty. Lazy-growing slot B
@@ -8785,6 +8856,88 @@ impl HybridModel {
         let mut cache = Cache::new(e, &self.cfg, tokens.len() + 8)?;
         let (ld, _x) = self.gemma4_e4b_trunk(e, tokens, 0, &mut cache, last_only)?;
         Ok(e.dtoh(&ld)?)   // head_last already reduced to the final row when last_only
+    }
+}
+
+#[cfg(test)]
+mod prime_chunk_schedule_tests {
+    use super::{
+        dynamic_prime_chunk_ranges, fixed_prime_chunk_ranges, PRIME_MIN_T,
+        PRIME_PIPE_MIN_CHUNK,
+    };
+
+    fn sizes(ranges: &[(usize, usize)]) -> Vec<usize> {
+        ranges.iter().map(|(start, end)| end - start).collect()
+    }
+
+    fn auto_chunk(t: usize) -> usize {
+        t.div_ceil(8).max(PRIME_PIPE_MIN_CHUNK).min(4096)
+    }
+
+    #[test]
+    fn fixed_schedule_retains_measured_geometry() {
+        assert_eq!(
+            sizes(&fixed_prime_chunk_ranges(461, 128)),
+            vec![128, 128, 128, 77]
+        );
+        assert_eq!(
+            sizes(&fixed_prime_chunk_ranges(1833, 230)),
+            vec![230, 230, 230, 230, 230, 230, 230, 223]
+        );
+        assert_eq!(
+            sizes(&fixed_prime_chunk_ranges(4096, 512)),
+            vec![512; 8]
+        );
+    }
+
+    #[test]
+    fn dynamic_schedule_matches_registered_shapes() {
+        let cases = [
+            (461, vec![64, 141, 132, 124]),
+            (1833, vec![115, 269, 260, 252, 244, 237, 231, 225]),
+            (4096, vec![256, 602, 580, 563, 545, 531, 516, 503]),
+        ];
+        for (t, expected) in cases {
+            let chunk = auto_chunk(t);
+            let fixed = fixed_prime_chunk_ranges(t, chunk);
+            assert_eq!(
+                sizes(&dynamic_prime_chunk_ranges(t, chunk, &fixed)),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn dynamic_schedule_covers_exactly_and_shrinks_after_fill() {
+        for t in 256..=8192 {
+            let chunk = auto_chunk(t);
+            let fixed = fixed_prime_chunk_ranges(t, chunk);
+            let dynamic = dynamic_prime_chunk_ranges(t, chunk, &fixed);
+            assert_eq!(dynamic.len(), fixed.len(), "T={t}");
+            assert_eq!(dynamic.first().unwrap().0, 0, "T={t}");
+            assert_eq!(dynamic.last().unwrap().1, t, "T={t}");
+            for pair in dynamic.windows(2) {
+                assert_eq!(pair[0].1, pair[1].0, "T={t}");
+            }
+            assert!(
+                dynamic
+                    .iter()
+                    .all(|(start, end)| end - start >= PRIME_MIN_T),
+                "T={t} sizes={:?}",
+                sizes(&dynamic)
+            );
+            if dynamic.len() >= 3 {
+                let chunk_sizes = sizes(&dynamic);
+                assert!(
+                    chunk_sizes[0] < chunk_sizes[1],
+                    "T={t} sizes={chunk_sizes:?}"
+                );
+                assert!(
+                    chunk_sizes[1..].windows(2).all(|pair| pair[0] >= pair[1]),
+                    "T={t} sizes={chunk_sizes:?}"
+                );
+            }
+        }
     }
 }
 

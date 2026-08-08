@@ -116,3 +116,31 @@ request fixed ranges regardless of the schedule seam.
 
 Raw logs will live under `research/microchunk-20260808/raw/`. Every reported median
 will state N and the thermal/lock regime.
+
+## Increment 1 - shared range generator and fixed rollback
+
+The scheduler core is implemented without changing any forward arithmetic:
+
+- `prime_chunk_ranges()` is now the single range authority for both the serial chunk
+  loop and the PP-2 pipelined loop;
+- `fixed_prime_chunk_ranges()` preserves the old tail-merge behavior byte-for-byte;
+- the dynamic generator uses the pre-registered integer work model and retains the
+  fixed schedule's chunk count;
+- naked auto PP-2 geometry defaults to dynamic;
+- `MEMRA_PRIME_CHUNK_SCHED=fixed` restores the measured equal-token ranges;
+- any explicit `MEMRA_PRIME_CHUNK` remains fixed and authoritative.
+
+No kernel, layer walk, cache update, boundary transport, epilogue, or dispatch
+predicate changed. The pipeline function now receives the already-generated ranges
+instead of reconstructing fixed ranges internally.
+
+Local verification:
+
+| Check | Result |
+|---|---|
+| targeted test build | PASS, CUDA 13.1, auto-detected sm_120a |
+| fixed geometry tests | PASS: pp512/2048/4096 shapes match the prior policy |
+| registered dynamic shapes | PASS: T=461/1833/4096 match Increment 0 |
+| exhaustive pure invariants | PASS for every T=256..8192: exact cover, same count, no chunk below 16, short fill, non-increasing post-fill sizes |
+
+Command: `cargo test -p memra-engine prime_chunk_schedule_tests --lib`.
