@@ -1,0 +1,10 @@
+generate-arch-gates: wrote 6 files for Qwen 3.8 to /tmp/archkit-final-generator-X4kW37/out
+generate-arch-gates: review fast-gate-models.tsv and fast-gate-map.tsv; the canonical registries were not modified
+model_rows=6:bad=0
+map_rows=2:bad=0
+834390404fb5759e1544f8a8203ae7db482b3f63e72bb9dfc0e16c00de88ccc6  /tmp/archkit-final-generator-X4kW37/out/fast-gate-map.tsv
+a1131470d0d8ef126e0c705b213348c90894897e062429257ac7165e8688ea69  /tmp/archkit-final-generator-X4kW37/out/fast-gate-models.tsv
+d3859cf329c8c2f1f443ff74b854af89fb70e78f189f6f26f4249dc0a58de071  /tmp/archkit-final-generator-X4kW37/out/gate-spec.json
+35680721def6cb7f7c8335e7c6e8cdfa83d360361cd604a42e9353ea6f29f53b  /tmp/archkit-final-generator-X4kW37/out/qwen-3-8-b2-geometry-gate.sh
+1f7c85164cfff375119cc0fa9d664f9fe4f81e5082b5a3a6fd9e1900e86fd6c4  /tmp/archkit-final-generator-X4kW37/out/qwen-3-8-chunk-invariance-gate.sh
+1d81c7405b22702433c1eedd39b31bfef3bd50afb917985f529aadc6cb4486bc  /tmp/archkit-final-generator-X4kW37/out/qwen-3-8-tick-invariance-gate.sh
