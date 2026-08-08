@@ -35,7 +35,7 @@
 # change the WORLD, not the label. (Earlier vacuous shape: a single --chunks value, which has
 # nothing to compare and always reported CHUNK-INVARIANT.)
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 PROBE=./target/release/concat-prime-probe
 D=research/chunk-invariance-20260805
 MODEL=""
@@ -74,7 +74,10 @@ if [ -z "$MODEL" ] && [ "$LABEL" = step35-swa ]; then
 fi
 # default model = the family the finding was measured on (qwen hybrid NVFP4, GDN linear-attn)
 MODEL="${MODEL:-/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf}"
-[ -f "$MODEL" ] || { echo "chunk-invariance-gate: SKIP (no model at $MODEL)"; exit 0; }
+[ -f "$MODEL" ] || [ -d "$MODEL" ] || {
+    echo "chunk-invariance-gate: SKIP (no model or safetensors dir at $MODEL)"
+    exit 0
+}
 [ -x "$PROBE" ] || { echo "chunk-invariance-gate: FAIL (build concat-prime-probe first)"; exit 1; }
 
 # ARCH-SPECIFIC ARMS (--prompts/--seam/--chunks/--label, lane/step35-chunkfix 2026-08-07): the
@@ -93,11 +96,18 @@ MODEL="${MODEL:-/data/ai-ml/hf-models/qwen35-9b-nvfp4-gguf/Qwen3.5-9B-NVFP4-MTP-
 # the two prompt lengths the original finding pinned as divergent (97 and 149 tokens)
 PROMPTS="${PROMPTS:-$D/prompt-turn1.txt $D/prompt-turn2.txt}"
 PROMPTS="${PROMPTS//,/ }"
-for p in $PROMPTS; do
+read -r -a PROMPT_FILES <<< "$PROMPTS"
+for p in "${PROMPT_FILES[@]}"; do
     [ -f "$p" ] || { echo "chunk-invariance-gate: FAIL (missing pinned prompt $p)"; exit 1; }
 done
 
-LOG=$(mktemp /tmp/chunkinv-gate-XXXXXX.log)
+if [ -n "${MEMRA_CHUNKINV_LOG:-}" ]; then
+    LOG=$MEMRA_CHUNKINV_LOG
+    mkdir -p "$(dirname "$LOG")"
+    : > "$LOG"
+else
+    LOG=$(mktemp /tmp/chunkinv-gate-XXXXXX.log)
+fi
 # The assertion under test is always EXPECT. The canary does not change the assertion — it
 # changes the WORLD (the $SEAM legacy-arithmetic seam on/off), so a working gate must report FAIL
 # on the canary run. LEGACY=on restores the pre-fix class edge (chunk-variant); LEGACY=off is the
@@ -114,9 +124,9 @@ ENVX=()
 rc_all=0
 saw_variant=0
 saw_invariant=0
-for p in $PROMPTS; do
+for p in "${PROMPT_FILES[@]}"; do
     # evidence discipline: tee the raw log, parse the LOG (never the pipe)
-    env "${ENVX[@]}" "$PROBE" "$MODEL" chunkinv --prompt-a "@$p" \
+    env -u "$SEAM" "${ENVX[@]}" "$PROBE" "$MODEL" chunkinv --prompt-a "@$p" \
         --chunks "$CHUNKS" --steps "$STEPS" >> "$LOG" 2>&1
     rc=$?
     [ $rc -ne 0 ] && { echo "chunk-invariance-gate: FAIL (probe exit $rc on $p)"; tail -5 "$LOG"; exit 1; }
@@ -133,7 +143,7 @@ if [ $saw_variant -eq 1 ]; then GOT=variant; else GOT=invariant; fi
 # a partial disappearance is a silent behavior change, which is exactly what this gate guards.
 if [ "$WANT" = variant ] && [ "$CANARY" = 0 ]; then
     nvar=$(grep -c "chunkinv verdict: \*\*\* CHUNK-DEPENDENT" "$LOG")
-    npr=$(set -- $PROMPTS; echo $#)
+    npr=${#PROMPT_FILES[@]}
     [ "$nvar" -lt "$npr" ] && {
         echo "chunk-invariance-gate: FAIL — pinned divergence now shows on only $nvar/$npr prompts"
         echo "  the chunk-order class CHANGED without the door; re-root-cause before touching the gate"

@@ -1,0 +1,6 @@
+chunk-invariance-gate: label=qwen-grain assert=invariant seam=MEMRA_PRIME_F32CHUNK0 legacy-seam=off got=invariant canary=0 chunks=64,32 model=qwen36-27b-blk128fp8
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+         32 | EXACT |            -1 | 0.000e0 | - | identical
+    chunkinv verdict: CHUNK-INVARIANT — prefill logits bit-identical at every chunk size
+chunk-invariance-gate: PASS (raw log research/cx-38prep-20260808/chunkinv-q36-st-smoke.raw.log)

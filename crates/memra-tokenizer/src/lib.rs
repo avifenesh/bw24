@@ -23,6 +23,8 @@ const TT_UNKNOWN: i64 = 2;
 const TT_CONTROL: i64 = 3;
 const TT_USER_DEFINED: i64 = 4;
 const TT_BYTE: i64 = 6;
+const QWEN35_PRETOKENIZE_REGEX: &str =
+    r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TokAttr {
@@ -242,8 +244,8 @@ impl Tokenizer {
     ///     generation_config eos_token_id (int or array) as the eos fallback.
     ///   - add_bos: tokenizer_config add_bos_token (default false).
     ///   - chat template: tokenizer_config chat_template, else chat_template.jinja.
-    ///   - pre = "default": every `pre` class routes to the gpt2-style byte-level split
-    ///     in bpe_tokenize (see the match there) — correct for the M3 tokenizer class.
+    ///   - tokenizer_config.pretokenize_regex equal to Qwen's shipped regex -> `qwen35`
+    ///   - unknown regex/missing metadata -> `default`, which warns before the fallback split
     pub fn from_hf_dir(dir: &std::path::Path) -> Result<Self, String> {
         let tj_path = dir.join("tokenizer.json");
         let text = std::fs::read_to_string(&tj_path)
@@ -419,6 +421,12 @@ impl Tokenizer {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .or_else(|| std::fs::read_to_string(dir.join("chat_template.jinja")).ok());
+        let pre = tc
+            .as_ref()
+            .and_then(|c| c.get("pretokenize_regex"))
+            .and_then(|v| v.as_str())
+            .filter(|regex| *regex == QWEN35_PRETOKENIZE_REGEX)
+            .map_or("default", |_| "qwen35");
 
         Ok(Tokenizer {
             id_to_token,
@@ -429,7 +437,7 @@ impl Tokenizer {
             eos_id,
             bos_id,
             add_bos,
-            pre: "default".to_string(),
+            pre: pre.to_string(),
             chat_template,
             spm_style: false,
         })
@@ -897,6 +905,7 @@ mod hf_tests {
         let tc = r#"{
           "eos_token": {"content": "<|end|>", "lstrip": false},
           "add_bos_token": false,
+          "pretokenize_regex": "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
           "chat_template": "{{ messages }}<|end|>"
         }"#;
         let dir = write_fixture("full", Some(tc), None, None);
@@ -904,7 +913,7 @@ mod hf_tests {
 
         assert_eq!(tok.eos_id(), 15);
         assert_eq!(tok.bos_id(), None);
-        assert_eq!(tok.pre(), "default");
+        assert_eq!(tok.pre(), "qwen35");
         assert_eq!(tok.vocab_size(), 17); // ids 0..16 (added tokens extend the table)
         assert_eq!(tok.chat_template(), Some("{{ messages }}<|end|>"));
 

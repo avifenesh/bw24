@@ -1,85 +1,192 @@
 #!/usr/bin/env python3
-"""Arch-diff field extractor — the runbook §2 checklist, mechanized.
+"""Diff a candidate Qwen 3.8 config against the frozen Qwen 3.6 contract.
 
-Usage: python3 arch-diff-fields.py <config.json> [reference-config.json]
-
-One arg  = dump every checklist field (the day-one grab on the 3.8 config).
-Two args = field-by-field diff against the reference (3.6-27B hf-min config),
-           tagging each divergence FAST-PATH (numeric-only) or STOP-CLASS.
-Self-test (2026-08-04): run on the 3.6 config against itself — all fields
-extract, zero diffs. Receipt: arch-diff-selftest-36.txt.
+Exit 0: same-architecture runbook path.
+Exit 1: hard STOP; open a real bring-up lane.
+Exit 2: architecture matches, but FP8 metadata is inconclusive; inspect tensor headers.
 """
+
+from __future__ import annotations
+
+import argparse
 import json
-import sys
+from pathlib import Path
 
 
-def fields(path):
-    cfg = json.load(open(path))
-    tc = cfg.get("text_config", cfg)  # tolerate a flat (non-multimodal) config
-    rp = tc.get("rope_parameters") or {}
+def load_fields(path: Path) -> dict[str, object]:
+    cfg = json.loads(path.read_text())
+    text = cfg.get("text_config", cfg)
+    rope = text.get("rope_parameters") or {}
+    layer_types = text.get("layer_types") or []
+    interval = text.get("full_attention_interval")
+    expected_types = []
+    if isinstance(interval, int) and interval > 0:
+        expected_types = [
+            "full_attention" if (index + 1) % interval == 0 else "linear_attention"
+            for index in range(len(layer_types))
+        ]
+    quant = cfg.get("quantization_config") or {}
+
     return {
-        # STOP-CLASS on string/structure change
+        # Engine dispatch contracts. Any divergence is a hard STOP.
         "architectures": cfg.get("architectures"),
         "model_type": cfg.get("model_type"),
-        "layer_types_pattern": "".join(
-            "L" if t == "linear_attention" else "F" if t == "full_attention" else "?"
-            for t in (tc.get("layer_types") or [])
-        )[:16] or None,
-        "full_attention_interval": tc.get("full_attention_interval"),
-        "rope_type": rp.get("rope_type"),
-        "mrope_interleaved": rp.get("mrope_interleaved"),
-        "mrope_section": rp.get("mrope_section"),
-        "num_experts": tc.get("num_experts"),  # any value = MoE-ification = STOP
-        "attn_output_gate": tc.get("attn_output_gate"),
-        "quantization_config.quant_method": (cfg.get("quantization_config") or {}).get("quant_method"),
-        "quantization_config.fmt": (cfg.get("quantization_config") or {}).get("fmt"),
-        "quantization_config.weight_block_size": (cfg.get("quantization_config") or {}).get("weight_block_size"),
-        "quantization_config.activation_scheme": (cfg.get("quantization_config") or {}).get("activation_scheme"),
-        # FAST-PATH on numeric-only change
-        "num_hidden_layers": tc.get("num_hidden_layers"),
-        "hidden_size": tc.get("hidden_size"),
-        "intermediate_size": tc.get("intermediate_size"),
-        "num_attention_heads": tc.get("num_attention_heads"),
-        "num_key_value_heads": tc.get("num_key_value_heads"),
-        "head_dim": tc.get("head_dim"),  # NEW value = FA-arm check (fa dispatch is head_dim-keyed)
-        "linear_num_key_heads": tc.get("linear_num_key_heads"),
-        "linear_num_value_heads": tc.get("linear_num_value_heads"),
-        "linear_key_head_dim": tc.get("linear_key_head_dim"),
-        "linear_value_head_dim": tc.get("linear_value_head_dim"),
-        "linear_conv_kernel_dim": tc.get("linear_conv_kernel_dim"),
-        "rope_theta": rp.get("rope_theta"),
-        "partial_rotary_factor": rp.get("partial_rotary_factor"),
-        "vocab_size": tc.get("vocab_size"),
-        "bos_token_id": tc.get("bos_token_id"),
-        "eos_token_id": tc.get("eos_token_id"),
+        "text_config.model_type": text.get("model_type"),
+        "attention_bias": text.get("attention_bias"),
+        "attention_dropout": text.get("attention_dropout"),
+        "attn_output_gate": text.get("attn_output_gate"),
+        "output_gate_type": text.get("output_gate_type"),
+        "hidden_act": text.get("hidden_act"),
+        "tie_word_embeddings": text.get(
+            "tie_word_embeddings", cfg.get("tie_word_embeddings")
+        ),
+        "full_attention_interval": interval,
+        "layer_types_cycle": layer_types[:interval] if isinstance(interval, int) else None,
+        "layer_types_match_interval": bool(layer_types) and layer_types == expected_types,
+        "layer_types_match_count": len(layer_types) == text.get("num_hidden_layers"),
+        "num_attention_heads": text.get("num_attention_heads"),
+        "num_key_value_heads": text.get("num_key_value_heads"),
+        "head_dim": text.get("head_dim"),
+        "linear_num_key_heads": text.get("linear_num_key_heads"),
+        "linear_num_value_heads": text.get("linear_num_value_heads"),
+        "linear_key_head_dim": text.get("linear_key_head_dim"),
+        "linear_value_head_dim": text.get("linear_value_head_dim"),
+        "linear_conv_kernel_dim": text.get("linear_conv_kernel_dim"),
+        "rope_parameters": rope,
+        "partial_rotary_factor": text.get("partial_rotary_factor"),
+        "num_experts": text.get("num_experts"),
+        "mtp_num_hidden_layers": text.get("mtp_num_hidden_layers"),
+        "mtp_use_dedicated_embeddings": text.get("mtp_use_dedicated_embeddings"),
+        # Parsed shape/value fields. Changes stay in the runbook path but require all gates.
+        "num_hidden_layers": text.get("num_hidden_layers"),
+        "layer_types_count": len(layer_types),
+        "hidden_size": text.get("hidden_size"),
+        "intermediate_size": text.get("intermediate_size"),
+        "vocab_size": text.get("vocab_size"),
+        "bos_token_id": text.get("bos_token_id"),
+        "eos_token_id": text.get("eos_token_id"),
         "image_token_id": cfg.get("image_token_id"),
         "video_token_id": cfg.get("video_token_id"),
-        "mtp_num_hidden_layers": tc.get("mtp_num_hidden_layers"),
-        "mtp_use_dedicated_embeddings": tc.get("mtp_use_dedicated_embeddings"),
-        "max_position_embeddings": tc.get("max_position_embeddings"),
+        "max_position_embeddings": text.get("max_position_embeddings"),
+        "rms_norm_eps": text.get("rms_norm_eps"),
+        # Metadata only. Tensor headers remain authoritative.
+        "quantization_config.quant_method": quant.get("quant_method"),
+        "quantization_config.fmt": quant.get("fmt"),
+        "quantization_config.weight_block_size": quant.get("weight_block_size"),
+        "quantization_config.activation_scheme": quant.get("activation_scheme"),
     }
 
 
-STOP_CLASS = {
-    "architectures", "model_type", "layer_types_pattern", "full_attention_interval",
-    "rope_type", "mrope_interleaved", "num_experts", "attn_output_gate",
+STOP_FIELDS = {
+    "architectures",
+    "model_type",
+    "text_config.model_type",
+    "attention_bias",
+    "attention_dropout",
+    "attn_output_gate",
+    "output_gate_type",
+    "hidden_act",
+    "tie_word_embeddings",
+    "full_attention_interval",
+    "layer_types_cycle",
+    "layer_types_match_interval",
+    "layer_types_match_count",
+    "num_attention_heads",
+    "num_key_value_heads",
+    "head_dim",
+    "linear_num_key_heads",
+    "linear_num_value_heads",
+    "linear_key_head_dim",
+    "linear_value_head_dim",
+    "linear_conv_kernel_dim",
+    "rope_parameters",
+    "partial_rotary_factor",
+    "num_experts",
+    "mtp_num_hidden_layers",
+    "mtp_use_dedicated_embeddings",
 }
 
-new = fields(sys.argv[1])
-if len(sys.argv) < 3:
-    for k, v in new.items():
-        print(f"{k} = {v}")
-    sys.exit(0)
+QUANT_FIELDS = {
+    "quantization_config.quant_method",
+    "quantization_config.fmt",
+    "quantization_config.weight_block_size",
+    "quantization_config.activation_scheme",
+}
 
-ref = fields(sys.argv[2])
-diffs = 0
-for k in new:
-    if new[k] != ref[k]:
+
+def fp8_metadata_verdict(fields: dict[str, object]) -> tuple[str, str]:
+    method = fields["quantization_config.quant_method"]
+    fmt = fields["quantization_config.fmt"]
+    block = fields["quantization_config.weight_block_size"]
+    activation = fields["quantization_config.activation_scheme"]
+
+    if method not in (None, "fp8"):
+        return "STOP", f"quant_method={method!r}, expected 'fp8'"
+    if fmt not in (None, "e4m3"):
+        return "STOP", f"fmt={fmt!r}, expected 'e4m3'"
+    if block not in (None, [128, 128]):
+        return "STOP", f"weight_block_size={block!r}, expected [128, 128] or tensor-proven scalar"
+    if activation not in (None, "dynamic"):
+        return "STOP", f"activation_scheme={activation!r}, expected 'dynamic'"
+    if (method, fmt, block, activation) == ("fp8", "e4m3", [128, 128], "dynamic"):
+        return "PASS", "official Qwen 3.6 block-128 metadata contract"
+    return "REVIEW", "metadata is incomplete; tools/inspect-fp8-st.py must prove tensor classes"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--expect-fp8", action="store_true")
+    parser.add_argument("candidate", type=Path)
+    parser.add_argument("reference", type=Path, nargs="?")
+    args = parser.parse_args()
+
+    candidate = load_fields(args.candidate)
+    if args.reference is None:
+        for key, value in candidate.items():
+            print(f"{key} = {value}")
+        if args.expect_fp8:
+            verdict, reason = fp8_metadata_verdict(candidate)
+            print(f"\nFP8 metadata: {verdict} - {reason}")
+            return {"PASS": 0, "STOP": 1, "REVIEW": 2}[verdict]
+        return 0
+
+    reference = load_fields(args.reference)
+    hard_stops = 0
+    diffs = 0
+    for key, new_value in candidate.items():
+        if key in QUANT_FIELDS:
+            continue
+        old_value = reference[key]
+        if new_value == old_value:
+            continue
         diffs += 1
-        tag = "STOP-CLASS" if k in STOP_CLASS else "fast-path (numeric)"
-        print(f"DIFF [{tag}] {k}: ref={ref[k]} -> new={new[k]}")
-missing = [k for k in new if new[k] is None and ref[k] is not None]
-for k in missing:
-    print(f"MISSING (present in ref): {k} — treat as STOP until explained")
-print(f"\n{diffs} diffs, {len(missing)} missing-vs-ref fields")
-sys.exit(1 if any(k in STOP_CLASS for k in new if new[k] != ref[k]) or missing else 0)
+        if key in STOP_FIELDS:
+            hard_stops += 1
+            tag = "STOP-ARCH"
+        else:
+            tag = "GO-WITH-GATES"
+        print(f"DIFF [{tag}] {key}: ref={old_value!r} -> new={new_value!r}")
+
+    missing = [
+        key
+        for key in STOP_FIELDS
+        if reference.get(key) is not None and candidate.get(key) is None
+    ]
+    for key in sorted(missing):
+        print(f"MISSING [STOP-ARCH] {key}: present in reference")
+    hard_stops += len(missing)
+
+    quant_exit = 0
+    if args.expect_fp8:
+        verdict, reason = fp8_metadata_verdict(candidate)
+        print(f"FP8 metadata: {verdict} - {reason}")
+        quant_exit = {"PASS": 0, "STOP": 1, "REVIEW": 2}[verdict]
+
+    print(f"\n{diffs} architecture diffs, {hard_stops} hard stops")
+    if hard_stops or quant_exit == 1:
+        return 1
+    return quant_exit
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

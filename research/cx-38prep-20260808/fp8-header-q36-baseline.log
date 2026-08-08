@@ -1,0 +1,11 @@
+checkpoint: /data/ai-ml/hf-models/qwen36-27b-blk128fp8
+safetensors files: 3
+tensor headers: 2194
+2D F8_E4M3 weights: 208
+  per-tensor :    0 tensors       0.000 MiB
+  block-128  :  208 tensors    6880.000 MiB
+  per-row    :    0 tensors       0.000 MiB
+  unsupported:    0 tensors       0.000 MiB
+packed-U8 E4M3 scale planes: 193
+header-only direct-path verdict: PASS
+runtime checks still required: finite positive scales, no E4M3 NaN codes, transform support, native residency census, and FP8-MMQ dispatch

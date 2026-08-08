@@ -1,0 +1,66 @@
+Qwen3.8-27B FP8-ST preflight
+timestamp: 2026-08-08T06:06:49+03:00
+repo: /home/avifenesh/projects/wt-cx-38prep
+target repo: Qwen/Qwen3.8-27B-FP8
+target dir: /data/ai-ml/hf-models/qwen38-27b-fp8
+
+[PASS] dedicated branch: lane/cx-38-runbook
+[PASS] train tip 9aebdb3e is an ancestor of HEAD
+[WAIT] steering file absent: /home/avifenesh/.lanectl/inbox/cx-38prep.md
+[PASS] tool available: git
+[PASS] tool available: curl
+[PASS] tool available: jq
+[PASS] tool available: python3
+[PASS] tool available: uv
+[PASS] tool available: hf
+[PASS] tool available: cargo
+[PASS] tool available: nvcc
+[PASS] tool available: nvidia-smi
+[PASS] tool available: flock
+[PASS] tool available: sha256sum
+[PASS] NVIDIA GPU visible: NVIDIA GeForce RTX 5090 Laptop GPU
+[PASS] Hugging Face authentication works
+[PASS] artifact root: /data/ai-ml/hf-models
+[PASS] artifact root is writable
+[PASS] artifact filesystem free space: 447 GiB (minimum 96)
+[PASS] 3.6 FP8-ST A/B baseline: /data/ai-ml/hf-models/qwen36-27b-blk128fp8
+[PASS] 3.6 FP8-ST config: /data/ai-ml/hf-models/qwen36-27b-blk128fp8/config.json
+[PASS] 3.6 FP8-ST index: /data/ai-ml/hf-models/qwen36-27b-blk128fp8/model.safetensors.index.json
+[PASS] 3.6 FP8-ST tokenizer config: /data/ai-ml/hf-models/qwen36-27b-blk128fp8/tokenizer_config.json
+[PASS] 3.6 FP8-ST tokenizer: /data/ai-ml/hf-models/qwen36-27b-blk128fp8/tokenizer.json
+[PASS] 3.6 architecture reference config: /data/ai-ml/hf-models/qwen36-27b-hf-min/config.json
+[PASS] 3.6 tokenizer reference: /data/ai-ml/hf-models/qwen36-27b-hf-min/tokenizer_config.json
+[PASS] 3.6 tokenizer structure reference: /data/ai-ml/hf-models/qwen36-27b-hf-min/tokenizer.json
+[PASS] 3.6 frozen GGUF comparison baseline: /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/Qwen3.6-27B-NVFP4-Q4_K_M-mtp.gguf
+[PASS] 3.6 frozen own-trim drafter: /data/ai-ml/hf-models/qwen36-27b-nvfp4-mtp/draft-daily-owntrim-nvfp4head-q4blk.gguf
+[PASS] day-one probe prompt: tools/fast-gate/prompts/probe.txt
+[PASS] drafter long prompt: research/e2e/prompts/p3-agentic-long.txt
+[PASS] canonical own-generation prompt pack: research/gemma4-bringup/corpus-prompts
+[PASS] canonical own-generation prompt count: 254
+[PASS] llama.cpp gguf-py: /data/projects/llama.cpp/gguf-py
+[PASS] MTP extractor: tools/extract_mtp_draft.py
+[PASS] draft-head trimmer: tools/trim_draft_head.py
+[PASS] trimmed-draft builder is executable
+[PASS] llama-quantize is executable
+[PASS] day-one helper is executable: tools/serve-st-gate.sh
+[PASS] day-one helper is executable: tools/chunk-invariance-gate.sh
+[PASS] day-one helper is executable: tools/inspect-fp8-st.py
+[PASS] day-one helper is executable: tools/hf-greedy-reference.py
+[PASS] day-one helper is executable: tools/compare-greedy-tokens.py
+[PASS] Python NumPy dependency is available
+[PASS] 3.6 ST tokenizer matches the frozen Qwen tokenizer contract
+[PASS] 3.6 FP8-ST header census satisfies the direct-path contract
+[PASS] config-diff helper self-test
+[PASS] official 3.6 FP8 config matches the frozen architecture/block-128 contract
+[WAIT] official target repo not visible in the Qwen namespace: Qwen/Qwen3.8-27B-FP8
+[WAIT] target artifact directory does not exist yet: /data/ai-ml/hf-models/qwen38-27b-fp8
+[PASS] release binaries build
+[PASS] binary ready: target/release/kernel-check
+[PASS] binary ready: target/release/run-gen
+[PASS] binary ready: target/release/run-spec
+[PASS] binary ready: target/release/concat-prime-probe
+[PASS] binary ready: target/release/frspec-owngen
+[PASS] binary ready: target/release/memra-server
+
+summary: PASS=54 WAIT=3 FAIL=0
+PREFLIGHT-38: READY-WITH-WAITS

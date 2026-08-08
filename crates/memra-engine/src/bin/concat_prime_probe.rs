@@ -130,16 +130,29 @@ impl Ctx {
 
 fn load(path: &str) -> Result<Ctx, Box<dyn std::error::Error>> {
     let e = Engine::new(0)?;
-    let g = GgufFile::open(path)?;
-    let model = HybridModel::load_without_mtp(&e, &g)?;
-    let tok = Tokenizer::from_gguf(&g).map_err(|err| format!("tokenizer: {err}"))?;
-    eprintln!("loaded {} ({} layers)", g.arch().unwrap_or("?"), model.layers.len());
+    let source_path = std::path::Path::new(path);
+    let (model, tok, source_name) = if source_path.is_dir() {
+        let source = memra_gguf::source::SafetensorsSource::open(source_path)?;
+        let model = HybridModel::load_from_source_without_mtp(&e, &source)?;
+        let tok = Tokenizer::from_hf_dir(source_path)
+            .map_err(|err| format!("tokenizer: {err}"))?;
+        (model, tok, "safetensors".to_string())
+    } else {
+        let g = GgufFile::open(path)?;
+        let source_name = g.arch().unwrap_or("?").to_string();
+        let model = HybridModel::load_without_mtp(&e, &g)?;
+        let tok = Tokenizer::from_gguf(&g).map_err(|err| format!("tokenizer: {err}"))?;
+        (model, tok, source_name)
+    };
+    eprintln!("loaded {} ({} layers)", source_name, model.layers.len());
     Ok(Ctx { e, model, tok, ctx_len: 2048 })
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
-    let path = args.next().expect("usage: concat-prime-probe <model.gguf> <mode> [opts]");
+    let path = args
+        .next()
+        .expect("usage: concat-prime-probe <model.gguf|hf_dir> <mode> [opts]");
     let mode = args.next().expect("mode: repro|posdiff|content|margins");
     let rest: Vec<String> = args.collect();
     let chat = rest.iter().any(|a| a == "--chat");
