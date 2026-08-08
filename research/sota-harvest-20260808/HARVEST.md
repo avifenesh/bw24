@@ -29,6 +29,190 @@ below is dated; projections are stated against OUR receipts, never against vendo
 
 (Sections below are filled per-basket; the ranked top-8 closes the file.)
 
+## Basket 2 — BRING HOME (papers, last ~6 months)
+
+### 2A. Speculative decoding beyond fixed-K MTP
+
+The literature converged on our two measured failure modes: fixed K dies under batch
+(our c=4 0.61x), and serial draft chains die under pipelining (our PP-2 0.19–0.50x).
+Items ordered by projected floor-raise on our cells.
+
+**2A.1 Dynamic per-request verify budget — DSpark class.**
+DSpark (DeepSeek, arXiv 2607.05147, 2026-07-06; SGLang integration
+lmsys.org/blog/2026-07-06-dspark-sglang): a confidence head scores each drafted token's
+survival; a scheduler sizes each request's verify window per step from an offline-profiled
+cost model `T(bs,K)`, argmaxing expected accepted tokens per real marginal cost. Deployed in
+DeepSeek-V4 production: +60–85% per-user speed at matched throughput vs MTP-1; the win is
+primarily a HIGH-BATCH effect (ties at bs=1, pulls ahead as throughput plateaus). Mixed
+traffic: windows contract with difficulty (5.24/3.78/2.91 tokens on gsm8k/arena-hard/poetry).
+The full semi-autoregressive drafter is a training project, but the SCHEDULER is separable —
+and SGLang's engineering answer to fixed-shape CUDA graphs is directly reusable: front-pack
+the ragged per-request verify into one buffer, key the graph on TOTAL token count rounded to
+captured tiers, so a trimmed batch replays a genuinely smaller graph.
+*Projected on our numbers:* the single-card c=2 cell (1.08x, nearly wash) and the c=4 cell
+(0.61x, gated off) are exactly the "verify budget exceeds what the batch can afford" regime;
+K-shrink-under-load reopens them without the batched-drafting lane. Composes with 3.3
+(the policy) and 3.1 (the batched rounds). *Cost:* days for the policy skeleton on our
+existing telemetry; weeks if the tiered ragged-verify graph capture is included.
+*Lane:* codex for policy, fable for the ragged-graph capture design.
+
+**2A.2 Full-information online K selection — "Not-a-Bandit" (arXiv 2510.20064 v2, ICLR
+2026).** The verify pass's target logits score ALL counterfactual K choices for free —
+no extra target queries, provably no-regret online selection. This is the theoretical
+backbone for basket 3.3 and costs almost nothing to adopt. SpecDec++ (arXiv 2405.19715,
+COLM 2025: threshold-on-predicted-rejection is the optimal stop rule, 7.2–11.1% over fixed
+K) and SVIP (EMNLP 2025, arXiv 2411.18462: draft-entropy early exit, training-free, +17-22%
+over fixed lengths) are the same family; SVIP's entropy cutoff is the cheapest first arm.
+*Cost:* days. *Lane:* codex (folded into 3.3).
+
+**2A.3 Suffix/ngram draft source — training-free, batch-safe, CPU-side.**
+Suffix Decoding (Snowflake, arXiv 2411.04975; vLLM `method: suffix`, merged via #25784):
+suffix-tree over prompt + prior generations drafts without any GPU drafter pass — 1.8–4.5x
+on SWE-Bench agentic subtasks, ~1.45x on repetitive coding. vLLM's own guidance: ngram/
+suffix are the batch-safe option because drafting adds zero GPU load. SSSD (arXiv
+2411.05894, ACL 2026) adds the roofline formula for how much speculation a batch can afford
+(`s = I_knee / batch_size`) — the first-principles derivation of the K(c) curve we measured
+empirically. *Projected on our numbers:* composes with MTP as a zero-cost draft source; on
+the owner's dogfood traffic (agentic, repetitive tool output) this is the highest ROI per
+line of code in the spec family — the drafts feed the EXISTING verify path unchanged, so
+fixed-shape graphs are untouched. On PP-2 where the drafter forward is the poison, a
+CPU-side draft source is the one spec form with no placement penalty — it may reopen PP-2
+spec despite the specplace OFF verdict, because the verdict's mechanism (serial GPU draft
+chain) does not apply. *Cost:* ~1 week (suffix tree + draft-slot injection + gates).
+*Lane:* codex worker — well-specified, isolated.
+
+**2A.4 One-pass parallel drafter — P-EAGLE class (arXiv 2602.01469, 2026-02; vLLM since
+v0.16.0).** Replaces K sequential drafter passes with ONE forward emitting all K tokens
+(learnable MASK embedding for positions 2..K). Blog receipts (B200, GPT-OSS-20B): 1.55–1.69x
+over EAGLE-3 at c=1, and — the part that matters for us — one drafter launch per round
+batches trivially across requests. EAGLE-3.1 (vllm.ai/blog/2026-05-26-eagle-3-1) holds
+1.71x at c=4 in vLLM serving with LINEAR chains (trees are dead for serving — Red Hat
+receipt: tree verify cost dominates at load; vLLM ships chain-only). DFlash (arXiv
+2602.06036, ICML 2026; SGLang Spec V2) is the higher-ceiling block-diffusion version.
+*Projected on our numbers:* this is the drafter ARCHITECTURE that makes 3.1 cheap — a
+one-pass drafter turns the batched draft step from B serial chains into one B×K forward.
+Requires retraining the drafter head (TorchSpec exists; our make-trimmed-draft pipeline is
+the in-house analog). The attention-drift finding (arXiv 2605.09992: drafter hidden-state
+magnitude grows along the chain, acceptance decays — fix is post-norm feeding) is a free
+architecture note for any drafter we train (feeds 3.5). *Cost:* weeks (training + bring-up).
+*Lane:* fable for the training recipe, codex for bring-up.
+
+**2A.5 Spec × pipeline parallelism.** SpecPipe (arXiv 2504.04104 v2): fill PP bubbles with
+speculative tokens, 4.19–5.53x TBT vs standard PP at 8 stages; PipeSpec (arXiv 2505.01572,
+ACL Findings 2025): async draft/verify across devices with rollback, >sequential for any
+nonzero acceptance; Saguaro (arXiv 2603.03251, ICLR 2026): pre-draft round N+1 against
+predicted verify outcomes, removing draft latency from the critical path (~30% over
+optimized spec baselines). Evidence basket 3.2 builds on — see there for the 2-stage
+adaptation. Negative worth keeping: component-aware self-spec collapses on sequential
+hybrids like Qwen3.5 (α=0.038, arXiv 2605.01106) — do not try SSM-subgraph self-drafting
+on the q-family. Self-spec generally caps at ~1.4–1.5x (KnapSpec, ICML 2026) — below our
+existing c=1 drafter spec; fallback-only, no lane.
+
+### 2B. Attention/prefill + KV (sm_120a-portable)
+
+The FA3/FA4 hand-port thesis HOLDS and now has named, dated artifacts. Items ordered by
+projected floor-raise per week on our receipts.
+
+**2B.1 SGLang dynamic chunk sizing for pipelined prefill (LMSYS blog 2026-01-15,
+lmsys.org/blog/2026-01-15-chunked-pipeline).** Their chunked-pipeline-parallelism work hit
+our exact failure mode at P=2: fixed-size chunks mean per-chunk time GROWS with prefix
+length (attention is quadratic in prefix), so stages misalign and the later stage bubbles.
+Their fix is scheduler-only: model cumulative runtime as a quadratic in prefix length and
+SHRINK successive chunk sizes so per-chunk time stays constant (`Runtime(L+ΔL) −
+Runtime(L) = Runtime(chunk₀)`), smoothing 0.6–0.85, page-aligned. Receipts: DeepSeek-V3.1
+H20 PP4 = 3.31x prefill vs TP8; TTFT −67.9% at 128K.
+*Projected on our numbers:* pipeprime's auto policy is ≤8 EQUAL microchunks with a
+128-token floor — the exact fixed-size shape their analysis says leaves fill/drain bubbles
+that grow with T. Our own geometry sweep already shows the appetite (16 chunks beat 8 by
+1.5% at pp4096 despite double the overhead — equal-size is fighting the skew). A
+decreasing-chunk schedule attacks the same bubbles for free; on the 697.6 receipt even
+5-10% is found money, and TTFT at long prompts is where the 11.0 s p50 lives. *Cost:*
+days — pure host-side schedule in `prime_chunk_tokens()`, gated by the existing
+ppsplit/tickinv batteries (chunk boundaries change ⇒ the tick-seg invariance gates are the
+safety net, and they are ALREADY GREEN for arbitrary segmentation — the fix lane was built
+for exactly this freedom). *Lane:* codex worker — the gate battery makes this mechanical.
+
+**2B.2 FA4 conditional softmax rescaling (arXiv 2603.05451, 2026-03-05;
+tridao.me/blog/2026/flash4).** The one FA4 piece that is pure algorithm: rescale the
+online-softmax accumulator only when the new row-max exceeds the old by a threshold τ
+(final normalization stays exact) — ~10x fewer correction ops, called out by Modal's
+dissection (modal.com/blog/reverse-engineer-flash-attention-4, Sept 2025) as "a good, and
+very portable, idea." Also portable from the paper: LPT tile scheduling for causal masks +
+varlen batch sorting (paper states these are GPU-independent, used in FA3 too).
+*Projected on our numbers:* prefill attention share on the Step SKU is modest (the anatomy
+puts MoE+peer-read at ~50% of prime), so honest projection is the 2-5% class on prefill
+cells — but it also applies to the decode FA twins where softmax correction is per-step
+overhead. *Cost:* days per kernel family, exactness-gated (the correction is
+numerics-changing ⇒ run the full argmax/self-consistency battery; if bit-identity is
+required, this becomes a new numeric class and needs the chunk-invariance treatment).
+*Lane:* codex, one kernel family at a time.
+
+**2B.3 CUTLASS PR #3030 — the SM120 warp-specialization template
+(github.com/NVIDIA/cutlass/pull/3030, 2026, Second Nature Computing).** FA2-forward on
+SM120 with FA3 structure grafted on: TMA `cp.async.bulk` loads via a dedicated DMA warp,
+mbarrier producer/consumer (`PipelineTmaAsync`), multi-stage KV double buffering, separate
+K and V pipelines — all on `mma.sync.aligned.m16n8k16`. Validated on GB10 (SM121a). Their
+FP8 variant documents the operand-layout tax honestly (0.88x vs BF16-TMA at small S).
+Binding constraint documented: 97.0 of SM120's 99 KB SMEM — deep FA4-style pipelines do
+NOT transplant. *Projected:* this is the reference design for any memra FA rewrite — read
+before writing, per the July sweep's TRT-LLM warpspec_sm120 note (this PR is the fuller
+artifact). Paired with SageAttention3 (NeurIPS 2025 Spotlight, arXiv 2505.11594: FP4
+microscaling attention at 1038 TOPS on RTX 5090, ~5x vs FA — with the honest caveat that
+FP4 attention needs per-model quality gates and some models need INT8/FP8 hybrid fallback),
+it defines the sm_120a attention ceiling. *Cost:* weeks-class kernel program; only worth
+opening when prefill attention becomes the wall (post-2B.1/leverC it may). *Lane:* fable.
+
+**2B.4 NVFP4 KV cache — receipts on OUR exact rig profile (SGLang PR #21601, merged
+2026-07-17; independent replication hikarioyama/sglang-nvfp4-kv-sm120, June 2026).**
+E2M1 + per-16 E4M3 block scales + per-layer FP32 global scale. The replication is
+literally our deployment shape: RTX PRO 6000 pair, TP=2, CUDA-graph decode, hybrid SWA-512,
+198B MoE — 1.778x KV capacity vs FP8, ~4% decode cost, large-model generation
+byte-identical to FP8. Two law-grade findings: (1) small models break (Qwen2.5-7B
+incoherent under FP4 KV — massive-activation K channels; our own fp8-K flip-block, 74%→20.5%
+acceptance, is the same disease one rung up); (2) the per-layer global scale MUST be
+calibrated by an eager forward BEFORE graph capture or block scales underflow to garbage.
+*Projected on our numbers:* KV capacity is the PP-2 concurrency ceiling on big-trunk SKUs
+(the 192GB assessment killed Hy3 on 145KB/token); q5_1→NVFP4-V (or K8V4-style splits per
+KVTuner, arXiv 2502.04420: keys need more bits than values) buys ~1.3-1.8x session
+capacity where sessions are KV-capped. Quality-gated per model, spec-acceptance gate
+mandatory (our fp8-K history says acceptance is the sensitive detector). *Cost:* ~2 weeks
+(new KV block format in the FA twins + calibration pass + battery). *Lane:* fable for the
+format decision, codex for the twins.
+
+**2B.5 Layered prefill for MoE — the chunk tax we currently pay (arXiv 2510.08055,
+Oct 2025).** Chunked prefill re-reads the ENTIRE expert bank per chunk; on MoE this
+inflates memory traffic up to 39%. Their alternative interleaves prefill/decode across
+LAYER groups instead of token chunks (TTFT −70% max vs chunked). *Why it matters here:*
+pipeprime just moved us to MORE chunks (8 microchunks × every expert bank touched again),
+and leverC's grouped prefill re-reads each expert's weights once per chunk per layer. The
+per-chunk expert-reload term is now multiplied 8x — the two lanes' wins already net out
+hugely positive, but this paper says there is a measurable tax to reclaim (weight-stream
+counters would show it directly; our anatomy infra makes the verification a day). Full
+layered-prefill is a scheduler rearchitecture — the cheap version is expert-weight-reuse
+ACROSS microchunks within a stage (the pipeline already holds chunk N and N+1 in flight on
+the same stage back to back). *Cost:* days to measure, weeks to act. *Lane:* codex for the
+counter receipt, decision after.
+
+**2B.6 POD-Attention — fused prefill+decode on the same SM (ASPLOS 2025, arXiv
+2410.18038, FA2-based, no Hopper features).** One kernel runs compute-bound prefill and
+bandwidth-bound decode CTAs concurrently with SM-aware scheduling: attention up to 75%
+faster (mean 28%) vs separate kernels in hybrid batches, e2e up to 22%. Our tick scheduler
+already forms hybrid prefill+decode ticks, so the batch shape exists. *Honest note:* this
+is the biggest-effort kernel item in the basket and its win depends on how often our ticks
+are genuinely hybrid (the metering exists to answer that). *Cost:* weeks. *Lane:* fable,
+only after 2B.1/2B.5 receipts say the scheduler-level overlaps are exhausted.
+
+**2B.7 KV eviction (TriAttention) and sub-4-bit KV — watch, don't build.** TriAttention
+(preprint + TRT-LLM PR #16957 merged; ICML 2026 acceptance NOT verified) scores keys in
+pre-RoPE space — clearly better than SnapKV-class (32.9 vs 20.0 at budget 2048) but still
+below full attention; lossy, per-model calibrated. RateQuant (arXiv 2605.06675) shows
+sub-4-bit uniform KV stays badly lossy even with optimal allocation (2.5-bit best case
+PPL 14.9 vs FP ~8). Neither clears our exactness doctrine for defaults; both are
+long-context research files. YOCO/CLA cross-layer sharing is a training-time choice —
+model-selection intelligence only. *Cost:* zero now. *Lane:* none.
+
+
+
 ## Basket 3 — CREATE AT HOME (original research proposals)
 
 The seeds were evaluated against the receipt base and this week's web sweeps. Verdicts first:
