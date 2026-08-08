@@ -11,11 +11,13 @@ SUMMARY="$RAW/perf-summary-$TS.log"
 RESULTS="$RAW/perf-results-$TS.tsv"
 P512="$RAW/prompt-pp512-$TS.txt"
 P2048="$RAW/prompt-pp2048-$TS.txt"
+P4096="$RAW/prompt-pp4096-$TS.txt"
 N=${N:-5}
 
 mkdir -p "$RAW"
 head -c 2800 "$PROMPT4096" >"$P512"
 head -c 11200 "$PROMPT4096" >"$P2048"
+cp -- "$PROMPT4096" "$P4096"
 cd "$REPO" || exit 1
 
 snapshot() {
@@ -102,17 +104,47 @@ summarize_arm() {
 
 report_comparison() {
   local shape=$1
-  local off grouped delta_vs_off delta_vs_417
+  local off grouped historical delta_vs_off delta_vs_historical
   off=$(awk -F '\t' -v shape="$shape" \
     '$1 == shape && $3 == "off" { print $6 }' "$RESULTS")
   grouped=$(awk -F '\t' -v shape="$shape" \
     '$1 == shape && $3 == "grouped" { print $6 }' "$RESULTS")
   [[ -n "$off" && -n "$grouped" ]] || return 1
+  case "$shape" in
+    pp512) historical=330.0 ;;
+    pp2048) historical=401.8 ;;
+    pp4096) historical=417.6 ;;
+    *) return 1 ;;
+  esac
   delta_vs_off=$(awk -v grouped="$grouped" -v off="$off" \
     'BEGIN { printf "%+.1f%%", 100.0 * (grouped / off - 1.0) }')
-  delta_vs_417=$(awk -v grouped="$grouped" \
-    'BEGIN { printf "%+.1f%%", 100.0 * (grouped / 417.6 - 1.0) }')
-  echo "$shape grouped=$grouped tok/s off=$off tok/s delta=$delta_vs_off grouped-vs-417.6=$delta_vs_417"
+  delta_vs_historical=$(awk -v grouped="$grouped" -v historical="$historical" \
+    'BEGIN { printf "%+.1f%%", 100.0 * (grouped / historical - 1.0) }')
+  echo "$shape grouped=$grouped tok/s off=$off tok/s delta-vs-off=$delta_vs_off historical-pipeline=$historical tok/s delta-vs-historical=$delta_vs_historical"
+}
+
+report_geometry() {
+  local shape=$1
+  local tokens chunk chunks
+  tokens=$(awk -F '\t' -v shape="$shape" '$1 == shape { print $2; exit }' "$RESULTS")
+  [[ -n "$tokens" ]] || return 1
+  read -r chunk chunks < <(awk -v tokens="$tokens" '
+    BEGIN {
+      chunk = int((tokens + 7) / 8)
+      if (chunk < 128) chunk = 128
+      if (chunk > 4096) chunk = 4096
+      start = 0
+      while (start < tokens) {
+        end = start + chunk
+        if (end > tokens) end = tokens
+        if (tokens - end > 0 && tokens - end < 16) end = tokens
+        chunks++
+        start = end
+      }
+      print chunk, chunks
+    }
+  ')
+  echo "$shape tokens=$tokens effective-auto-chunk=$chunk chunks=$chunks"
 }
 
 main() {
@@ -120,7 +152,7 @@ main() {
   echo "model=$MODEL"
   echo "protocol=N=$N interleaved, order alternated, one warmup per independent timed arm"
   local prompt
-  for prompt in "$P512" "$P2048" "$PROMPT4096"; do
+  for prompt in "$P512" "$P2048" "$P4096"; do
     echo "prompt=$prompt bytes=$(wc -c <"$prompt") sha256=$(sha256sum "$prompt" | awk '{print $1}')"
   done
   local rc=0
@@ -135,7 +167,7 @@ main() {
     for cell in \
       "pp512:$P512" \
       "pp2048:$P2048" \
-      "pp4096:$PROMPT4096"
+      "pp4096:$P4096"
     do
       shape=${cell%%:*}
       prompt=${cell#*:}
@@ -166,6 +198,10 @@ main() {
   done
   echo "=== medians ==="
   cat "$RESULTS"
+  echo "=== effective naked PP-2 auto geometry ==="
+  for shape in pp512 pp2048 pp4096; do
+    report_geometry "$shape" || perf_rc=1
+  done
   echo "=== comparisons ==="
   for shape in pp512 pp2048 pp4096; do
     report_comparison "$shape" || perf_rc=1
