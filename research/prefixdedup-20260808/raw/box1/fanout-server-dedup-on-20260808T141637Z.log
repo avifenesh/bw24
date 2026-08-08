@@ -1,0 +1,34 @@
+[server] starting; models config = [("step35", "/home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf", None)]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (device=1, MEMRA_FAST=true)
+[spec-gate] policy placement=pp2-cross-device LOW=0 HIGH=1 source=placement-default spec-admission=off
+[worker] loading model "step35" <- /home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.72GB (expert budget 94.80GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+[worker] WARN: step35: step35: no MTP drafter attached — serving plain decode, no speculative decoding. This arch ships its MTP/NextN head in a SEPARATE GGUF, so the trunk's nextn_predict_layers=0 is expected and does NOT mean the model has no drafter. Attach with MEMRA_MODELS="step35=/home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf+/path/to/Step3.7-flash-mtp-Q8_0.gguf" (the same '+draft' convention every regime drafter uses; docs/DRAFT-REGIME.md).
+[worker]   loaded "step35": 45 layers, eos=128007
+[worker] step35: template caps tools=true think=true think_switch=false chat_ok=true effort_levels=true gemma_think=false ctx=262144 tok="deepseek-v3" instruct=Some("chatml")
+[worker] step35: decode chunk cap 8
+[prefix-cache] on: budget 4295MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["step35"]
+[server] listening on http://127.0.0.1:18108
+[meter] admit id=cmpl-2d639409fbc73fa39b5b234a17f94a37 tenant=default lane=interactive model="step35"
+[worker] observed session VRAM cost for "step35": 336MB (admission gate = 2x)
+[prefix-cache] insert (seed): 1040 tokens, 86.9MB (resident 86.9MB / 4295MB, model step35, ns "dedup-on-warmup-1786198695054468040")
+[meter] admit id=cmpl-8444e496d3bb2fda7e6aa319a88c9bc2 tenant=default lane=interactive model="step35"
+[meter] admit id=cmpl-1eebc4b19561dae639b4bc729dd063a8 tenant=default lane=interactive model="step35"
+[meter] admit id=cmpl-939ce32fddcb48ca25e6c1824042fbbd tenant=default lane=interactive model="step35"
+[meter] admit id=cmpl-4ba7a43f544acd4dd380ba4dbd2787d2 tenant=default lane=interactive model="step35"
+[meter] admit id=cmpl-74cc66ab578291f7833e9bc9ba45294e tenant=default lane=interactive model="step35"
+[meter] admit id=cmpl-b6ede427a84dca074d36410b23cd952a tenant=default lane=interactive model="step35"
+[meter] admit id=cmpl-1243a05a9e84ca4681a7059594c35956 tenant=default lane=interactive model="step35"
+[meter] admit id=cmpl-2e5a38b8658fd5f403c65248a98b4049 tenant=default lane=interactive model="step35"
+[prefix-cache] insert (in-batch fanout): 1024 tokens, 85.5MB (resident 172.4MB / 4295MB, model step35, ns "dedup-on-measured-1786198698096188751")
+[prefix-dedup] B=7 prefix=1024 saved=6144 hash=6f2b386e5ff379e5 in 2685.2ms retained=true (model step35, ns "dedup-on-measured-1786198698096188751")
+[prefix-cache] hit: 1024 of 1040 prompt tokens from cache (model step35)
+[step35-batch] first B>1 batched step35 walk: B=8 layers=[0,22)
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting

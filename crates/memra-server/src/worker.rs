@@ -732,6 +732,13 @@ fn meter_account(ns_tokens: &mut HashMap<String, [u64; 2]>, cache_ns: &str,
     row[1] += n_cached;
 }
 
+/// Add cached-token credit discovered after admission (in-batch prefix fanout).
+/// Prompt tokens were already charged by `meter_account` when the request admitted.
+fn meter_cached_credit(ns_tokens: &mut HashMap<String, [u64; 2]>, cache_ns: &str,
+                       n_cached: u64) {
+    meter_account(ns_tokens, cache_ns, 0, n_cached);
+}
+
 /// MEMRA_PREFIX_CACHE_MB (default 256): resident byte budget for the prefix cache. 0 = off.
 fn prefix_cache_budget_bytes() -> usize {
     static B: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
@@ -740,6 +747,12 @@ fn prefix_cache_budget_bytes() -> usize {
             .and_then(|v| v.parse::<usize>().ok()).unwrap_or(256)
             .saturating_mul(1024 * 1024)
     })
+}
+
+/// In-batch cold-prefix fanout. `=0` is the rollback/measurement seam.
+fn prefix_dedup_enabled() -> bool {
+    static D: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *D.get_or_init(|| std::env::var("MEMRA_PREFIX_DEDUP").as_deref() != Ok("0"))
 }
 
 /// Batched scheduling on? (read once — mirrors the run-loop static; the prefix cache only
@@ -1034,6 +1047,15 @@ struct PrefixEntry {
     /// Recency-index identity (Q3, audit 2026-08-05): unique per insert (monotonic counter,
     /// assigned by `insert`), disambiguating equal `last_use` Instants in the LRU BTreeMap key.
     id: u64,
+    /// In-flight fanout/cache-hit leases. A pinned entry is absent from the evictable LRU
+    /// index until the last participating session retires.
+    pins: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PrefixPin {
+    key: PoolKey,
+    id: u64,
 }
 
 #[derive(Default)]
@@ -1051,9 +1073,11 @@ struct PrefixCache {
     /// scan broke them by HashMap-iteration order (nondeterministic across pools,
     /// insertion order within one pool); the `id` component breaks them by insertion
     /// order globally — a strict determinization, never a different policy.
-    /// Value = (pool key, index into that pool's Vec), kept exact on removal by
-    /// swap_remove + moved-entry index fixup. Every `last_use` write goes through
-    /// `touch`/`insert` so index and entries never drift.
+    /// PINNING (lane/cx-prefix-dedup): pinned entries are deliberately ABSENT from this
+    /// map. The last lease release returns the entry at current recency. Value = (pool
+    /// key, index into that pool's Vec), kept exact on removal by swap_remove +
+    /// moved-entry index fixup. Every `last_use` write goes through touch/pin/unpin/insert
+    /// so index and entries never drift.
     lru: std::collections::BTreeMap<(Instant, u64), (PoolKey, usize)>,
     next_id: u64,
     total_bytes: usize,
@@ -1073,6 +1097,75 @@ struct PrefixCache {
 /// segmentation window — is exactly buckets 4+5+6.
 pub const LCP_HIST_EDGES: [usize; 11] = [0, 1, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096];
 
+#[derive(Debug, PartialEq, Eq)]
+struct PrefixFanoutCandidate {
+    active_idx: usize,
+    key: PoolKey,
+    prompt: Vec<u32>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PrefixFanoutGroup {
+    members: Vec<usize>,
+    prefix_len: usize,
+}
+
+/// Partition one admission window by the PC-ISO key and exact token prefix. Hashes are
+/// deliberately absent from membership: equality of `(model, cache_ns)` is checked before
+/// any token comparison, then the first 64 token ids and the full group LCP are exact.
+fn prefix_fanout_groups(
+    candidates: &[PrefixFanoutCandidate],
+    prefix_cap: usize,
+) -> Vec<PrefixFanoutGroup> {
+    if prefix_cap < PREFIX_CACHE_MIN_TOKENS {
+        return Vec::new();
+    }
+    let mut used = vec![false; candidates.len()];
+    let mut out = Vec::new();
+    for i in 0..candidates.len() {
+        if used[i] || candidates[i].prompt.len() < PREFIX_CACHE_MIN_TOKENS {
+            continue;
+        }
+        let mut group = vec![i];
+        for j in i + 1..candidates.len() {
+            if used[j]
+                || candidates[j].key != candidates[i].key
+                || candidates[j].prompt.len() < PREFIX_CACHE_MIN_TOKENS
+                || candidates[j].prompt[..PREFIX_CACHE_MIN_TOKENS]
+                    != candidates[i].prompt[..PREFIX_CACHE_MIN_TOKENS]
+            {
+                continue;
+            }
+            group.push(j);
+        }
+        if group.len() < 2 {
+            continue;
+        }
+        let mut lcp = group.iter()
+            .map(|&j| candidates[j].prompt.len())
+            .min()
+            .unwrap_or(0);
+        for &j in group.iter().skip(1) {
+            lcp = PrefixCache::lcp(
+                &candidates[i].prompt[..lcp],
+                &candidates[j].prompt[..lcp],
+            );
+        }
+        let prefix_len = lcp.min(prefix_cap);
+        if prefix_len < PREFIX_CACHE_MIN_TOKENS {
+            continue;
+        }
+        for &j in &group {
+            used[j] = true;
+        }
+        out.push(PrefixFanoutGroup {
+            members: group.iter().map(|&j| candidates[j].active_idx).collect(),
+            prefix_len,
+        });
+    }
+    out
+}
+
 impl PrefixCache {
     fn lcp(a: &[u32], b: &[u32]) -> usize {
         a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
@@ -1086,6 +1179,20 @@ impl PrefixCache {
     /// Record one probe outcome into the LCP histogram (hit: entry length; miss: best_lcp).
     fn record_lcp(&mut self, n: usize) {
         self.lcp_hist[Self::lcp_bucket(n)] += 1;
+    }
+
+    /// Admission observed a miss before a same-window sibling produced the shared prefix.
+    /// Rewrite that provisional probe into the final served-path hit so cache-meter receipts
+    /// count requests, tokens, and LCP depth exactly once.
+    fn promote_miss_to_hit(&mut self, miss_lcp: usize, hit_len: usize) {
+        self.misses = self.misses.checked_sub(1)
+            .expect("prefix fanout promoted a miss that was never recorded");
+        let bucket = Self::lcp_bucket(miss_lcp);
+        self.lcp_hist[bucket] = self.lcp_hist[bucket].checked_sub(1)
+            .expect("prefix fanout miss LCP sample was never recorded");
+        self.hits += 1;
+        self.hit_tokens += hit_len as u64;
+        self.record_lcp(hit_len);
     }
 
     fn n_entries(&self) -> usize {
@@ -1128,18 +1235,75 @@ impl PrefixCache {
         self.entries.get(key).is_some_and(|pool| pool.iter().any(|e| e.toks[..] == *toks))
     }
 
+    fn key_index(&self, key: &PoolKey, toks: &[u32]) -> Option<usize> {
+        self.entries.get(key)?.iter().position(|e| e.toks[..] == *toks)
+    }
+
+    fn id_index(&self, pin: &PrefixPin) -> Option<usize> {
+        self.entries.get(&pin.key)?.iter().position(|e| e.id == pin.id)
+    }
+
     fn lru_key(e: &PrefixEntry) -> (Instant, u64) {
         (e.last_use, e.id)
     }
 
     /// Refresh recency for pool[i] (a lookup hit) — the ONLY legal `last_use` write after
     /// insert, so the recency index never drifts from the entries.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn touch(&mut self, key: &PoolKey, i: usize) {
-        if let Some(e) = self.entries.get_mut(key).and_then(|p| p.get_mut(i)) {
-            self.lru.remove(&(e.last_use, e.id));
-            e.last_use = Instant::now();
-            self.lru.insert((e.last_use, e.id), (key.clone(), i));
+        let Some((old_lru, pinned)) = self.entries.get(key).and_then(|p| p.get(i))
+            .map(|e| (Self::lru_key(e), e.pins > 0)) else { return };
+        if !pinned {
+            self.lru.remove(&old_lru);
         }
+        let e = &mut self.entries.get_mut(key).unwrap()[i];
+        e.last_use = Instant::now();
+        if e.pins == 0 {
+            self.lru.insert(Self::lru_key(e), (key.clone(), i));
+        }
+    }
+
+    /// Acquire `n` in-flight leases on one entry. The first lease removes it from the
+    /// evictable LRU; all leases share the stable (pool key, entry id) handle.
+    fn pin_n(&mut self, key: &PoolKey, i: usize, n: usize) -> Option<PrefixPin> {
+        if n == 0 {
+            return None;
+        }
+        let (old_lru, id, was_unpinned) = {
+            let e = self.entries.get(key)?.get(i)?;
+            (Self::lru_key(e), e.id, e.pins == 0)
+        };
+        if was_unpinned {
+            self.lru.remove(&old_lru);
+        }
+        let e = &mut self.entries.get_mut(key)?[i];
+        e.pins = e.pins.checked_add(n).expect("prefix pin refcount overflow");
+        e.last_use = Instant::now();
+        Some(PrefixPin { key: key.clone(), id })
+    }
+
+    fn pin(&mut self, key: &PoolKey, i: usize) -> Option<PrefixPin> {
+        self.pin_n(key, i, 1)
+    }
+
+    /// Release one session lease. The last release makes the entry evictable again and
+    /// treats the protected fanout interval as recent use.
+    fn unpin(&mut self, pin: &PrefixPin) -> bool {
+        let Some(i) = self.id_index(pin) else { return false };
+        let e = &mut self.entries.get_mut(&pin.key).unwrap()[i];
+        if e.pins == 0 {
+            return false;
+        }
+        e.pins -= 1;
+        if e.pins == 0 {
+            e.last_use = Instant::now();
+            self.lru.insert(Self::lru_key(e), (pin.key.clone(), i));
+        }
+        true
+    }
+
+    fn pinned_bytes(&self) -> usize {
+        self.entries.values().flatten().filter(|e| e.pins > 0).map(|e| e.bytes).sum()
     }
 
     /// Remove pool[i] under `key`, keeping the recency index exact: swap_remove moves the
@@ -1149,13 +1313,15 @@ impl PrefixCache {
     /// has_covering/has_key are `any`).
     fn remove_at(&mut self, key: &PoolKey, i: usize) -> Option<PrefixEntry> {
         let pool = self.entries.get_mut(key)?;
-        if i >= pool.len() {
+        if i >= pool.len() || pool[i].pins > 0 {
             return None;
         }
         let dead = pool.swap_remove(i);
         self.lru.remove(&Self::lru_key(&dead));
         if let Some(moved) = pool.get(i) {
-            self.lru.insert(Self::lru_key(moved), (key.clone(), i));
+            if moved.pins == 0 {
+                self.lru.insert(Self::lru_key(moved), (key.clone(), i));
+            }
         }
         if pool.is_empty() {
             self.entries.remove(key);
@@ -1176,16 +1342,52 @@ impl PrefixCache {
         self.insert_with_budget(key, e, why, prefix_cache_budget_bytes());
     }
 
+    /// Insert a prefix already serving `pins` in-flight sessions. Returns one stable
+    /// handle which each participating Session clones and releases once.
+    fn insert_pinned(
+        &mut self,
+        key: &PoolKey,
+        e: PrefixEntry,
+        why: &str,
+        pins: usize,
+    ) -> Option<PrefixPin> {
+        let id = self.insert_with_budget_pins(
+            key, e, why, prefix_cache_budget_bytes(), pins)?;
+        Some(PrefixPin { key: key.clone(), id })
+    }
+
     /// `insert` with the budget as a parameter (the env-independent seam the eviction
     /// unit tests drive; production always passes `prefix_cache_budget_bytes()`).
-    fn insert_with_budget(&mut self, key: &PoolKey, mut e: PrefixEntry, why: &str, budget: usize) {
+    fn insert_with_budget(&mut self, key: &PoolKey, e: PrefixEntry, why: &str, budget: usize) {
+        let _ = self.insert_with_budget_pins(key, e, why, budget, 0);
+    }
+
+    fn insert_with_budget_pins(
+        &mut self,
+        key: &PoolKey,
+        mut e: PrefixEntry,
+        why: &str,
+        budget: usize,
+        initial_pins: usize,
+    ) -> Option<u64> {
+        if let Some(i) = self.key_index(key, &e.toks) {
+            return if initial_pins > 0 {
+                self.pin_n(key, i, initial_pins).map(|pin| pin.id)
+            } else {
+                None
+            };
+        }
         if e.bytes > budget {
             eprintln!("[prefix-cache] skip {why} insert: entry {:.1}MB > budget {:.0}MB",
                       e.bytes as f64 / 1e6, budget as f64 / 1e6);
-            return;
+            return None;
         }
-        if self.has_key(key, &e.toks) {
-            return; // identical key raced in (concurrent learners) — first one wins
+        if initial_pins > 0 && e.bytes > budget.saturating_sub(self.pinned_bytes()) {
+            eprintln!("[prefix-cache] skip pinned {why} insert: entry {:.1}MB cannot fit \
+                       beside {:.1}MB already pinned (budget {:.0}MB)",
+                      e.bytes as f64 / 1e6, self.pinned_bytes() as f64 / 1e6,
+                      budget as f64 / 1e6);
+            return None;
         }
         self.total_bytes += e.bytes;
         self.inserts += 1;
@@ -1195,13 +1397,17 @@ impl PrefixCache {
                   key.0, ns_suffix(&key.1));
         e.id = self.next_id;
         self.next_id += 1;
+        e.pins = initial_pins;
+        let inserted_id = e.id;
         let lk = Self::lru_key(&e);
         let idx = {
             let pool = self.entries.entry(key.clone()).or_default();
             pool.push(e);
             pool.len() - 1
         };
-        self.lru.insert(lk, (key.clone(), idx));
+        if initial_pins == 0 {
+            self.lru.insert(lk, (key.clone(), idx));
+        }
         while self.total_bytes > budget {
             let Some((k, i)) = self.lru.values().next().cloned() else { break };
             let Some(dead) = self.remove_at(&k, i) else { break };
@@ -1210,14 +1416,20 @@ impl PrefixCache {
             eprintln!("[prefix-cache] evict (LRU): {} tokens, {:.1}MB (model {}{})",
                       dead.toks.len(), dead.bytes as f64 / 1e6, k.0, ns_suffix(&k.1));
         }
+        self.entries.get(key)
+            .and_then(|pool| pool.iter().find(|entry| entry.id == inserted_id))
+            .map(|_| inserted_id)
     }
 
-    /// Drop everything (session cache alloc failed — sessions win over the cache).
+    /// Drop every EVICTABLE entry (session cache alloc failed — sessions win over
+    /// ordinary cache residency, while in-flight fanout leases remain authoritative).
     fn evict_all(&mut self) -> usize {
-        let n = self.n_entries();
-        self.entries.clear();
-        self.lru.clear();
-        self.total_bytes = 0;
+        let mut n = 0usize;
+        while let Some((key, i)) = self.lru.values().next().cloned() {
+            let Some(dead) = self.remove_at(&key, i) else { break };
+            self.total_bytes = self.total_bytes.saturating_sub(dead.bytes);
+            n += 1;
+        }
         self.evictions += n as u64;
         n
     }
@@ -1273,6 +1485,7 @@ fn prefix_snapshot(
         bytes,
         last_use: Instant::now(),
         id: 0, // recency identity assigned by PrefixCache::insert
+        pins: 0,
     })
 }
 
@@ -1454,8 +1667,14 @@ struct Session {
     /// PREFIX-CACHE LCP SPLIT: prime exactly up to this fed-length, snapshot the cache into
     /// the prefix cache there, then continue with the rest of the prompt (the learning step).
     snapshot_at: Option<usize>,
+    /// The LCP sample recorded for a cold prefix-cache miss at admission. Same-window
+    /// fanout siblings rewrite this provisional miss into a hit after the leader primes.
+    prefix_miss_lcp: Option<usize>,
     /// PREFIX-CACHE SEED: park the full primed prompt at prefill-done (cold sessions only).
     seed_prefix: bool,
+    /// Refcounted lease on the prefix entry this request resumed from (or helped create
+    /// through in-batch fanout). Released by the centralized retire sweep on every exit.
+    prefix_pin: Option<PrefixPin>,
     tx: tokio::sync::mpsc::UnboundedSender<Event>,
     ttft: Option<Arc<crate::ttft::Trace>>,
     t0: Instant,
@@ -2446,6 +2665,36 @@ pub fn run(
             // win — per-seq m already at the GEMM plateau). Gate: prime-batch-gate ALL GREEN
             // (per-seq argmax + decode-stream equality). MEMRA_PRIME_BATCH=1 disables.
             let budgets = policy.prefill_budget;
+            let pb_hold_ms: u64 = std::env::var("MEMRA_PRIME_BATCH_HOLD_MS").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(4);
+            let dedup_advanced = dedup_interactive_prefixes(
+                &engine,
+                &loaded,
+                &eager_only,
+                &mut px,
+                &mut active,
+                &mut finished,
+                budgets[0],
+                &mut n_cached_in,
+                &mut ns_tokens,
+            );
+            // An unrelated cold request must not release a just-arrived singleton from the
+            // existing batch-formation window before its same-prefix siblings reach the
+            // worker. Matching groups above fire immediately; unmatched misses wait at most
+            // the same hold already budgeted for a lone fresh prime.
+            let dedup_waiting: std::collections::HashSet<usize> =
+                if prefix_dedup_enabled() && !confidence_trace_enabled() && pb_hold_ms > 0 {
+                    active.iter().enumerate()
+                        .filter(|(i, s)| {
+                            !finished.contains(i)
+                                && prefix_fanout_eligible(s, &eager_only)
+                                && s.t0.elapsed().as_millis() < pb_hold_ms as u128
+                        })
+                        .map(|(i, _)| i)
+                        .collect()
+                } else {
+                    Default::default()
+                };
             let (cand, held) = 'pb: loop {
                 // default 6 (2026-07-26): with the varlen GDN core (task #18) the
                 // concat sweet spot moved from B=4 to B=6-8 (16501 vs 15950 tok/s
@@ -2465,6 +2714,7 @@ pub fn run(
                 if pb_max >= 2 && !confidence_trace_enabled() {
                     for i in 0..active.len() {
                         if finished.contains(&i) { continue; }
+                        if dedup_waiting.contains(&i) { continue; }
                         let s = &active[i];
                         let ql = s.prefill_queue.len();
                         if s.spec.is_none() && !s.prefill_done && s.graph.is_none()
@@ -2490,12 +2740,10 @@ pub fn run(
                 // firing — it stays queued) so staggered arrivals can coalesce. Telemetry
                 // 2026-07-26: without the hold only 25% of a 32-concurrent burst batched
                 // (ticks ~1ms, arrivals staggered). TTFT cost <= hold_ms on a ~40ms prime.
-                let hold_ms: u64 = std::env::var("MEMRA_PRIME_BATCH_HOLD_MS").ok()
-                    .and_then(|v| v.parse().ok()).unwrap_or(4);
                 let mut held = false;
-                if cand.len() == 1 && hold_ms > 0 {
+                if cand.len() == 1 && pb_hold_ms > 0 {
                     let s = &active[cand[0]];
-                    if s.t0.elapsed().as_millis() < hold_ms as u128 {
+                    if s.t0.elapsed().as_millis() < pb_hold_ms as u128 {
                         held = true;
                     }
                 }
@@ -2559,6 +2807,8 @@ pub fn run(
                     .count() == 1;
             for i in 0..active.len() {
                 if finished.contains(&i) { continue; }
+                if dedup_advanced.contains(&i) { continue; }
+                if dedup_waiting.contains(&i) { continue; }
                 if held && cand.first() == Some(&i) { continue; }   // batch-formation hold
                 let s = &mut active[i];
                 if s.spec.is_some() || s.prefill_done { continue; }
@@ -2861,7 +3111,10 @@ pub fn run(
         finished.sort_unstable();
         finished.dedup();
         for &i in finished.iter().rev() {
-            let s = active.remove(i);
+            let mut s = active.remove(i);
+            if let Some(pin) = s.prefix_pin.take() {
+                debug_assert!(px.unpin(&pin), "retired session held a missing prefix pin");
+            }
             let pool_key = s.pool_key(); // before the partial moves below (PC-ISO park key)
             n_completed += 1;
             // G5 fault injection (MEMRA_PANIC_AFTER, unset in every real deployment): panic
@@ -3281,7 +3534,9 @@ fn admit(
     // learning insert; cold long prompts arm the seed insert.
     let prefix_on = reuse_on && serve_batching() && prefix_cache_budget_bytes() > 0;
     let mut prefix_hit = false;
+    let mut prefix_pin = None;
     let mut snapshot_at: Option<usize> = None;
+    let mut prefix_miss_lcp: Option<usize> = None;
     let mut seed_prefix = false;
     if prefix_on && reused.is_none() && !spec_eligible {
         if let Some(i) = px.lookup(&pool_key, &prompt) {
@@ -3305,7 +3560,8 @@ fn admit(
             };
             match restored {
                 Ok(entry) => {
-                    px.touch(&pool_key, i); // recency-index-aware last_use refresh (Q3)
+                    prefix_pin = px.pin(&pool_key, i);
+                    debug_assert!(prefix_pin.is_some(), "lookup entry vanished before pin");
                     px.hits += 1;
                     px.hit_tokens += entry.fed.len() as u64;
                     px.record_lcp(entry.fed.len()); // histogram: served-prefix length
@@ -3330,6 +3586,7 @@ fn admit(
             px.misses += 1;
             let l = px.best_lcp(&pool_key, &prompt);
             px.record_lcp(l); // histogram: best available LCP on a miss
+            prefix_miss_lcp = Some(l);
             if l >= PREFIX_CACHE_MIN_TOKENS && l < prompt.len()
                 && !px.has_key(&pool_key, &prompt[..l])
             {
@@ -3719,7 +3976,9 @@ fn admit(
         n_prompt,
         n_cached,
         snapshot_at,
+        prefix_miss_lcp,
         seed_prefix,
+        prefix_pin,
         tx: req.tx,
         ttft: req.ttft,
         t0: Instant::now(),
@@ -3763,6 +4022,183 @@ fn utf8_delta(decoded: &[u8], emitted_bytes: &mut usize) -> String {
     }
     *emitted_bytes = cursor;
     delta
+}
+
+/// Prime one common cold prefix per same-window fanout group, then restore that snapshot
+/// into every sibling. Returns sessions whose prefill budget was consumed by this stage so
+/// the ordinary single-prime loop does not give them a second chunk in the same tick.
+fn prefix_fanout_eligible(
+    s: &Session,
+    eager_only: &std::collections::HashSet<String>,
+) -> bool {
+    s.spec.is_none()
+        && s.graph.is_none()
+        && !s.prefill_done
+        && s.lane == crate::lanes::Lane::Interactive
+        && s.fed.is_empty()
+        && s.n_cached == 0
+        && s.prefix_pin.is_none()
+        && s.prefix_miss_lcp.is_some()
+        && s.snapshot_at.is_none()
+        && s.cache.as_ref().is_some_and(|c| c.pos == 0)
+        && !eager_only.contains(&s.model)
+        && s.prefill_queue.len() >= PREFIX_CACHE_MIN_TOKENS
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dedup_interactive_prefixes(
+    engine: &Engine,
+    loaded: &HashMap<String, LoadedModel>,
+    eager_only: &std::collections::HashSet<String>,
+    px: &mut PrefixCache,
+    active: &mut [Session],
+    finished: &mut Vec<usize>,
+    prefix_cap: usize,
+    n_cached_in: &mut u64,
+    ns_tokens: &mut HashMap<String, [u64; 2]>,
+) -> std::collections::HashSet<usize> {
+    let mut advanced = std::collections::HashSet::new();
+    if !prefix_dedup_enabled()
+        || prefix_cap < PREFIX_CACHE_MIN_TOKENS
+        || confidence_trace_enabled()
+    {
+        return advanced;
+    }
+    let candidates: Vec<PrefixFanoutCandidate> = active.iter().enumerate()
+        .filter(|(i, s)| {
+            !finished.contains(i) && prefix_fanout_eligible(s, eager_only)
+        })
+        .map(|(active_idx, s)| PrefixFanoutCandidate {
+            active_idx,
+            key: s.pool_key(),
+            prompt: s.prefill_queue.iter().copied().collect(),
+        })
+        .collect();
+
+    for group in prefix_fanout_groups(&candidates, prefix_cap) {
+        let leader_i = group.members[0];
+        if finished.contains(&leader_i) {
+            continue;
+        }
+        let prefix: Vec<u32> = active[leader_i].prefill_queue.iter()
+            .take(group.prefix_len)
+            .copied()
+            .collect();
+        let queued_after = active[leader_i].prefill_queue.len() - group.prefix_len;
+        let model = active[leader_i].model.clone();
+        let key = active[leader_i].pool_key();
+        let t0 = Instant::now();
+        let leader_out = {
+            let s = &mut active[leader_i];
+            loaded[&model].model.prime_cache(
+                engine,
+                &prefix,
+                s.cache.as_mut().unwrap(),
+                queued_after,
+            )
+        };
+        let (leader_logits, _h, _x) = match leader_out {
+            Ok(out) => out,
+            Err(err) => {
+                let _ = active[leader_i].tx.send(Event::Error(EngineError::engine(
+                    format!("prefix fanout prime failed: {err}"),
+                )));
+                finished.push(leader_i);
+                eprintln!("[prefix-dedup] leader prime FAILED (model {model}): {err}");
+                continue;
+            }
+        };
+        advanced.insert(leader_i);
+        let snapshot = prefix_snapshot(
+            engine,
+            active[leader_i].cache.as_ref().unwrap(),
+            &prefix,
+            &leader_logits,
+        );
+        {
+            let s = &mut active[leader_i];
+            s.last_logits = leader_logits;
+            s.prefill_queue.drain(..group.prefix_len);
+            for &tok in &prefix {
+                s.fed.push(tok);
+                s.sampler.accept(tok);
+            }
+            s.prefill_done = s.prefill_queue.is_empty();
+            s.prefix_miss_lcp = None;
+        }
+        let entry = match snapshot {
+            Ok(entry) => entry,
+            Err(err) => {
+                eprintln!("[prefix-dedup] snapshot failed ({err}); siblings prime cold");
+                continue;
+            }
+        };
+
+        let mut participants = vec![leader_i];
+        for &i in group.members.iter().skip(1) {
+            if finished.contains(&i) {
+                continue;
+            }
+            let restored = prefix_restore(
+                engine,
+                active[i].cache.as_mut().unwrap(),
+                &entry,
+            );
+            if let Err(err) = restored {
+                let _ = active[i].tx.send(Event::Error(EngineError::engine(
+                    format!("prefix fanout restore failed: {err}"),
+                )));
+                finished.push(i);
+                eprintln!("[prefix-dedup] sibling restore FAILED (model {model}): {err}");
+                continue;
+            }
+            let miss_lcp = active[i].prefix_miss_lcp.take()
+                .expect("prefix fanout sibling must carry its admission miss");
+            {
+                let s = &mut active[i];
+                s.last_logits = entry.last_logits.clone();
+                s.prefill_queue.drain(..group.prefix_len);
+                for &tok in &prefix {
+                    s.fed.push(tok);
+                    s.sampler.accept(tok);
+                }
+                s.prefill_done = s.prefill_queue.is_empty();
+                s.n_cached += group.prefix_len;
+                s.seed_prefix = false;
+            }
+            px.promote_miss_to_hit(miss_lcp, group.prefix_len);
+            *n_cached_in += group.prefix_len as u64;
+            meter_cached_credit(
+                ns_tokens,
+                &active[i].cache_ns,
+                group.prefix_len as u64,
+            );
+            participants.push(i);
+            advanced.insert(i);
+        }
+
+        let pin = px.insert_pinned(&key, entry, "in-batch fanout", participants.len());
+        for &i in &participants {
+            active[i].seed_prefix = false;
+            if let Some(pin) = &pin {
+                debug_assert!(active[i].prefix_pin.is_none());
+                active[i].prefix_pin = Some(pin.clone());
+            }
+        }
+        eprintln!(
+            "[prefix-dedup] B={} prefix={} saved={} hash={:016x} in {:.1}ms \
+             retained={} (model {}{})",
+            participants.len(),
+            group.prefix_len,
+            group.prefix_len * participants.len().saturating_sub(1),
+            fnv1a(0xcbf29ce484222325, &prefix),
+            t0.elapsed().as_secs_f64() * 1e3,
+            pin.is_some(),
+            model,
+            ns_suffix(&key.1),
+        );
+    }
+    advanced
 }
 
 /// One scheduler tick for one session. Returns Ok(true) if still running, Ok(false) if retired.
@@ -4739,8 +5175,11 @@ pub fn spawn(models: Vec<(String, String, Option<String>)>, health: crate::healt
 #[cfg(test)]
 mod tests {
     use super::{interactive_prefill_budget, summarize_confidence, utf8_delta};
-    use super::{PoolKey, PrefixCache, PrefixEntry, PREFIX_CACHE_MIN_TOKENS};
-    use super::{meter_account, HashMap, METER_TENANT_CAP};
+    use super::{
+        PoolKey, PrefixCache, PrefixEntry, PrefixFanoutCandidate, PrefixFanoutGroup,
+        PREFIX_CACHE_MIN_TOKENS, prefix_fanout_groups,
+    };
+    use super::{meter_account, meter_cached_credit, HashMap, METER_TENANT_CAP};
     use super::{draft_verdict, draft_verdict_message, DraftVerdict};
     use super::{resolve_spec_gate_thresholds, spec_gate_defaults};
     use super::worker_device;
@@ -4863,6 +5302,7 @@ mod tests {
             bytes: 1,
             last_use: std::time::Instant::now(),
             id: 0,
+            pins: 0,
         }
     }
 
@@ -4872,6 +5312,72 @@ mod tests {
 
     fn toks(n: usize) -> Vec<u32> {
         (0..n as u32).collect()
+    }
+
+    #[test]
+    fn prefix_fanout_groups_only_inside_exact_model_tenant_and_salt() {
+        let mut a = toks(96);
+        a.extend([10_001, 10_002]);
+        let mut b = toks(96);
+        b.extend([20_001, 20_002, 20_003]);
+        let mut other_prefix = toks(96);
+        other_prefix[63] = u32::MAX;
+        let acme_s1 = crate::auth::scope_namespace("acme", "s1");
+        let candidates = vec![
+            PrefixFanoutCandidate {
+                active_idx: 3,
+                key: ("m".into(), acme_s1.clone()),
+                prompt: a,
+            },
+            PrefixFanoutCandidate {
+                active_idx: 7,
+                key: ("m".into(), acme_s1.clone()),
+                prompt: b,
+            },
+            PrefixFanoutCandidate {
+                active_idx: 8,
+                key: ("m".into(), crate::auth::scope_namespace("acme", "s2")),
+                prompt: toks(96),
+            },
+            PrefixFanoutCandidate {
+                active_idx: 9,
+                key: ("m".into(), crate::auth::scope_namespace("blue", "s1")),
+                prompt: toks(96),
+            },
+            PrefixFanoutCandidate {
+                active_idx: 10,
+                key: ("other-model".into(), acme_s1.clone()),
+                prompt: toks(96),
+            },
+            PrefixFanoutCandidate {
+                active_idx: 11,
+                key: ("m".into(), acme_s1),
+                prompt: other_prefix,
+            },
+        ];
+        assert_eq!(
+            prefix_fanout_groups(&candidates, 80),
+            vec![PrefixFanoutGroup {
+                members: vec![3, 7],
+                prefix_len: 80,
+            }],
+        );
+        assert!(prefix_fanout_groups(&candidates, PREFIX_CACHE_MIN_TOKENS - 1).is_empty());
+    }
+
+    #[test]
+    fn prefix_fanout_rewrites_one_provisional_miss_exactly_once() {
+        let mut px = PrefixCache::default();
+        px.misses = 2;
+        px.record_lcp(0);
+        px.record_lcp(0);
+        px.promote_miss_to_hit(0, 256);
+        assert_eq!(px.misses, 1);
+        assert_eq!(px.hits, 1);
+        assert_eq!(px.hit_tokens, 256);
+        assert_eq!(px.lcp_hist[PrefixCache::lcp_bucket(0)], 1);
+        assert_eq!(px.lcp_hist[PrefixCache::lcp_bucket(256)], 1);
+        assert_eq!(px.lcp_hist.iter().sum::<u64>(), 2);
     }
 
     #[test]
@@ -4922,7 +5428,8 @@ mod tests {
         meter_account(&mut m, &crate::auth::scope_namespace("acme", "u1"), 100, 40);
         meter_account(&mut m, &crate::auth::scope_namespace("acme", "u2"), 50, 10);
         meter_account(&mut m, &crate::auth::scope_namespace("blue", ""), 30, 0);
-        assert_eq!(m["t:acme"], [150, 50]);
+        meter_cached_credit(&mut m, &crate::auth::scope_namespace("acme", "u3"), 25);
+        assert_eq!(m["t:acme"], [150, 75]);
         assert_eq!(m["t:blue"], [30, 0]);
         // no keyring: the raw salt is the row key; "" is the default namespace.
         meter_account(&mut m, "session-7", 20, 20);
@@ -5006,6 +5513,7 @@ mod tests {
             bytes,
             last_use: next_instant(),
             id: 0,
+            pins: 0,
         }
     }
 
@@ -5127,6 +5635,52 @@ mod tests {
         px.touch(&key(""), idx);
         px.insert_with_budget(&key(""), entry_b(2, 4), "test", 8);
         assert_eq!(px_survivors(&px), vec![0, 2], "touched 0 must survive, untouched 1 evicts");
+    }
+
+    #[test]
+    fn prefix_cache_pin_refcount_blocks_eviction_until_last_release() {
+        let k = key("");
+        let mut px = PrefixCache::default();
+        px.insert_with_budget(&k, entry_b(0, 4), "test", 8);
+        px.insert_with_budget(&k, entry_b(1, 4), "test", 8);
+        let idx = px.entries[&k].iter().position(|e| e.toks[0] == 0).unwrap();
+        let pin = px.pin_n(&k, idx, 2).unwrap();
+
+        // Both leases name one stable entry. While either is live, ordinary inserts
+        // evict the oldest UNPINNED entry instead.
+        px.insert_with_budget(&k, entry_b(2, 4), "test", 8);
+        assert_eq!(px_survivors(&px), vec![0, 2]);
+        assert_eq!(px.entries[&k].iter().find(|e| e.id == pin.id).unwrap().pins, 2);
+        assert!(px.unpin(&pin));
+        px.insert_with_budget(&k, entry_b(3, 4), "test", 8);
+        assert_eq!(px_survivors(&px), vec![0, 3]);
+
+        // Last release returns the entry to LRU. It is recent at release, survives the
+        // first insert, then becomes the oldest evictable entry on the next insert.
+        assert!(px.unpin(&pin));
+        px.insert_with_budget(&k, entry_b(4, 4), "test", 8);
+        assert_eq!(px_survivors(&px), vec![0, 4]);
+        px.insert_with_budget(&k, entry_b(5, 4), "test", 8);
+        assert_eq!(px_survivors(&px), vec![4, 5]);
+        assert!(!px.unpin(&pin), "an evicted lease id must not release another entry");
+    }
+
+    #[test]
+    fn prefix_cache_emergency_flush_preserves_inflight_pins() {
+        let k = key("");
+        let mut px = PrefixCache::default();
+        px.insert_with_budget(&k, entry_b(0, 4), "test", 8);
+        px.insert_with_budget(&k, entry_b(1, 4), "test", 8);
+        let idx = px.entries[&k].iter().position(|e| e.toks[0] == 0).unwrap();
+        let pin = px.pin(&k, idx).unwrap();
+
+        assert_eq!(px.evict_all(), 1);
+        assert_eq!(px_survivors(&px), vec![0]);
+        assert_eq!(px.total_bytes, 4);
+        assert!(px.unpin(&pin));
+        assert_eq!(px.evict_all(), 1);
+        assert!(px_survivors(&px).is_empty());
+        assert_eq!(px.total_bytes, 0);
     }
 
     #[test]

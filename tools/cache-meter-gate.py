@@ -6,27 +6,26 @@ MEMRA_SERVE_SPEC=0 — spec sessions bypass the prefix cache by policy, so the
 gate must run the batched bulk tier the cache serves; prefix cache at its
 default budget). Asserts the accounting is EXACT, not merely plausible:
 
-  workload: N sequential /v1/completions with prompt_ids = K shared prefix
-  tokens + S unique suffix tokens (namespace salt A), then 1 request with the
-  SAME K-prefix under salt B.
+  workload: one simultaneous burst of N /v1/completions with prompt_ids = K
+  shared prefix tokens + S unique suffix tokens (namespace salt A), plus 1
+  request with the SAME K-prefix under salt B.
 
-  learning sequence (docs/SERVING.md "Prompt caching"):
-    A-req1  cold seed        -> usage cached_tokens == 0
-    A-req2  miss + LCP split -> usage cached_tokens == 0
-    A-req3..N hit at K       -> usage cached_tokens == K, prompt_tokens == K+S
-    B-req1  cold (PC-ISO)    -> usage cached_tokens == 0 despite the shared K
+  in-batch fanout contract:
+    exactly 1 A request computes the K-token prefix -> usage cached_tokens == 0
+    the other N-1 A requests ride that entry       -> usage cached_tokens == K
+    B remains cold (PC-ISO)                        -> usage cached_tokens == 0
 
   /metrics afterwards must carry the closed-form totals:
     prompt_tokens_in  == (N+1)*(K+S)
-    cached_tokens_in  == (N-2)*K
+    cached_tokens_in  == (N-1)*K
     computed_tokens_in == prompt - cached
     cache_hit_token_ratio == cached/prompt (float-equal to 1e-9)
-    prefix_cache_{hits,misses,inserts} == N-2, 3, 3
-    prefix_cache_hit_tokens == (N-2)*K
-    lcp_histogram: 2 probes in bucket [0] (A-req1, B-req1: best LCP 0) and
+    prefix_cache_{hits,misses,inserts} == N-1, 2, 2
+    prefix_cache_hit_tokens == (N-1)*K
+    lcp_histogram: 2 probes in bucket [0] (one A leader + B: best LCP 0) and
       N-1 probes in K's bucket — K=256 by default, i.e. inside the tick-seg
       [64,512) window (buckets 4..=6)
-    tenants: {A: [(N)*(K+S), (N-2)*K], B: [(K+S), 0]}
+    tenants: {A: [(N)*(K+S), (N-1)*K], B: [(K+S), 0]}
 
   finally tools/cache_economics.py runs on the scrape and its
   revenue_multiplier must equal prompt/computed (factor 1.0) exactly.
@@ -35,9 +34,11 @@ Usage: cache-meter-gate.py BASE_URL MODEL [--n 5] [--k 256] [--suffix 16]
 Exit 0 = every assertion held; first failure prints and exits 1.
 """
 import argparse
+import concurrent.futures
 import json
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -79,16 +80,17 @@ def main() -> None:
     ap.add_argument("--raw-out", help="write per-request responses + the scrape here (JSONL)")
     args = ap.parse_args()
     n, k, s = args.n, args.k, args.suffix
-    assert n >= 3 and k >= 64 and s >= 1
+    assert n >= 2 and k >= 64 and s >= 1
 
     # token ids: arbitrary but stable, well inside any vocab; suffixes disjoint per request.
     prefix = list(range(2000, 2000 + k))
     raw = open(args.raw_out, "w") if args.raw_out else None
 
-    def run(salt: str, i: int) -> dict:
+    def run(salt: str, i: int, start: threading.Barrier) -> tuple[dict, dict]:
         body = {"model": args.model,
                 "prompt_ids": prefix + list(range(5000 + i * s, 5000 + (i + 1) * s)),
                 "max_tokens": 8, "temperature": 0, "cache_salt": salt}
+        start.wait()
         t0 = time.monotonic()
         r = post(args.base, body)
         # compat mode carries the OpenAI usage object; the native /v1/completions shape
@@ -97,29 +99,39 @@ def main() -> None:
             "prompt_tokens": r["prompt_tokens"],
             "prompt_tokens_details": {"cached_tokens": r["cached_tokens"]},
         }
-        if raw:
-            raw.write(json.dumps({"salt": salt, "i": i,
-                                  "elapsed_s": round(time.monotonic() - t0, 4),
-                                  "usage": u}) + "\n")
-        return u
+        return u, {"salt": salt, "i": i,
+                   "elapsed_s": round(time.monotonic() - t0, 4), "usage": u}
 
-    # ---- per-request exactness (deliverable 1's receipt) ----
-    expect = [0, 0] + [k] * (n - 2)          # namespace A learning sequence
-    for i, want in enumerate(expect):
-        u = run("meter-A", i)
-        got = u["prompt_tokens_details"]["cached_tokens"]
-        check(f"A-req{i + 1} cached_tokens == {want}", got == want, f"got {got}")
+    # ---- simultaneous per-request exactness (deliverable 1's receipt) ----
+    start = threading.Barrier(n + 1)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n + 1) as pool:
+        a_futures = [pool.submit(run, "meter-A", i, start) for i in range(n)]
+        b_future = pool.submit(run, "meter-B", n, start)
+        a_results = [future.result() for future in a_futures]
+        b_result = b_future.result()
+
+    if raw:
+        for _, row in [*a_results, b_result]:
+            raw.write(json.dumps(row) + "\n")
+
+    a_usage = [u for u, _ in a_results]
+    a_cached = sorted(u["prompt_tokens_details"]["cached_tokens"] for u in a_usage)
+    check(f"A fanout cached_tokens == [0] + [{k}]x{n - 1}",
+          a_cached == [0] + [k] * (n - 1), f"got {a_cached}")
+    for i, u in enumerate(a_usage):
         check(f"A-req{i + 1} prompt_tokens == {k + s}",
               u["prompt_tokens"] == k + s, f"got {u['prompt_tokens']}")
     # PC-ISO composition: same K-prefix, different salt -> structurally cold.
-    u = run("meter-B", n)
+    u, _ = b_result
     got = u["prompt_tokens_details"]["cached_tokens"]
     check("B-req1 cached_tokens == 0 (cross-salt blindness)", got == 0, f"got {got}")
+    check(f"B-req1 prompt_tokens == {k + s}",
+          u["prompt_tokens"] == k + s, f"got {u['prompt_tokens']}")
 
     # ---- aggregate /metrics exactness (deliverable 2's receipt) ----
     # publish-on-retire makes the scrape current as soon as the last retire lands;
     # tiny race between the client's Done and the worker's end-of-tick publish, so retry.
-    total_p, total_c = (n + 1) * (k + s), (n - 2) * k
+    total_p, total_c = (n + 1) * (k + s), (n - 1) * k
     m = {}
     for _ in range(20):
         m = scrape(args.base)
@@ -139,12 +151,13 @@ def main() -> None:
     ratio = m.get("cache_hit_token_ratio", -1)
     check("cache_hit_token_ratio matches arithmetic",
           abs(ratio - total_c / total_p) < 1e-9, f"got {ratio}")
-    check("prefix_cache_hits == N-2", m.get("prefix_cache_hits") == n - 2,
+    check("prefix_cache_hits == N-1", m.get("prefix_cache_hits") == n - 1,
           f"got {m.get('prefix_cache_hits')}")
-    check("prefix_cache_misses == 3", m.get("prefix_cache_misses") == 3,
+    check("prefix_cache_misses == 2 (one A leader + cross-salt B)",
+          m.get("prefix_cache_misses") == 2,
           f"got {m.get('prefix_cache_misses')}")
-    check("prefix_cache_inserts == 3 (A seed + A split + B seed)",
-          m.get("prefix_cache_inserts") == 3, f"got {m.get('prefix_cache_inserts')}")
+    check("prefix_cache_inserts == 2 (shared A prefix + B seed)",
+          m.get("prefix_cache_inserts") == 2, f"got {m.get('prefix_cache_inserts')}")
     check(f"prefix_cache_hit_tokens == {total_c}",
           m.get("prefix_cache_hit_tokens") == total_c,
           f"got {m.get('prefix_cache_hit_tokens')}")

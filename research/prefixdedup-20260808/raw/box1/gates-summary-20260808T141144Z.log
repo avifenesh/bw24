@@ -1,0 +1,301 @@
+=== prefix dedup gates 20260808T141144Z commit=54871d97e161952a29381d578b82e2f756f23260
+smoke_model=/home/ubuntu/smoke-models/Qwen3.5-9B-NVFP4-MTP-GGUF.gguf bytes=5657607424
+smoke_draft=/home/ubuntu/smoke-models/draft-9b-owntrim-nvfp4head-q4blk.gguf bytes=936838816
+step_model=/home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf bytes=46483327296
+snapshot 2026-08-08T14:11:44Z
+0, 27, 180 MHz, 0 MiB, 97887 MiB
+1, 27, 180 MHz, 0 MiB, 97887 MiB
+########## build-server ##########
+raw=/home/ubuntu/memra-prefixdedup/research/prefixdedup-20260808/raw/box1/build-server-20260808T141144Z.log
+snapshot 2026-08-08T14:11:44Z
+0, 27, 180 MHz, 0 MiB, 97887 MiB
+1, 27, 180 MHz, 0 MiB, 97887 MiB
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.46
+   Compiling libc v0.2.186
+   Compiling serde_core v1.0.228
+   Compiling serde v1.0.228
+   Compiling cfg-if v1.0.4
+   Compiling version_check v0.9.5
+   Compiling itoa v1.0.18
+   Compiling pin-project-lite v0.2.17
+   Compiling hashbrown v0.17.1
+   Compiling futures-core v0.3.32
+   Compiling once_cell v1.21.4
+   Compiling equivalent v1.0.2
+   Compiling bytes v1.12.0
+   Compiling smallvec v1.15.2
+   Compiling zmij v1.0.21
+   Compiling syn v2.0.118
+   Compiling crossbeam-utils v0.8.22
+   Compiling indexmap v2.14.0
+   Compiling http v1.4.2
+   Compiling errno v0.3.14
+   Compiling generic-array v0.14.7
+   Compiling zerocopy v0.8.55
+   Compiling serde_json v1.0.150
+   Compiling crossbeam-epoch v0.9.20
+   Compiling getrandom v0.3.4
+   Compiling signal-hook-registry v1.4.8
+   Compiling socket2 v0.6.4
+   Compiling memmap2 v0.9.11
+   Compiling http-body v1.0.1
+   Compiling mio v1.2.1
+   Compiling syn v3.0.3
+   Compiling ahash v0.8.12
+   Compiling percent-encoding v2.3.2
+   Compiling anyhow v1.0.104
+   Compiling crossbeam-deque v0.8.7
+   Compiling ref-cast v1.0.26
+   Compiling memchr v2.8.2
+   Compiling parking_lot_core v0.9.12
+   Compiling cudarc v0.19.8
+   Compiling httparse v1.10.1
+   Compiling typenum v1.20.1
+   Compiling memra-gguf v0.72.0 (/home/ubuntu/memra-prefixdedup/crates/memra-gguf)
+   Compiling tracing-core v0.1.36
+   Compiling serde_derive v1.0.228
+   Compiling tokio-macros v2.7.0
+   Compiling tokio v1.52.3
+   Compiling ref-cast-impl v1.0.26
+   Compiling libloading v0.9.0
+   Compiling heck v0.5.0
+   Compiling log v0.4.33
+   Compiling scopeguard v1.2.0
+   Compiling rayon-core v1.13.0
+   Compiling tower-service v0.3.3
+   Compiling futures-task v0.3.32
+   Compiling slab v0.4.12
+   Compiling rustversion v1.0.22
+   Compiling futures-util v0.3.32
+   Compiling lock_api v0.4.14
+   Compiling tracing v0.1.44
+   Compiling strum_macros v0.28.0
+   Compiling bytemuck_derive v1.11.0
+   Compiling futures-channel v0.3.32
+   Compiling httpdate v1.0.3
+   Compiling bytemuck v1.25.2
+   Compiling borrow-or-share v0.2.4
+   Compiling atomic-waker v1.1.2
+   Compiling tower-layer v0.3.3
+   Compiling sync_wrapper v1.0.2
+   Compiling hyper v1.10.1
+   Compiling fluent-uri v0.3.2
+   Compiling strum v0.28.0
+   Compiling parking_lot v0.12.5
+   Compiling serde_spanned v0.6.9
+   Compiling toml_datetime v0.6.11
+   Compiling async-trait v0.1.89
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling form_urlencoded v1.2.2
+   Compiling http-body-util v0.1.3
+   Compiling regex-syntax v0.8.11
+   Compiling ryu v1.0.23
+   Compiling either v1.17.0
+   Compiling toml_write v0.1.2
+   Compiling memra-engine v0.72.0 (/home/ubuntu/memra-prefixdedup/crates/memra-engine)
+   Compiling llguidance v1.7.6
+   Compiling mime v0.3.17
+   Compiling winnow v0.7.15
+   Compiling axum-core v0.4.5
+   Compiling toml_edit v0.22.27
+   Compiling derivre v0.3.12
+   Compiling rayon v1.12.0
+   Compiling serde_urlencoded v0.7.1
+   Compiling digest v0.10.7
+   Compiling memra-runtime v0.72.0 (/home/ubuntu/memra-prefixdedup/crates/memra-runtime)
+   Compiling memra-kv v0.72.0 (/home/ubuntu/memra-prefixdedup/crates/memra-kv)
+   Compiling hyper-util v0.1.20
+   Compiling referencing v0.29.1
+   Compiling tower v0.5.3
+   Compiling toktrie v1.7.6
+   Compiling async-stream-impl v0.3.6
+   Compiling memra-tokenizer v0.72.0 (/home/ubuntu/memra-prefixdedup/crates/memra-tokenizer)
+   Compiling serde_path_to_error v0.1.20
+   Compiling matchit v0.7.3
+   Compiling memra-server v0.72.0 (/home/ubuntu/memra-prefixdedup/crates/memra-server)
+   Compiling memra-sampling v0.72.0 (/home/ubuntu/memra-prefixdedup/crates/memra-sampling)
+   Compiling memra-validate v0.72.0 (/home/ubuntu/memra-prefixdedup/crates/memra-validate)
+   Compiling cpufeatures v0.2.17
+   Compiling sha2 v0.10.9
+   Compiling axum v0.7.9
+   Compiling async-stream v0.3.6
+   Compiling toml v0.8.23
+   Compiling memra-lanes v0.72.0 (/home/ubuntu/memra-prefixdedup/crates/memra-lanes)
+warning: memra-engine@0.72.0: nvcc auto-detected CUDA 13.2 at /usr/local/cuda-13.2/bin/nvcc (newest of 4; also saw 13.0 @ /usr/local/cuda-13.0/bin/nvcc, 12.9 @ /usr/local/cuda-12.9/bin/nvcc, 12.8 @ /usr/local/cuda-12.8/bin/nvcc)
+warning: memra-engine@0.72.0: MEMRA_CUDA_ARCH auto-detected 120a (compute_cap 12.0); set MEMRA_CUDA_ARCH to override
+    Finished `release` profile [optimized] target(s) in 3m 36s
+build-server exit=0
+snapshot 2026-08-08T14:15:20Z
+0, 26, 180 MHz, 0 MiB, 97887 MiB
+1, 27, 180 MHz, 0 MiB, 97887 MiB
+########## build-run-gen ##########
+raw=/home/ubuntu/memra-prefixdedup/research/prefixdedup-20260808/raw/box1/build-run-gen-20260808T141144Z.log
+snapshot 2026-08-08T14:15:20Z
+0, 26, 180 MHz, 0 MiB, 97887 MiB
+1, 27, 180 MHz, 0 MiB, 97887 MiB
+warning: memra-engine@0.72.0: nvcc auto-detected CUDA 13.2 at /usr/local/cuda-13.2/bin/nvcc (newest of 4; also saw 13.0 @ /usr/local/cuda-13.0/bin/nvcc, 12.9 @ /usr/local/cuda-12.9/bin/nvcc, 12.8 @ /usr/local/cuda-12.8/bin/nvcc)
+warning: memra-engine@0.72.0: MEMRA_CUDA_ARCH auto-detected 120a (compute_cap 12.0); set MEMRA_CUDA_ARCH to override
+   Compiling memra-engine v0.72.0 (/home/ubuntu/memra-prefixdedup/crates/memra-engine)
+    Finished `release` profile [optimized] target(s) in 1.10s
+build-run-gen exit=0
+snapshot 2026-08-08T14:15:21Z
+0, 26, 180 MHz, 0 MiB, 97887 MiB
+1, 27, 180 MHz, 0 MiB, 97887 MiB
+########## serve-smoke ##########
+raw=/home/ubuntu/memra-prefixdedup/research/prefixdedup-20260808/raw/box1/serve-smoke-20260808T141144Z.log
+snapshot 2026-08-08T14:15:21Z
+0, 26, 180 MHz, 0 MiB, 97887 MiB
+1, 27, 180 MHz, 0 MiB, 97887 MiB
+== serve-smoke: plain serving ==
+  ok: /models lists the model
+  ok: chat non-stream (text + usage + finish_reason)
+  ok: chat stream (SSE chunks + [DONE])
+  ok: /v1/completions
+  ok: greedy determinism (2 runs identical)
+  ok: 3 concurrent chats
+  ok: long generation (>=100 tok)
+== serve-smoke: cache-metering exactness ==
+  ok: A fanout cached_tokens == [0] + [256]x4
+  ok: A-req1 prompt_tokens == 272
+  ok: A-req2 prompt_tokens == 272
+  ok: A-req3 prompt_tokens == 272
+  ok: A-req4 prompt_tokens == 272
+  ok: A-req5 prompt_tokens == 272
+  ok: B-req1 cached_tokens == 0 (cross-salt blindness)
+  ok: B-req1 prompt_tokens == 272
+  ok: prompt_tokens_in == 1632
+  ok: cached_tokens_in == 1024
+  ok: computed_tokens_in == prompt - cached
+  ok: cache_hit_token_ratio matches arithmetic
+  ok: prefix_cache_hits == N-1
+  ok: prefix_cache_misses == 2 (one A leader + cross-salt B)
+  ok: prefix_cache_inserts == 2 (shared A prefix + B seed)
+  ok: prefix_cache_hit_tokens == 1024
+  ok: lcp_histogram: 6 probes total
+  ok: lcp_histogram: 2 cold probes in bucket [0]
+  ok: lcp_histogram: 4 probes in K's bucket (edge 256)
+  ok: tick-seg [64,512) window carries the shared-prefix probes
+  ok: tenants[meter-A] split exact
+  ok: tenants[meter-B] split exact (0 cached)
+  ok: economics revenue_multiplier == 2.6842 (factor 1.0)
+cache-meter-gate: 0 failed
+  ok: cache-metering accounting exact (per-request + /metrics + economics)
+== serve-smoke: spec serving (draft attached) ==
+  ok: spec == plain greedy text (serving exactness)
+== serve-smoke: sampled truncation matrix (spec server) ==
+  (immune baseline: untruncated t0.8 seed=7, bangs=0)
+  ok: trunc top_k=40 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc top_p=0.95 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc min_p=0.05 (reproducible, bangs=0 <= baseline 0)
+  ok: trunc llama-default k40+p0.95+m0.05 (reproducible, bangs=0 <= baseline 0)
+== serve-smoke: session-affinity resume exactness ==
+  ok: affinity resume is deterministic across servers (4 rewritten turns)
+  ok: replay arm resumed too (3 rewind(s))
+  ok: affinity fired (3 rewind(s) on a rewritten history)
+  ok: no failed rewinds
+== serve-smoke: gemma4 arm SKIP (no model at /data/ai-ml/models/gemma-4-12b-it-qat/gemma-4-12b-it-qat-q4_0.gguf)
+serve-smoke: 0 failed
+serve-smoke exit=0
+snapshot 2026-08-08T14:15:42Z
+0, 34, 2362 MHz, 0 MiB, 97887 MiB
+1, 27, 180 MHz, 0 MiB, 97887 MiB
+########## apikeys ##########
+raw=/home/ubuntu/memra-prefixdedup/research/prefixdedup-20260808/raw/box1/apikeys-20260808T141144Z.log
+snapshot 2026-08-08T14:15:42Z
+0, 34, 2362 MHz, 0 MiB, 97887 MiB
+1, 27, 180 MHz, 0 MiB, 97887 MiB
+[gen-key] tenant "acme" lane interactive appended to /tmp/apikeys-gate-eEgp.toml — the plaintext above is shown ONCE and stored only as SHA-256
+[gen-key] tenant "acme" lane interactive appended to /tmp/apikeys-gate-eEgp.toml — the plaintext above is shown ONCE and stored only as SHA-256
+[gen-key] tenant "blue" lane interactive appended to /tmp/apikeys-gate-eEgp.toml — the plaintext above is shown ONCE and stored only as SHA-256
+[gen-key] tenant "bulk" lane batch appended to /tmp/apikeys-gate-eEgp.toml — the plaintext above is shown ONCE and stored only as SHA-256
+[gen-key] tenant "dead" lane interactive appended to /tmp/apikeys-gate-eEgp.toml — the plaintext above is shown ONCE and stored only as SHA-256
+[revoke-key] mk-dead-03ba8a0e837e disabled in /tmp/apikeys-gate-eEgp.toml (takes effect on the next keyring poll, <=2s on a running server)
+[revoke-key] mk-acme-11ec0b82995e disabled in /tmp/apikeys-gate-eEgp.toml (takes effect on the next keyring poll, <=2s on a running server)
+  ok: no-key-401 {'status': 401}
+  ok: bad-key-401 {'status': 401}
+  ok: revoked-key-403 {'status': 403, 'message': 'api key is disabled'}
+  ok: single-key-200 {'status': 200}
+  ok: acme-k1-seed-P {'prompt': 94, 'cached': 0}
+  ok: acme-k2-HIT-P-same-tenant {'prompt': 94, 'cached': 94}
+  ok: blue-MISS-P-cross-tenant {'prompt': 94, 'cached': 0}
+  ok: blue-seed-Q {'prompt': 101, 'cached': 0}
+  ok: blue-HIT-own-Q-cache-alive {'prompt': 101, 'cached': 101}
+  ok: acme-MISS-Q-cross-tenant-reverse {'prompt': 101, 'cached': 0}
+  ok: acme-salted-MISS-vs-unsalted {'prompt': 94, 'cached': 0}
+  ok: acme-salted-HIT-itself {'prompt': 94, 'cached': 94}
+  ok: tenant-rl-override-headers {'status': 200, 'limit': 2, 'remaining': 1}
+  ok: uncapped-key-global-cap {'limit': 64}
+  ok: batch-key-interactive-403 {'status': 403, 'message': 'this api key is batch-class: x-lane interactive is not permitted (use judge or harvest)'}
+  ok: batch-key-judge-admits {'status': 200}
+  ok: hot-revoke-403-within-poll {'status': 403}
+  ok: sibling-key-survives-revoke {'status': 200}
+apikey_gate: 0 failed / 18 gates
+apikeys exit=0
+snapshot 2026-08-08T14:15:49Z
+0, 34, 2377 MHz, 0 MiB, 97887 MiB
+1, 27, 180 MHz, 0 MiB, 97887 MiB
+########## run-gen ##########
+raw=/home/ubuntu/memra-prefixdedup/research/prefixdedup-20260808/raw/box1/run-gen-20260808T141144Z.log
+snapshot 2026-08-08T14:15:49Z
+0, 34, 2377 MHz, 0 MiB, 97887 MiB
+1, 27, 180 MHz, 0 MiB, 97887 MiB
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.76GB (expert budget 94.84GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+loaded step35 (45 trunk layers; optional MTP skipped)
+prompt text: "Write a short paragraph explaining how a CPU pipeline improves instruction throughput, and mention one hazard."
+prompt tokens: [0, 21750, 260, 3107, 15363, 26131, 1192, 260, 25454, 28499, 28232, 12740, 62027, 14, 305, 6731, 834, 23616, 16]
+prefill argmax=6776  decode argmax=6776  logit maxdiff=8.228e-1  MATCH
+batched-prime argmax=6776  tokenwise argmax=6776  logit maxdiff=7.178e-1  MATCH
+prefill 19 tok in 0.4930s = 38.5 tok/s (pp19)
+generated 64 tokens in 3.398s = 18.84 tok/s (Stage-B int8 dp4a decode, gen-only; prime 0.153s) [stop: MaxNew]
+tokens: [6776, 666, 7805, 11490, 2143, 35, 25454, 28499, 21994, 270, 16846, 294, 411, 12740, 1055, 3586, 13656, 343, 70698, 14, 64285, 14, 22218, 14, 6464, 14, 5085, 43360, 3555, 797, 6001, 834, 12740, 344, 295, 270, 22218, 6632, 14, 270, 2894, 588, 366, 91249, 14, 305, 270, 834, 1561, 396, 588, 366, 114400, 14, 832, 3586, 12846, 477, 295, 14349, 19649, 16, 1162, 48058]
+MoE cache: 15356 slots | cumulative hits=26253 misses=5211 (hit-rate=83.4%) | Stage-1 baseline = 2678 MB/decode-token (every block, every layer, every token)
+MoE cache STEADY-STATE (32 tokens after warmup): hit-rate=0.0% | 0.0 MB/decode-token (vs 2678 MB/token Stage-1 => infx less PCIe)
+OUTPUT TEXT: "  \n\n**Answer:**  \nA CPU pipeline breaks the execution of an instruction into several stages (fetch, decode, execute, memory, write‑back). While one instruction is in the execute stage, the next can be decoded, and the one after that can be fetched, so several instructions are in flight simultaneously. This overlapping"
+--- generated text ---
+  
+
+**Answer:**  
+A CPU pipeline breaks the execution of an instruction into several stages (fetch, decode, execute, memory, write‑back). While one instruction is in the execute stage, the next can be decoded, and the one after that can be fetched, so several instructions are in flight simultaneously. This overlapping
+run-gen exit=0
+snapshot 2026-08-08T14:16:37Z
+0, 32, 2407 MHz, 0 MiB, 97887 MiB
+1, 32, 2325 MHz, 0 MiB, 97887 MiB
+########## fanout-ttft ##########
+raw=/home/ubuntu/memra-prefixdedup/research/prefixdedup-20260808/raw/box1/fanout-ttft-20260808T141144Z.log
+snapshot 2026-08-08T14:16:37Z
+0, 32, 2407 MHz, 0 MiB, 97887 MiB
+1, 32, 2325 MHz, 0 MiB, 97887 MiB
+fanout-ttft exit=0
+snapshot 2026-08-08T14:18:30Z
+0, 33, 180 MHz, 0 MiB, 97887 MiB
+1, 33, 180 MHz, 0 MiB, 97887 MiB
+=== prefix fanout TTFT ts=20260808T141637Z commit=54871d97e161952a29381d578b82e2f756f23260
+binary=/home/ubuntu/memra-prefixdedup/target/release/memra-server sha256=147428472c8a9fc736d393a60799de5d28d0468765b158884ad72994e1043c96
+model=/home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf bytes=46483327296
+protocol=one warmup plus one N=8 barrier burst per arm; K=1024 suffix=16
+using caller-held GPU lock 2026-08-08T14:16:37Z
+0, 33, 2407 MHz, 0 MiB, 97887 MiB
+1, 32, 2325 MHz, 0 MiB, 97887 MiB
+dedup-off ready in <=34s log=/home/ubuntu/memra-prefixdedup/research/prefixdedup-20260808/raw/box1/fanout-server-dedup-off-20260808T141637Z.log
+{"label": "dedup-off", "kind": "warmup", "row": {"ttft_s": 2.933345, "wall_s": 3.026287, "chunks": 8, "prompt_tokens": 1040, "cached_tokens": 0}}
+{"cached_tokens": [0, 0, 0, 0, 0, 0, 0, 0], "concurrency": 8, "expect": "cold", "kind": "summary", "label": "dedup-off", "n": 8, "shared_prefix_tokens": 1024, "suffix_tokens": 16, "ttft_max_s": 22.262703, "ttft_mean_s": 22.133997, "ttft_min_s": 21.234702, "ttft_p50_s": 22.262535, "ttft_p95_s": 22.262703}
+0, 35, 180 MHz, 0 MiB, 97887 MiB
+1, 35, 180 MHz, 0 MiB, 97887 MiB
+dedup-on ready in <=34s log=/home/ubuntu/memra-prefixdedup/research/prefixdedup-20260808/raw/box1/fanout-server-dedup-on-20260808T141637Z.log
+{"label": "dedup-on", "kind": "warmup", "row": {"ttft_s": 2.947311, "wall_s": 3.040498, "chunks": 8, "prompt_tokens": 1040, "cached_tokens": 0}}
+{"cached_tokens": [0, 1024, 1024, 1024, 1024, 1024, 1024, 1024], "concurrency": 8, "expect": "dedup", "kind": "summary", "label": "dedup-on", "n": 8, "shared_prefix_tokens": 1024, "suffix_tokens": 16, "ttft_max_s": 3.85254, "ttft_mean_s": 3.851694, "ttft_min_s": 3.851187, "ttft_p50_s": 3.851681, "ttft_p95_s": 3.85254}
+0, 33, 180 MHz, 0 MiB, 97887 MiB
+1, 33, 180 MHz, 0 MiB, 97887 MiB
+=== prefix fanout TTFT rc=0
+results=/home/ubuntu/memra-prefixdedup/research/prefixdedup-20260808/raw/box1/fanout-ttft-20260808T141637Z.jsonl
+=== done 2026-08-08T14:18:30Z
+snapshot 2026-08-08T14:18:30Z
+0, 32, 180 MHz, 0 MiB, 97887 MiB
+1, 33, 180 MHz, 0 MiB, 97887 MiB
+=== prefix dedup gates rc=0

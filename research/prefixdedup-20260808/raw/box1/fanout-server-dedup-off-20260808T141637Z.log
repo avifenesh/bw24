@@ -1,0 +1,39 @@
+[server] starting; models config = [("step35", "/home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf", None)]
+[gpu-watch] Xid source: journalctl -k -f (/dev/kmsg unreadable — kernel.dmesg_restrict)
+[gpu-watch] on: every 60s, probe deadline 10s, fatal Xid [48, 64, 79, 94, 95, 119, 120]
+[worker] Engine ready (device=1, MEMRA_FAST=true)
+[spec-gate] policy placement=pp2-cross-device LOW=0 HIGH=1 source=placement-default spec-admission=off
+[worker] loading model "step35" <- /home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf
+[pp] cross-device transport: stage0=dev0 stage1=dev1 (cudaMemcpyPeerAsync per cross boundary; peer + default-pool access granted all pairs over [0, 1]; weight home: per-stage (sharded loader))
+[moe] resident-experts decision (PP dev0): experts 45.72GB + trunk 3.92GB vs free 100.88GB (expert budget 94.96GB) -> RESIDENT
+[moe] resident-experts decision (PP dev1): experts 55.35GB + trunk 3.92GB vs free 100.72GB (expert budget 94.80GB) -> RESIDENT
+[fa] v4 decode family disabled: gqa 12 > fa_v4_smem capacity 8 (v3 lane serves)
+[worker] WARN: step35: step35: no MTP drafter attached — serving plain decode, no speculative decoding. This arch ships its MTP/NextN head in a SEPARATE GGUF, so the trunk's nextn_predict_layers=0 is expected and does NOT mean the model has no drafter. Attach with MEMRA_MODELS="step35=/home/ubuntu/step37/models/step-3.7-flash/IQ4_XS/Step-3.7-flash-IQ4_XS-00001-of-00003.gguf+/path/to/Step3.7-flash-mtp-Q8_0.gguf" (the same '+draft' convention every regime drafter uses; docs/DRAFT-REGIME.md).
+[worker]   loaded "step35": 45 layers, eos=128007
+[worker] step35: template caps tools=true think=true think_switch=false chat_ok=true effort_levels=true gemma_think=false ctx=262144 tok="deepseek-v3" instruct=Some("chatml")
+[worker] step35: decode chunk cap 8
+[prefix-cache] on: budget 4295MB (MEMRA_PREFIX_CACHE_MB), min prefix 64 tokens
+[server] worker ready; serving models: ["step35"]
+[server] listening on http://127.0.0.1:18108
+[meter] admit id=cmpl-54b09edc917a6f7db3c438f054375be5 tenant=default lane=interactive model="step35"
+[worker] observed session VRAM cost for "step35": 336MB (admission gate = 2x)
+[prefix-cache] insert (seed): 1040 tokens, 86.9MB (resident 86.9MB / 4295MB, model step35, ns "dedup-off-warmup-1786198629490100596")
+[meter] admit id=cmpl-d08f0f75963df538a4a06357b930f113 tenant=default lane=interactive model="step35"
+[meter] admit id=cmpl-adce15e2c9431a20265d9c49da8f491b tenant=default lane=interactive model="step35"
+[meter] admit id=cmpl-e5ffc548c3f3cd738a1b04d0cc7a2433 tenant=default lane=interactive model="step35"
+[meter] admit id=cmpl-adc67f1e822a7afc71f971644ffb6e88 tenant=default lane=interactive model="step35"
+[meter] admit id=cmpl-fec41f34f8beb26e42d49da43735cefb tenant=default lane=interactive model="step35"
+[meter] admit id=cmpl-f3927e6b25414877209a8098211e9096 tenant=default lane=interactive model="step35"
+[meter] admit id=cmpl-6127a3f111e9609c0edaa4132a9d70f8 tenant=default lane=interactive model="step35"
+[meter] admit id=cmpl-51532261c60045ea91cbf6d9283cd47d tenant=default lane=interactive model="step35"
+[prefix-cache] insert (seed): 1040 tokens, 86.9MB (resident 173.7MB / 4295MB, model step35, ns "dedup-off-measured-1786198632517609287")
+[prefix-cache] insert (seed): 1040 tokens, 86.9MB (resident 260.6MB / 4295MB, model step35, ns "dedup-off-measured-1786198632517609287")
+[prefix-cache] insert (seed): 1040 tokens, 86.9MB (resident 347.4MB / 4295MB, model step35, ns "dedup-off-measured-1786198632517609287")
+[prefix-cache] insert (seed): 1040 tokens, 86.9MB (resident 434.3MB / 4295MB, model step35, ns "dedup-off-measured-1786198632517609287")
+[prefix-cache] insert (seed): 1040 tokens, 86.9MB (resident 521.2MB / 4295MB, model step35, ns "dedup-off-measured-1786198632517609287")
+[prefix-cache] insert (seed): 1040 tokens, 86.9MB (resident 608.0MB / 4295MB, model step35, ns "dedup-off-measured-1786198632517609287")
+[prefix-cache] insert (seed): 1040 tokens, 86.9MB (resident 694.9MB / 4295MB, model step35, ns "dedup-off-measured-1786198632517609287")
+[prefix-cache] insert (seed): 1040 tokens, 86.9MB (resident 781.7MB / 4295MB, model step35, ns "dedup-off-measured-1786198632517609287")
+[step35-batch] first B>1 batched step35 walk: B=8 layers=[0,22)
+[server] SIGTERM: draining (0 in flight, deadline 30s)
+[server] drain complete in 0.0s; exiting
